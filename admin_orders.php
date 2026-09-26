@@ -132,7 +132,7 @@ $statusLabels = ['' => '全部状态', 'pending' => '待支付', 'paid' => '已�
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>订单管理 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=19"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>订单管理 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=20"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <a class="brand" href="dashboard.php"><span class="brand-mark">N</span><span>Notion Drive</span></a>
@@ -176,7 +176,7 @@ $statusLabels = ['' => '全部状态', 'pending' => '待支付', 'paid' => '已�
                         <td data-label="创建时间"><span><?= e(date('Y-m-d H:i', (int) strtotime((string) $order['created_at']))) ?><?= $orderStatus === 'paid' && $order['paid_at'] !== null ? '<br><small>付款 ' . e(date('Y-m-d H:i', (int) strtotime((string) $order['paid_at']))) . '</small>' : '' ?></span></td>
                         <td>
                             <div class="file-actions">
-                                <a href="admin.php?user_id=<?= (int) $order['user_id'] ?>">用户</a>
+                                <a href="admin.php?tab=content&user_id=<?= (int) $order['user_id'] ?>">用户</a>
                                 <?php if ($orderStatus !== 'paid'): ?>
                                 <form method="post" class="inline-form"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="sync_order"><input type="hidden" name="order_no" value="<?= e((string) $order['order_no']) ?>"><button>刷新状态</button></form>
                                 <?php endif; ?>

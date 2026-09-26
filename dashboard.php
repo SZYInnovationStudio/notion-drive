@@ -47,7 +47,7 @@ $premiumNotice = premiumNotice($user);
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>我的文件 · Notion Drive</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <link rel="stylesheet" href="assets/app.css?v=19">
+    <link rel="stylesheet" href="assets/app.css?v=20">
 </head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>" data-limit="<?= $singleLimit ?>" data-remaining="<?= $remainingBytes === null ? '' : $remainingBytes ?>">
     <aside class="drive-sidebar">

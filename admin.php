@@ -16,6 +16,34 @@ use NotionDrive\Security;
 $currentUser = Auth::requireAdmin();
 $error = '';
 
+/**
+ * 后台二级分区：把原先堆在一页的管理面板按功能模块分组。
+ * 键名为 ?tab= 取值；label 用于侧边栏二级菜单与移动端分区条，desc 显示在页头。
+ */
+function adminTabs(): array
+{
+    return [
+        'users' => ['group' => '管理后台', 'label' => '用户管理', 'desc' => '用户账号、容量与权限组'],
+        'content' => ['group' => '管理后台', 'label' => '内容与账户', 'desc' => '用户文件、官方账户分配与账户池'],
+        'premium' => ['group' => '管理后台', 'label' => '套餐与订单', 'desc' => '会员套餐、到期时间与历史订单'],
+        'system' => ['group' => '管理后台', 'label' => '系统设置', 'desc' => '注册与邮箱、Notion 连接、上传与支付'],
+    ];
+}
+
+/** 校验 ?tab= 取值；非法或缺失时返回空串，由页面按上下文决定默认分区。 */
+function normalizeAdminTab(mixed $value): string
+{
+    return is_string($value) && array_key_exists($value, adminTabs()) ? $value : '';
+}
+
+$adminTabs = adminTabs();
+$selectedUserId = (int) ($_GET['user_id'] ?? 0);
+// 当前分区：优先取 ?tab=；未指定时，带 user_id 进入（订单页点「用户」、用户行点「管理文件」）默认展示内容与账户
+$requestedTab = normalizeAdminTab($_GET['tab'] ?? null);
+$activeTab = $requestedTab !== '' ? $requestedTab : ($selectedUserId > 0 ? 'content' : 'users');
+// 表单保存后仍回到当前分区，避免管理员被弹回默认页签
+$adminHome = 'admin.php?tab=' . $activeTab;
+
 function parseQuota(string $value): ?int
 {
     $value = trim($value);
@@ -514,7 +542,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ? '已按负载自动分配主备官方账户，但该用户当前使用自有 Notion 账户，切换为官方账户后才会生效。'
                     : '已按负载自动分配主备官方账户。');
                 // 回到该用户的详情面板，方便管理员立即核对分配结果
-                header('Location: admin.php?user_id=' . $userId);
+                header('Location: admin.php?tab=' . $activeTab . '&user_id=' . $userId);
                 exit;
             }
 
@@ -522,7 +550,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             flash('success', $usingOwnAccount
                 ? '已保存该用户的主备官方账户，但该用户当前使用自有 Notion 账户，切换为官方账户后才会生效。'
                 : '已更新该用户的主备官方账户。');
-            header('Location: admin.php?user_id=' . $userId);
+            header('Location: admin.php?tab=' . $activeTab . '&user_id=' . $userId);
             exit;
         } elseif ($action === 'settings') {
             $pageId = preg_replace('/[^a-fA-F0-9-]/', '', (string) ($_POST['page_id'] ?? ''));
@@ -642,7 +670,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $months,
                 date('Y-m-d H:i', (int) strtotime($result['expires_after']))
             ));
-            header('Location: admin.php?user_id=' . $userId);
+            header('Location: admin.php?tab=' . $activeTab . '&user_id=' . $userId);
             exit;
         } elseif ($action === 'set_premium_expiry') {
             $userId = (int) ($_POST['user_id'] ?? 0);
@@ -695,7 +723,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             flash('success', $expiresAt === null
                 ? sprintf('%s 的套餐已设为永久有效。', (string) $username)
                 : sprintf('%s 的套餐到期时间已更新为 %s。', (string) $username, date('Y-m-d H:i', (int) strtotime($expiresAt))));
-            header('Location: admin.php?user_id=' . $userId);
+            header('Location: admin.php?tab=' . $activeTab . '&user_id=' . $userId);
             exit;
         } elseif ($action === 'read_alerts') {
             $pdo->prepare('UPDATE admin_alerts SET is_read = 1 WHERE is_read = 0')->execute();
@@ -708,7 +736,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             throw new RuntimeException('未知操作。');
         }
-        header('Location: admin.php');
+        header('Location: ' . $adminHome);
         exit;
     } catch (Throwable $exception) {
         // 只回显可安全展示的提示：数据库与 Notion 的原始报错可能包含 SQL、服务器路径或 Token 信息
@@ -745,7 +773,8 @@ $accountAssignmentCounts = [];
 foreach (Database::connection()->query('SELECT account_id, COUNT(*) AS total FROM user_official_accounts GROUP BY account_id')->fetchAll() as $row) {
     $accountAssignmentCounts[(int) $row['account_id']] = (int) $row['total'];
 }
-$selectedUserId = (int) ($_GET['user_id'] ?? 0);
+/** 后台二级菜单链接：保留当前选中的用户，切换分区时不丢上下文。 */
+$tabUrl = static fn (string $tab): string => 'admin.php?tab=' . $tab . ($selectedUserId > 0 ? '&user_id=' . $selectedUserId : '');
 $selectedUser = null;
 $selectedFiles = [];
 $selectedAccountIds = ['primary' => 0, 'backup' => 0];
@@ -849,15 +878,16 @@ $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>管理后台 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=19"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>管理后台 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=20"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <a class="brand" href="dashboard.php"><span class="brand-mark">N</span><span>Notion Drive</span></a>
-        <nav class="drive-nav"><a href="dashboard.php"><span>▣</span>我的文件</a><a class="active" href="admin.php"><span>⚙</span>管理后台</a><a href="admin_orders.php"><span>¥</span>订单管理</a><a href="logs.php"><span>☰</span>运行日志</a><a href="account.php"><span>◍</span>账户管理</a></nav>
+        <nav class="drive-nav"><a href="dashboard.php"><span>▣</span>我的文件</a><details class="nav-group" open><summary><span>⚙</span>管理后台</summary><div class="nav-sub"><?php foreach ($adminTabs as $tabKey => $tabMeta): ?><a class="<?= $tabKey === $activeTab ? 'active' : '' ?>" href="<?= e($tabUrl((string) $tabKey)) ?>"><?= e($tabMeta['label']) ?></a><?php endforeach; ?></div></details><a href="admin_orders.php"><span>¥</span>订单管理</a><a href="logs.php"><span>☰</span>运行日志</a><a href="account.php"><span>◍</span>账户管理</a></nav>
         <div class="account-menu"><?= avatarHtml($currentUser) ?><div><strong><?= e($currentUser['username']) ?></strong><small>管理员</small></div><form method="post" action="logout.php"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><button>退出</button></form></div>
     </aside>
     <main class="drive-main admin-main">
-        <header class="drive-header"><div><p>系统设置</p><h1>管理后台</h1></div><a class="secondary-button" href="dashboard.php">返回我的文件</a></header>
+        <header class="drive-header"><div><p><?= e($adminTabs[$activeTab]['desc']) ?></p><h1>管理后台 · <?= e($adminTabs[$activeTab]['label']) ?></h1></div><a class="secondary-button" href="dashboard.php">返回我的文件</a></header>
+        <nav class="admin-tabs" aria-label="管理后台分区"><?php foreach ($adminTabs as $tabKey => $tabMeta): ?><a class="<?= $tabKey === $activeTab ? 'active' : '' ?>" href="<?= e($tabUrl((string) $tabKey)) ?>"><?= e($tabMeta['label']) ?></a><?php endforeach; ?></nav>
         <?php if ($flash): ?><div class="alert <?= e($flash['type']) ?>"><?= e($flash['message']) ?></div><?php endif; ?>
         <?php if ($error !== ''): ?><div class="alert error"><?= e($error) ?></div><?php endif; ?>
         <?php if ($adminAlerts): ?>
@@ -874,6 +904,7 @@ $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
         </section>
         <?php endif; ?>
 
+        <?php if ($activeTab === 'users'): ?>
         <section class="admin-panel">
             <div class="panel-title"><div><h2>用户与容量</h2><p>容量由权限组决定；单独填写容量会覆盖组容量，留空或 -1 表示继承组容量。</p></div><span><?= count($users) ?> 位用户</span></div>
             <form method="post" class="create-user-row">
@@ -887,7 +918,7 @@ $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
                     <div class="user-identity"><?= avatarHtml($managedUser) ?><input name="username" value="<?= e($managedUser['username']) ?>" required></div>
                     <small class="user-meta"><?= (int) $managedUser['file_count'] ?> 个文件 · <?= e(formatBytes((int) $managedUser['used_bytes'])) ?><?= emailBound($managedUser) ? ' · ' . e((string) $managedUser['email']) : ' · 未绑定邮箱' ?> · <?= e($premiumLabel($managedUser)) ?> · Notion <?= userNotionSource($managedUser) === 'own' ? (hasOwnNotionAccount($managedUser) ? '自有账户' : '自有账户（未绑定）') : '官方账户' ?></small>
                     <label><span>新密码</span><input type="password" name="password" placeholder="留空不修改"></label><label><span>权限组</span><select name="group_id"><?= $groupSelectOptions((int) $managedUser['group_id']) ?></select></label><label><span>单独容量 GB</span><input name="quota_gb" value="<?= e($quotaGb) ?>"></label>
-                    <a class="text-action" href="admin.php?user_id=<?= (int) $managedUser['id'] ?>">管理文件</a><button class="save-action" name="action" value="update_user">保存</button><?php if ((int) $managedUser['id'] !== (int) $currentUser['id']): ?><button class="delete-action" name="action" value="delete_user" data-confirm="确认删除用户及其全部文件？">删除</button><?php endif; ?>
+                    <a class="text-action" href="admin.php?tab=content&user_id=<?= (int) $managedUser['id'] ?>#user-files">管理文件</a><button class="save-action" name="action" value="update_user">保存</button><?php if ((int) $managedUser['id'] !== (int) $currentUser['id']): ?><button class="delete-action" name="action" value="delete_user" data-confirm="确认删除用户及其全部文件？">删除</button><?php endif; ?>
                 </form>
                 <?php endforeach; ?>
             </div>
@@ -910,7 +941,9 @@ $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
                 <?php endforeach; ?>
             </div>
         </section>
+        <?php endif; ?>
 
+        <?php if ($activeTab === 'content'): ?>
         <section class="admin-panel">
             <div class="panel-title"><div><h2>官方账户池</h2><p>购买高级套餐的用户可使用这里的账户；优先级数值越大越靠前，自动分配时优先选用。Token 加密保存，不会回显。</p></div><span><?= count($officialAccounts) ?> 个账户</span></div>
             <form method="post" class="create-user-row create-group-row">
@@ -934,8 +967,8 @@ $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
         </section>
 
         <?php if ($selectedUser): ?>
-        <section class="admin-panel">
-            <div class="panel-title"><div><h2><?= e($selectedUser['username']) ?> 的文件</h2><p>管理员可以下载、重命名或删除该用户的文件。</p></div><a href="admin.php">关闭</a></div>
+        <section class="admin-panel" id="user-files">
+            <div class="panel-title"><div><h2><?= e($selectedUser['username']) ?> 的文件</h2><p>管理员可以下载、重命名或删除该用户的文件。</p></div><a href="admin.php?tab=content">关闭</a></div>
             <?php if (!$selectedFiles): ?><div class="empty-state compact-empty">该用户暂无文件</div><?php else: ?><div class="file-table-wrap"><table class="file-table"><thead><tr><th>名称</th><th>大小</th><th>上传时间</th><th>操作</th></tr></thead><tbody>
             <?php foreach ($selectedFiles as $file): $name = (string) ($file['display_name'] ?: $file['filename']); ?><tr data-file-id="<?= (int) $file['id'] ?>"><td><div class="file-name"><span class="file-kind"><?= e(strtoupper(pathinfo($name, PATHINFO_EXTENSION) ?: 'FILE')) ?></span><strong class="display-name"><?= e($name) ?></strong></div></td><td data-label="大小"><?= e(formatBytes((int) $file['file_size'])) ?></td><td data-label="上传时间"><?= e(date('Y-m-d H:i', strtotime((string) $file['created_at']))) ?></td><td><div class="file-actions"><a href="api/file.php?id=<?= (int) $file['id'] ?>">下载</a><button data-action="rename">重命名</button><button class="danger" data-action="delete">删除</button></div></td></tr><?php endforeach; ?>
             </tbody></table></div><?php endif; ?>
@@ -955,8 +988,13 @@ $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
             <?php if (!$officialAccounts): ?><div class="empty-state compact-empty">官方账户池为空，请先在上方添加账户。</div><?php endif; ?>
         </section>
         <?php endif; ?>
+        <?php endif; ?>
 
-        <?php if ($selectedUser): $selectedExpires = premiumExpiresAt($selectedUser); $selectedDays = premiumDaysLeft($selectedUser); ?>
+        <?php if ($activeTab === 'premium' && !$selectedUser): ?>
+        <section class="admin-panel"><div class="empty-state compact-empty">请先在「用户管理」中选择一位用户，再设置其会员与到期时间。</div></section>
+        <?php endif; ?>
+
+        <?php if ($activeTab === 'premium' && $selectedUser): $selectedExpires = premiumExpiresAt($selectedUser); $selectedDays = premiumDaysLeft($selectedUser); ?>
         <section class="admin-panel">
             <div class="panel-title"><div><h2><?= e($selectedUser['username']) ?> 的会员与到期</h2><p>手动开通或续费高级套餐；也可直接指定到期时间，留空表示永久有效。保存到期时间会同步调整权限组：留空或未来时间加入高级用户组，已过去的时间恢复普通用户组。</p></div><span class="status-badge"><?= e($premiumLabel($selectedUser)) ?></span></div>
             <div class="plan-summary">
@@ -981,6 +1019,7 @@ $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
         </section>
         <?php endif; ?>
 
+        <?php if ($activeTab === 'system'): ?>
         <section class="admin-panel connection-panel">
             <div class="panel-title"><div><h2>注册与邮箱</h2><p>未配置 SMTP 时无法开启强制绑定邮箱；验证码 6 位数字，10 分钟内有效。</p></div><span class="status-badge"><?= smtpConfigured() ? 'SMTP 已配置' : 'SMTP 未配置' ?></span></div>
             <form method="post" class="connection-form">
@@ -1038,6 +1077,7 @@ $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
             <p class="log-meta">建议把「站点地址」填写为对外可访问的固定地址（如 https://drive.example.com）：留空时系统按本次访问的域名自动识别，域名变化或经反向代理时回调地址可能不准。</p>
             <?php endif; ?>
         </section>
+        <?php endif; ?>
     </main>
     <div id="toast" class="toast"></div><script src="assets/app.js?v=13" defer></script><script src="assets/admin.js?v=5" defer></script>
 </body></html>

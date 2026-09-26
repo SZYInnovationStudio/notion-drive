@@ -103,6 +103,21 @@ fieldset legend { margin-bottom: 10px; }
 .drive-nav a:hover { background: #f4f6f8; color: var(--text); }
 .drive-nav a.active { background: var(--primary-soft); color: #1255b8; font-weight: 650; }
 .drive-nav a span { width: 20px; text-align: center; }
+/* 管理后台二级菜单：桌面端侧栏可折叠分组；移动端隐藏，改用正文顶部的分区条 */
+.nav-group { margin: 0; }
+.nav-group > summary { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: 8px; color: #596170; font-size: .9rem; cursor: pointer; list-style: none; }
+.nav-group > summary::-webkit-details-marker { display: none; }
+.nav-group > summary::after { content: '▾'; margin-left: auto; font-size: .68rem; color: #9aa2ad; transition: transform .15s; }
+.nav-group:not([open]) > summary::after { transform: rotate(-90deg); }
+.nav-group > summary:hover { background: #f4f6f8; color: var(--text); }
+.nav-group[open] > summary { color: var(--text); font-weight: 650; }
+.nav-group > summary span { width: 20px; text-align: center; }
+.nav-sub { display: grid; gap: 2px; margin: 2px 0 6px 10px; padding-left: 8px; border-left: 1px solid var(--line); }
+.nav-sub a { display: block; padding: 7px 10px; border-radius: 7px; color: #6b7480; font-size: .82rem; }
+.nav-sub a:hover { background: #f4f6f8; color: var(--text); }
+.nav-sub a.active { background: var(--primary-soft); color: #1255b8; font-weight: 650; }
+/* 正文顶部隐藏的分区条，仅窄屏显示（替代侧栏放不下的二级菜单） */
+.admin-tabs { display: none; }
 .sidebar-storage { margin-top: auto; padding: 16px 10px; border-top: 1px solid var(--line); }
 .sidebar-storage > div { display: flex; justify-content: space-between; align-items: center; font-size: .75rem; color: var(--muted); }
 .sidebar-storage strong { color: var(--text); }
@@ -186,6 +201,9 @@ fieldset legend { margin-bottom: 10px; }
 /* Admin */
 .admin-main { max-width: 1320px; }
 .admin-panel { margin-bottom: 22px; padding: 22px; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); }
+/* 「管理文件」携带 #user-files 跳转时，高亮对应面板并留出滚动间距，避免管理员找不到落点 */
+.admin-panel { scroll-margin-top: 24px; }
+.admin-panel:target { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
 .panel-title p { margin: 3px 0 0; color: var(--muted); font-size: .74rem; }
 .panel-title > a { color: var(--primary); font-size: .75rem; }
 .create-user-row { display: grid; grid-template-columns: 1.1fr 1.1fr .7fr .8fr auto auto; gap: 10px; align-items: end; padding: 17px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 9px; }
@@ -376,6 +394,12 @@ fieldset legend { margin-bottom: 10px; }
     .drive-nav a { flex: 0 0 auto; align-items: center; min-height: 44px; padding: 0 12px; gap: 7px; border-radius: 9px; font-size: .84rem; white-space: nowrap; }
     /* 窄屏下图标会挤掉「退出」按钮，移动端只保留文字导航 */
     .drive-nav a span { display: none; }
+    /* 底部导航放不下嵌套分组，二级菜单改由正文顶部的分区条承担 */
+    .nav-group { display: none; }
+    .admin-tabs { display: flex; gap: 6px; margin: -6px 0 16px; padding-bottom: 2px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; -ms-overflow-style: none; }
+    .admin-tabs::-webkit-scrollbar { display: none; }
+    .admin-tabs a { flex: 0 0 auto; padding: 8px 13px; border: 1px solid var(--line); border-radius: 999px; color: #596170; font-size: .8rem; white-space: nowrap; }
+    .admin-tabs a.active { border-color: var(--primary); background: var(--primary-soft); color: #1255b8; font-weight: 650; }
     .account-menu { flex: none; margin-top: 0; margin-left: 8px; padding: 0 0 0 8px; border-top: 0; border-left: 1px solid var(--line); }
     /* 移动端隐藏用户名与头像，保留可点击的「退出」按钮 */
     .account-menu > div, .account-menu .avatar { display: none; }

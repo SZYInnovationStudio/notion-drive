@@ -22,12 +22,47 @@
 
 ```markdown
 ### [YYYY-MM-DD] 标题
-- 修改人：[Beibing]
+- 修改人：[xxx]
 - 目的：
 - 验证：
 - 改动明细：
   - `path/to/file.php` L88 — 说明
 ```
+
+---
+
+### [2026-09-26] 管理后台二级菜单分区，并修复「管理文件」点进去看不到文件
+
+- 修改人：[Beibing]
+- 目的：
+  1. **修 Bug（管理员查看任意用户文件）**：此后端一直放行管理员操作他人文件（`api/file.php` 的 `isAdmin()` 分支），但 `admin.php` 里「管理文件」是无锚点链接 `admin.php?user_id=N`，点击后只回到页面顶部；而真正的文件面板（`id="user-files"`）被「权限组」「官方账户池」夹在页面最底部，管理员视觉上等于"点了没反应"，误以为功能没实现。
+  2. **治理后台杂乱**：`admin.php` 单页平铺 10 块面板（约 1080 行），管理员要靠长滚动找入口；改为侧边栏可折叠二级菜单 + `?tab=` 服务端分区，一屏只渲染一个分区。
+- 方案（已与 [Beibing] 确认）：单页面板 + 锚点自动定位（`#user-files` + CSS `:target` 高亮）；侧栏 `<details>` 二级菜单；四分组 = 用户管理 / 内容与账户 / 套餐与订单 / 系统设置。不引入 JS，不改表单提交与权限逻辑。
+- 验证：`php -l admin.php`、`php -l admin_orders.php` 均无语法错误。本地跑起后以 admin 登录做端到端校验：
+  - `?tab=users` → 仅「用户与容量 + 权限组」；`?tab=content` → 仅「官方账户池 + 用户文件 + 用户官方账户」；`?tab=premium` → 仅「会员与到期」；`?tab=system` → 仅「注册与邮箱 / Notion 连接 / 上传与容量 / 支付设置」。四个分区互不泄漏。
+  - `admin.php?user_id=1`（不带 tab）→ 自动落到 `content` 分区并渲染 `id="user-files"` 面板。
+  - `?tab=users&user_id=1` → 不渲染文件面板，但保留了带 `#user-files` 的「管理文件」跳转链接。
+  - 侧栏 `nav-sub` 二级菜单渲染正常，当前分区带 `active`；窄屏（≤760px）侧栏二级菜单隐藏、改用正文顶部横向分区条。
+- 改动明细：
+  - `admin.php` L23-L35 — 新增 `adminTabs()`：定义 4 个分区（users/content/premium/system）及其分组名、标题、描述，作为菜单与页头的唯一数据源。
+  - `admin.php` L36-L38 — 新增 `normalizeAdminTab()`：白名单校验 `?tab=`，非法值回退空串，避免任意参数穿透。
+  - `admin.php` L39-L45 — 解析 `$selectedUserId` / `$requestedTab` / `$activeTab`（带 `user_id` 时默认落 `content`，否则 `users`）与 `$adminHome`。
+  - `admin.php` L545、L553、L673、L726 — 4 处表单处理后的 `header('Location: admin.php?user_id=...')` 改为带 `&tab=' . $activeTab . '`，**保存/删除等提交后回跳到原分区**，不再被甩回默认页。
+  - `admin.php` L739 — `header('Location: admin.php')` 改为 `header('Location: ' . $adminHome)`，同上保留分区。
+  - `admin.php` L777 — 新增 `$tabUrl` 闭包：生成分区链接时**保留当前选中用户**，切换分区不丢上下文。
+  - `admin.php` L885 — 侧栏 `<nav class="drive-nav">` 内新增 `<details class="nav-group" open>` + `.nav-sub`，遍历 `$adminTabs` 生成二级菜单，当前分区加 `active`。
+  - `admin.php` L889 — 页头标题改为跟随分区：`管理后台 · {分区名}` + `{分区描述}`。
+  - `admin.php` L890 — 新增 `<nav class="admin-tabs">` 横向分区条（桌面端隐藏，窄屏显示）。
+  - `admin.php` L907 / L946 / L993+L997 / L1022 — 用 `<?php if ($activeTab === '...'): ?> ... <?php endif; ?>` 把 10 块面板包成 4 组，仅渲染当前分区；`premium` 分区在未选用户时显示引导空状态。
+  - `admin.php` L921 — **Bug 修复点**：「管理文件」链接由 `admin.php?user_id={id}` 改为 `admin.php?tab=content&user_id={id}#user-files`，点击后直接落到文件面板。
+  - `admin.php` L970 — 「用户文件」面板新增 `id="user-files"` 作为锚点。
+  - `admin.php` L881 — 样式缓存版本 `assets/app.css?v=19` → `v=20`。
+  - `assets/app.css` L107-L120 — 新增 `.nav-group` / `.nav-sub` 二级菜单样式（折叠箭头、hover、当前项高亮），及 `.admin-tabs { display: none }` 的桌面端隐藏。
+  - `assets/app.css` L205-L206 — 新增 `.admin-panel { scroll-margin-top: 24px }` 与 `.admin-panel:target` 高亮，使锚点跳转后目标面板描边提示、不被页头遮挡。
+  - `assets/app.css` L398-L402 — 760px 媒体查询内：隐藏侧栏 `.nav-group`，显示 `.admin-tabs` 横向分区条（可横滑、隐藏滚动条）。
+  - `admin_orders.php` L179 — 订单列表「用户」链接改指 `admin.php?tab=content&user_id=...`；L135 样式版本 `v=19` → `v=20`。
+  - 其余页面 `account.php`、`index.php`、`dashboard.php`、`install.php`、`logs.php`、`pay.php`、`register.php` — 仅同步 `app.css?v=19` → `v=20`，无逻辑改动。
+  - 影响面：纯展示层与路由参数，**无数据库结构变更**；旧书签 `admin.php?user_id=N` 仍可用（自动落 `content` 分区）。
 
 ---
 
