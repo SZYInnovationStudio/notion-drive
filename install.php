@@ -85,6 +85,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 notion_parent_page_id VARCHAR(64) NULL DEFAULT NULL,
                 notion_account_source VARCHAR(20) NOT NULL DEFAULT \'own\',
                 premium_expires_at DATETIME NULL DEFAULT NULL,
+                premium_reminder_sent_at DATETIME NULL DEFAULT NULL,
                 group_id BIGINT UNSIGNED NULL DEFAULT NULL,
                 email VARCHAR(191) NULL DEFAULT NULL,
                 email_verified_at TIMESTAMP NULL DEFAULT NULL,
