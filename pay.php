@@ -11,8 +11,7 @@ use NotionDrive\Logger;
 use NotionDrive\Security;
 
 $user = Auth::requireLogin();
-// 管理员账号本身已是最高权限，购买套餐既无意义又可能造成权限组/到期时间混乱：
-// 整页对所有请求（含 POST）直接挡回文件列表，从入口上杜绝管理员下单
+// 管理员无需购买套餐，整页对含 POST 的所有请求直接挡回，避免权限组/到期时间被改乱
 if (isAdmin($user)) {
     flash('error', '管理员账号无需购买套餐。');
     header('Location: dashboard.php');
@@ -54,9 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'pay_type' => $payType,
             ]);
 
-            // 不能在这里直接 302 到外部网关：本站 CSP 的 form-action 为 'self'，
-            // Chrome / Safari 会把「表单 POST → 跨站重定向」一并拦截，表现为点击后毫无反应。
-            // 改为同源 302 到本页的收银台过渡页，由页面自身的脚本导航前往网关（导航不受 form-action 约束）。
+            // CSP form-action='self' 会拦截「表单 POST → 跨站重定向」，故改为同源 302 到收银台过渡页，由页面脚本导航前往网关
             header('Location: pay.php?order=' . rawurlencode((string) $order['order_no']) . '&checkout=1');
             exit;
         }
@@ -96,6 +93,7 @@ $payConfigured = Epay::configured();
 
 $isPremium = isPremiumUser($user);
 $quotaBytes = userQuotaBytes($user);
+$usedBytes = userUsedBytes($userId);
 $fileLimit = userSingleFileLimit($user);
 
 $focusOrderNo = trim((string) ($_GET['order'] ?? ''));
@@ -106,13 +104,9 @@ $orderStatement = Database::connection()->prepare(
 $orderStatement->execute(['user_id' => $userId]);
 $orders = $orderStatement->fetchAll();
 
-/** 当前套餐状态文案。 */
 $statusText = premiumStatusText($user);
 
-/**
- * 收银台过渡页：下单成功后本页会带上 checkout=1 重新加载，
- * 这里按订单记录重新拼装提单地址，交给页面脚本跳转（订单号来自 URL，但只认本人在待支付状态下的订单）。
- */
+// 收银台过渡页：按订单记录重拼提单地址交给页面脚本跳转（订单号来自 URL，但只认本人在待支付状态下的订单）
 $checkoutUrl = '';
 $checkoutOrder = null;
 if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
@@ -137,7 +131,7 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>会员套餐 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=24"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>会员套餐 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=31"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>"<?= $checkoutUrl !== '' ? ' data-checkout-url="' . e($checkoutUrl) . '"' : '' ?>>
     <aside class="drive-sidebar">
         <a class="brand" href="dashboard.php"><span class="brand-mark">N</span><span>Notion Drive</span></a>
@@ -147,6 +141,9 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
             <a href="account.php"><span>◍</span>账户管理</a>
             <a class="active" href="pay.php"><span>★</span>会员套餐</a>
         </nav>
+        <?= sidebarStorageHtml($user) ?>
+        <?= sidebarIcpHtml() ?>
+        <?= sidebarPoliceHtml() ?>
         <div class="account-menu">
             <?= avatarHtml($user) ?>
             <div><strong><?= e($user['username']) ?></strong><small><?= isAdmin($user) ? '管理员' : e((string) ($user['group_name'] ?? '用户')) ?></small></div>
@@ -253,7 +250,8 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
             <?php endif; ?>
         </section>
     </main>
+    <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=14" defer></script>
+    <script src="assets/app.js?v=15" defer></script>
 </body>
 </html>

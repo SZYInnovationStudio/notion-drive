@@ -33,8 +33,7 @@ try {
     }
 
     $user = Auth::user();
-    // 命中「邮箱已被占用」时不发信也不报错，只回统一成功文案：
-    // 否则该接口（未登录、无验证码）会变成一个廉价的邮箱枚举接口
+    // 命中「邮箱已被占用」时不发信也不报错，只回统一成功文案，避免本接口沦为邮箱枚举入口
     $shouldSend = true;
     if ($purpose === 'register') {
         if (!registrationEnabled()) {
@@ -61,8 +60,7 @@ try {
     }
 
     if ($shouldSend) {
-        // 发送频次由 Verification::issue() 在数据库层按「邮箱冷却 + 来源 IP 上限」控制，
-        // 不再使用会话级计数（清掉 Cookie 即可绕过）
+        // 发送频次由 Verification::issue() 在数据库层按「邮箱冷却 + 来源 IP 上限」控制
         $code = Verification::issue($email, $purpose);
         try {
             Mailer::fromConfig()->send(
@@ -71,8 +69,7 @@ try {
                 "你的验证码是：{$code}\n\n验证码 10 分钟内有效，请勿转发或告知他人。"
             );
         } catch (Throwable $exception) {
-            // 邮件没发出去，用户手里就没有验证码：回滚刚签发的记录，
-            // 否则 60 秒冷却会把用户挡在门外，只能干等
+            // 邮件没发出去用户就拿不到验证码：必须回滚刚签发的记录，否则 60 秒冷却会把用户挡在门外
             Verification::discard($email, $purpose);
             throw $exception;
         }

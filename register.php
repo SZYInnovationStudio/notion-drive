@@ -80,8 +80,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $notionSource = 'own';
         }
 
-        // 选择自有账户时注册即绑定：Token 必须能读到该父页面，否则不建号；
-        // 选择官方账户时暂不绑定，购买高级用户套餐后由系统自动分配官方账户
+        // 自有账户注册即绑定（Token 必须能读到父页面，否则不建号）；官方账户待购买高级套餐后由系统分配
         if ($notionSource === 'own') {
             $binding = assertNotionBinding($notionToken, $notionParentPage);
             $notionTokenEncrypted = Security::encrypt((string) $binding['token'], (string) appConfig()['app_key']);
@@ -120,8 +119,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: dashboard.php');
         exit;
     } catch (Throwable $exception) {
-        // 数据库原始报错可能包含 SQL 与服务器路径，不直接回显；NotionApiException 继承 RuntimeException，
-        // 绑定校验的提示需要继续展示给用户
+        // 数据库原始报错可能含 SQL 与服务器路径，不直接回显；RuntimeException 的提示需继续展示给用户
         $error = match (true) {
             $exception instanceof PDOException => (int) $exception->getCode() === 23000
                 ? '用户名或邮箱已被占用，请更换后重试。'
@@ -138,7 +136,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>注册 · Notion Drive</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <link rel="stylesheet" href="assets/app.css?v=24">
+    <link rel="stylesheet" href="assets/app.css?v=31">
 </head>
 <body class="login-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <main class="login-layout">
@@ -181,7 +179,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <p class="login-note"><span>◆</span> 已有账号？<a href="index.php">返回登录</a></p>
         </section>
     </main>
-    <script src="assets/app.js?v=14" defer></script>
+    <?= siteCreditHtml() ?>
+    <script src="assets/app.js?v=15" defer></script>
     <?php if ($emailRequired): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>
 </html>

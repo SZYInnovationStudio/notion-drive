@@ -43,9 +43,7 @@ final class Database
             throw new RuntimeException('无法连接数据库，请检查配置。', 0, $exception);
         }
 
-        // 会话时区与 PHP 对齐：premium_expires_at 等时间由 PHP 的 date() 写入、又由 strtotime() 比较，
-        // 而 orders.created_at 等由 MySQL 的 CURRENT_TIMESTAMP 写入、同样交给 PHP 格式化显示。
-        // 两边时区不一致时，页面上的时间与到期判断会整体偏移数小时
+        // 会话时区与 PHP 对齐：时间分别由 PHP 的 date() 与 MySQL 的 CURRENT_TIMESTAMP 写入，时区不一致会使页面时间与到期判断整体偏移
         try {
             self::$connection->exec("SET time_zone = '" . self::utcOffset() . "'");
         } catch (PDOException $exception) {

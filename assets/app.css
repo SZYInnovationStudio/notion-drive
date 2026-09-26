@@ -13,7 +13,6 @@
     --danger-soft: #fff1f1;
     --success: #197647;
     --radius: 12px;
-    /* 表单控件统一高度与圆角：输入框、下拉框、按钮全部对齐，避免同行高低不齐 */
     --control-h: 44px;
     --control-radius: 9px;
     --shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px rgba(16,24,40,.06);
@@ -32,12 +31,11 @@ button { cursor: pointer; }
 .brand-mark { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: #fff; background: #22262b; font: 750 16px/1 Georgia, serif; }
 .avatar { flex: 0 0 auto; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; background: #e9edf2; color: #394150; font-size: .85rem; font-weight: 700; }
 
-/* Login and installer */
-.login-shell, .install-shell { background: #eef1f4; }
+.login-shell, .install-shell { display: flex; flex-direction: column; background: #eef1f4; }
 .ambient, .orbital-art { display: none; }
 .login-layout, .install-layout { width: min(1120px, calc(100% - 40px)); min-height: 100vh; margin: auto; display: grid; grid-template-columns: .9fr 1.1fr; align-items: center; gap: 80px; padding: clamp(20px, 4vh, 48px) 0; }
+.login-shell .login-layout, .install-shell .install-layout { min-height: auto; flex: 1; margin: 0 auto; }
 .login-copy, .install-intro { min-height: min(560px, calc(100vh - 96px)); display: flex; flex-direction: column; justify-content: space-between; }
-/* 登录页左侧文案整体垂直居中（品牌与标题成组居中，不再一上一下） */
 .login-copy { justify-content: center; gap: clamp(32px, 7vh, 84px); }
 .login-copy h1, .install-intro h1 { margin: 20px 0 16px; font-size: clamp(2.8rem, 4.9vw, 4.6rem); line-height: 1.06; letter-spacing: -.06em; font-weight: 650; }
 .login-copy h1 em, .install-intro h1 em { color: var(--primary); font-style: normal; }
@@ -61,7 +59,6 @@ label small { color: var(--muted); font-size: .72rem; }
 input, select { width: 100%; min-width: 0; height: var(--control-h); padding: 0 12px; color: var(--text); background: #fff; border: 1px solid var(--line-strong); border-radius: var(--control-radius); outline: none; transition: border-color .15s, box-shadow .15s; }
 input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(23,105,224,.11); }
 input::placeholder { color: #a2a8b0; }
-/* 勾选框与单选钮不参与控件高度，单独固定尺寸；文件选择框内的原生按钮也统一高度 */
 input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; min-width: 0; padding: 0; border: 0; border-radius: 4px; accent-color: var(--primary); }
 input[type="file"] { height: var(--control-h); padding: 5px 10px; font-size: .8rem; }
 input[type="file"]::file-selector-button { height: 32px; margin-right: 10px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-soft); color: #404854; font: inherit; font-size: .8rem; cursor: pointer; }
@@ -94,8 +91,7 @@ fieldset legend { margin-bottom: 10px; }
 .field-grid.two { grid-template-columns: 1fr 1fr; }
 .field-grid.three { grid-template-columns: 1.3fr .65fr 1.25fr; }
 
-/* Main drive shell */
-.drive-shell { padding-left: 228px; background: var(--bg); }
+.drive-shell { padding-left: 228px; background: var(--bg); display: flex; flex-direction: column; }
 .drive-sidebar { position: fixed; z-index: 20; inset: 0 auto 0 0; width: 228px; padding: 24px 16px 18px; display: flex; flex-direction: column; background: #fff; border-right: 1px solid var(--line); }
 .drive-sidebar .brand { padding: 0 8px; }
 .drive-nav { display: grid; gap: 4px; margin-top: 42px; }
@@ -132,9 +128,16 @@ fieldset legend { margin-bottom: 10px; }
 .account-menu strong { font-size: .8rem; overflow: hidden; text-overflow: ellipsis; }
 .account-menu small { color: var(--muted); font-size: .68rem; }
 .account-menu button { border: 0; background: transparent; color: var(--muted); font-size: .72rem; padding: 5px; }
-/* 侧栏没有空间用量区块时（如管理后台、运行日志），把账号信息固定在底部 */
-.drive-nav + .account-menu { margin-top: auto; }
-.drive-main { width: min(1240px, calc(100% - 64px)); margin: 0 auto; padding: 34px 0 64px; }
+.sidebar-icp, .sidebar-police { margin: 0; padding: 4px 10px 0; color: var(--muted); font-size: .7rem; line-height: 1.6; text-align: center; word-break: break-all; }
+.sidebar-icp + .sidebar-police { padding-top: 4px; }
+.sidebar-icp:has(+ .account-menu), .sidebar-police:has(+ .account-menu) { padding-bottom: 12px; }
+.sidebar-icp a:hover, .sidebar-police a:hover { text-decoration: underline; }
+.site-credit { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px 14px; margin-top: auto; padding: 18px 16px 24px; color: var(--muted); font-size: .75rem; text-align: center; }
+.site-credit a { color: var(--primary); }
+.site-credit a:hover { text-decoration: underline; }
+/* 有侧边栏的页面在桌面端由侧栏展示备案号，页脚只留署名；移动端侧栏隐藏，改由页脚展示 */
+body.drive-shell .site-credit .icp-license, body.drive-shell .site-credit .police-license { display: none; }
+.drive-main { width: min(1240px, calc(100% - 64px)); margin: 0 auto; padding: 34px 0 64px; flex: 1 0 auto; }
 .drive-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 26px; }
 .drive-header p { margin: 0 0 3px; color: var(--muted); font-size: .77rem; }
 .drive-header h1 { margin: 0; font-size: 1.8rem; letter-spacing: -.03em; }
@@ -168,6 +171,8 @@ fieldset legend { margin-bottom: 10px; }
 .queue-status { max-width: 300px; text-align: right; }
 .queue-item.failed .queue-status { color: var(--danger); white-space: normal; word-break: break-word; line-height: 1.45; }
 .queue-item.complete .queue-status { color: var(--success); }
+.queue-retry { flex: none; min-height: 30px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: var(--control-radius); background: #fff; color: var(--text); font-size: .74rem; cursor: pointer; }
+.queue-retry:hover { border-color: var(--primary); color: var(--primary); }
 .progress-track { width: 100%; height: 3px; margin-top: 6px; appearance: none; border: 0; }
 .progress-track::-webkit-progress-bar { background: #edf0f3; }
 .progress-track::-webkit-progress-value { background: var(--primary); }
@@ -200,7 +205,6 @@ fieldset legend { margin-bottom: 10px; }
 .empty-state h3 { margin: 8px 0 2px; font-size: .9rem; }
 .empty-state p { margin: 0; color: var(--muted); font-size: .75rem; }
 
-/* Admin */
 .admin-main { max-width: 1320px; }
 .admin-panel { margin-bottom: 22px; padding: 22px; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); }
 /* 「管理文件」携带 #user-files 跳转时，高亮对应面板并留出滚动间距，避免管理员找不到落点 */
@@ -209,27 +213,21 @@ fieldset legend { margin-bottom: 10px; }
 .panel-title p { margin: 3px 0 0; color: var(--muted); font-size: .74rem; }
 .panel-title > a { color: var(--primary); font-size: .75rem; }
 .create-user-row { display: grid; grid-template-columns: 1.1fr 1.1fr .7fr .8fr auto auto; gap: 10px; align-items: end; padding: 17px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 9px; }
-/* 只有一两个字段的行（如手动开通会员、设置到期时间）不再套用六列模板，避免控件被拉得过宽 */
 .create-user-row.slim { grid-template-columns: minmax(0, 300px) auto; justify-content: start; }
-/* 表单末尾的操作按钮独占一行并右对齐，与上方控件同高 */
 .form-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 2px; }
-/* 多个复选框单独占一行，避免与输入框挤在同一行时高低不齐 */
 .checkbox-row { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 26px; }
 .checkbox { display: flex; align-items: center; gap: 7px; min-height: var(--control-h); color: #4c5562; font-size: .76rem; white-space: nowrap; }
 .checkbox input { flex: 0 0 auto; }
 .admin-user-list { display: grid; margin-top: 12px; }
 .admin-user-row { display: grid; grid-template-columns: minmax(190px,1.3fr) minmax(125px,.9fr) 100px auto auto auto auto; gap: 9px; align-items: end; padding: 12px 2px; border-bottom: 1px solid var(--line); }
 .admin-user-row:last-child { border-bottom: 0; }
-/* 分配主/备用账户的行只有两个下拉框与两个按钮，单独指定列数 */
 .admin-user-row.assign-row { grid-template-columns: minmax(0, 300px) minmax(0, 300px) auto auto; justify-content: start; }
 .user-identity { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .user-identity > div { min-width: 0; flex: 1; display: grid; }
 .user-identity > input { flex: 1; }
 .user-identity input:not([type="checkbox"]) { padding: 0 10px; font-weight: 650; }
 .user-identity small { margin-top: 3px; color: var(--muted); font-size: .67rem; }
-/* 用户行的说明文字独占一行铺满整行，让用户名输入框能与同排其他控件底边对齐 */
 .user-meta { grid-column: 1 / -1; margin-top: -3px; color: var(--muted); font-size: .67rem; }
-/* 用户行改为折叠：默认只显示头像、用户名与概览，展开「编辑」后才出现可修改的控件 */
 .admin-user-row.user-row-fold { display: block; gap: 0; }
 .admin-user-row.user-row-fold > details > summary { display: flex; align-items: center; gap: 10px; cursor: pointer; list-style: none; }
 .admin-user-row.user-row-fold > details > summary::-webkit-details-marker { display: none; }
@@ -237,23 +235,17 @@ fieldset legend { margin-bottom: 10px; }
 .user-row-toggle { flex: 0 0 auto; }
 .admin-user-row.user-row-fold details[open] .fold-open,
 .admin-user-row.user-row-fold details:not([open]) .fold-close { display: none; }
-/* 展开区控件按可用宽度自动排布，操作按钮独占一行 */
 .user-row-editor-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; align-items: end; margin-top: 11px; }
 .user-row-editor-body > .row-actions { grid-column: 1 / -1; }
-/* 用户行右侧操作：「开通订阅」与「编辑 / 收起」并排 */
 .user-row-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
 .user-row-actions button.text-action { font-family: inherit; cursor: pointer; }
-/* 开通面板：点「开通订阅」后在行内展开时长选择，确认后才提交 */
 .user-row-grant { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin-top: 11px; padding: 12px 14px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 9px; }
 .user-row-grant[hidden] { display: none; }
 .user-row-grant label { min-width: 190px; }
-/* 用户搜索框紧贴用户列表，输入即时筛选 */
 .log-filters.user-search { margin: 12px 0 0; }
 .log-filters.user-search input { min-width: 240px; }
 /* 搜索过滤时隐藏不匹配的用户行（用类而不是 hidden，避免被行内的 display 覆盖） */
 .admin-user-row.is-filtered-out { display: none !important; }
-/* 权限组下的成员清单折叠：默认收起，展开后列出组内用户。
-   该行是组行的页脚，靠右对齐与「保存」同侧，避免文字孤零零贴在左栏（头像下方）显得不属于本组 */
 .group-members { margin: 2px 2px 12px; }
 .group-members > summary { display: flex; align-items: center; justify-content: flex-end; gap: 8px; cursor: pointer; list-style: none; }
 .group-members > summary::-webkit-details-marker { display: none; }
@@ -267,16 +259,13 @@ fieldset legend { margin-bottom: 10px; }
 .text-action:hover, .save-action:hover, .delete-action:hover { background: var(--surface-soft); }
 .save-action { color: var(--primary); border-color: #c8dcf8; }
 .delete-action { color: var(--danger); border-color: #f0caca; }
-/* 行内多个操作按钮（如官方账户的保存 / 测试连接）成组排列，与同排按钮同高 */
 .row-actions { display: inline-flex; align-items: center; gap: 6px; justify-self: start; }
 .connection-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px 14px; align-items: end; }
 .status-badge { padding: 4px 8px; border-radius: 999px; color: var(--success) !important; background: #edf8f1; }
 .compact-empty { padding: 30px; color: var(--muted); font-size: .78rem; }
-/* 权限组行比用户行多一个「单文件上限」与「等级」，单独指定列数 */
 .create-user-row.create-group-row { grid-template-columns: 1fr .8fr .8fr .6fr auto auto; }
 .admin-user-row.group-row { grid-template-columns: minmax(190px,1.3fr) minmax(125px,.9fr) .8fr .8fr .6fr auto auto auto; }
 
-/* Account */
 .avatar img { display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
 .avatar.large { width: 88px; height: 88px; font-size: 2rem; }
 .avatar-editor { display: flex; align-items: flex-start; gap: 20px; }
@@ -296,7 +285,6 @@ fieldset legend { margin-bottom: 10px; }
 .captcha-refresh:hover { background: var(--surface-soft); }
 .login-note a { color: var(--primary); font-weight: 650; }
 
-/* Logs */
 .log-file-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .log-file-chip { display: inline-flex; align-items: baseline; gap: 8px; padding: 9px 12px; color: #404854; background: #fff; border: 1px solid var(--line); border-radius: 9px; font-size: .78rem; }
 .log-file-chip:hover { background: var(--surface-soft); border-color: var(--line-strong); }
@@ -316,11 +304,10 @@ fieldset legend { margin-bottom: 10px; }
 .log-warning { color: #ffd79a; }
 .log-info { color: #a8d5ff; }
 
-.toast { position: fixed; z-index: 100; right: 24px; bottom: 24px; max-width: 360px; padding: 11px 14px; border-radius: 9px; background: #24292f; color: #fff; box-shadow: var(--shadow); font-size: .8rem; opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity .18s, transform .18s; }
+.toast { position: fixed; z-index: 300; right: 24px; bottom: 24px; max-width: 360px; padding: 11px 14px; border-radius: 9px; background: #24292f; color: #fff; box-shadow: var(--shadow); font-size: .8rem; opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity .18s, transform .18s; }
 .toast.visible { opacity: 1; transform: translateY(0); }
 .toast.error { background: #a83232; }
 
-/* 上传重名确认弹窗 */
 .duplicate-dialog { width: min(460px, calc(100% - 32px)); padding: 22px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
 .duplicate-dialog::backdrop { background: rgba(17, 22, 29, .42); }
 .duplicate-dialog h2 { margin: 0 0 6px; font-size: 1.05rem; letter-spacing: -.01em; }
@@ -329,7 +316,8 @@ fieldset legend { margin-bottom: 10px; }
 .duplicate-name strong { display: block; margin-top: 3px; color: var(--text); word-break: break-all; }
 .duplicate-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 
-/* 自定义确认弹窗：替代浏览器原生 confirm，样式与后台弹窗保持一致 */
+/* 弹窗打开期间锁住背景滚动：否则在移动端滑动遮罩会把后面的页面一起带着滚 */
+body.has-overlay { overflow: hidden; }
 .confirm-overlay { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 20px; background: rgba(17, 22, 29, .42); }
 .confirm-dialog { width: min(420px, 100%); padding: 22px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
 .confirm-dialog h2 { margin: 0 0 8px; font-size: 1.05rem; letter-spacing: -.01em; }
@@ -338,7 +326,6 @@ fieldset legend { margin-bottom: 10px; }
 .confirm-actions .confirm-danger { display: inline-flex; align-items: center; justify-content: center; min-height: var(--control-h); padding: 0 18px; border: 1px solid transparent; border-radius: var(--control-radius); background: var(--danger); color: #fff; font-size: .82rem; }
 .confirm-actions .confirm-danger:hover { background: #b83434; }
 
-/* Payment */
 .plan-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
 .plan-summary > div { display: grid; gap: 4px; padding: 12px 14px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 10px; }
 .plan-summary span { color: var(--muted); font-size: .72rem; }
@@ -369,11 +356,9 @@ fieldset legend { margin-bottom: 10px; }
 .order-actions { display: flex; justify-content: flex-end; }
 .status-badge.pending { color: #8a6100 !important; background: #fdf4e3; }
 .status-badge.closed { color: var(--muted) !important; background: var(--surface-soft); }
-/* 被作废的订单用危险色提示；管理员人工授权的订单用主色，与线上支付的成功色区分 */
 .status-badge.void { color: var(--danger) !important; background: var(--danger-soft); }
 .status-badge.granted { color: var(--primary) !important; background: var(--primary-soft); }
 
-/* Notion 账户来源 */
 .source-fieldset { margin: 0; padding: 0; border: 0; display: grid; gap: 10px; }
 .source-choice { display: flex; flex-wrap: wrap; gap: 10px; }
 .source-option { display: inline-flex; align-items: center; gap: 8px; min-height: var(--control-h); padding: 0 14px; background: #fff; border: 1px solid var(--line-strong); border-radius: var(--control-radius); font-size: .8rem; cursor: pointer; }
@@ -417,7 +402,6 @@ fieldset legend { margin-bottom: 10px; }
     input[type="file"] { height: auto; padding: 6px 10px; }
     input[type="file"]::file-selector-button { height: 40px; }
 
-    /* 登录 / 安装页 */
     .login-layout, .install-layout { width: min(100% - 24px, 540px); grid-template-columns: 1fr; gap: 26px; padding: 24px 0; }
     .login-copy, .install-intro { min-height: 0; gap: 30px; }
     .login-copy h1, .install-intro h1 { font-size: 2.4rem; }
@@ -428,13 +412,12 @@ fieldset legend { margin-bottom: 10px; }
     .card-heading h2 { font-size: 1.45rem; }
     .field-grid.two, .field-grid.three { grid-template-columns: 1fr; }
     .captcha-field { grid-template-columns: minmax(0, 1fr) auto; }
-    /* 验证码图片独占一行，避免与输入框、换一张按钮挤在一起 */
     .captcha-field img { grid-column: 1 / -1; justify-self: start; }
 
-    /* 底部导航：安全区内边距 + 横向可滚动，导航项过多时不再被挤出屏幕 */
+    /* 底部导航：安全区内边距 + 横向可滚动 */
     .drive-shell { padding-left: 0; padding-bottom: calc(84px + env(safe-area-inset-bottom)); }
     .drive-sidebar { inset: auto 8px calc(8px + env(safe-area-inset-bottom)) 8px; width: auto; height: 60px; padding: 8px; flex-direction: row; align-items: center; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
-    .drive-sidebar .brand, .sidebar-storage { display: none; }
+    .drive-sidebar .brand, .sidebar-storage, .sidebar-icp, .sidebar-police { display: none; }
     .drive-nav { display: flex; flex: 1; min-width: 0; gap: 4px; margin: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; -ms-overflow-style: none; }
     .drive-nav::-webkit-scrollbar { display: none; }
     .drive-nav a { flex: 0 0 auto; align-items: center; min-height: 44px; padding: 0 12px; gap: 7px; border-radius: 9px; font-size: .84rem; white-space: nowrap; }
@@ -444,14 +427,17 @@ fieldset legend { margin-bottom: 10px; }
     .nav-group { display: none; }
     .admin-tabs { display: flex; gap: 6px; margin: -6px 0 16px; padding-bottom: 2px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; -ms-overflow-style: none; }
     .admin-tabs::-webkit-scrollbar { display: none; }
-    .admin-tabs a { flex: 0 0 auto; padding: 8px 13px; border: 1px solid var(--line); border-radius: 999px; color: #596170; font-size: .8rem; white-space: nowrap; }
+    /* 分区条是移动端的主要切换入口，触摸目标补足到 44px */
+    .admin-tabs a { flex: 0 0 auto; display: inline-flex; align-items: center; min-height: 44px; padding: 8px 13px; border: 1px solid var(--line); border-radius: 999px; color: #596170; font-size: .8rem; white-space: nowrap; }
     .admin-tabs a.active { border-color: var(--primary); background: var(--primary-soft); color: #1255b8; font-weight: 650; }
     .account-menu { flex: none; margin-top: 0; margin-left: 8px; padding: 0 0 0 8px; border-top: 0; border-left: 1px solid var(--line); }
     /* 移动端隐藏用户名与头像，保留可点击的「退出」按钮 */
     .account-menu > div, .account-menu .avatar { display: none; }
+    /* 底部导航放不下 ICP，改由页面页脚展示（桌面端反过来：侧栏展示、页脚隐藏） */
+    body.drive-shell .site-credit .icp-license, body.drive-shell .site-credit .police-license { display: inline; }
+    .site-credit { gap: 6px 10px; padding: 14px 4px 4px; }
     .account-menu button { flex: none; min-height: 44px; white-space: nowrap; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 9px; color: #4c5562; font-size: .78rem; }
 
-    /* 主内容区 */
     .drive-main { width: min(100% - 24px, 680px); padding: 20px 0 24px; }
     .drive-header { flex-direction: column; align-items: stretch; gap: 14px; margin-bottom: 20px; }
     .drive-header h1 { font-size: 1.5rem; }
@@ -461,7 +447,6 @@ fieldset legend { margin-bottom: 10px; }
     .file-section-head > div { flex-wrap: wrap; }
     .panel-title > a, .panel-title > span { align-self: flex-start; }
 
-    /* 上传卡片 */
     .upload-card { padding: 16px; gap: 16px; }
     .drop-zone { min-height: 160px; }
     .drop-zone button { min-height: 44px; padding: 0 18px; }
@@ -469,7 +454,7 @@ fieldset legend { margin-bottom: 10px; }
     .queue-item { flex-wrap: wrap; row-gap: 6px; }
     .queue-status { flex: 1 1 100%; max-width: none; text-align: left; }
 
-    /* 表格改卡片式：隐藏表头，每行成为一张卡片，单元格用 data-label 显示字段名 */
+    /* 移动端表格卡片式：单元格用 data-label 显示字段名 */
     .file-table-wrap { overflow: visible; background: transparent; border: 0; border-radius: 0; }
     .file-table { display: block; width: 100%; font-size: .82rem; }
     .file-table thead { display: none; }
@@ -478,7 +463,6 @@ fieldset legend { margin-bottom: 10px; }
     .file-table tbody tr:hover { background: #fff; }
     .file-table td { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 0; border-bottom: 1px dashed #edf0f2; color: #596170; white-space: normal; text-align: right; word-break: break-word; }
     .file-table td::before { content: attr(data-label); flex: 0 0 auto; color: var(--muted); font-size: .72rem; font-weight: 650; text-align: left; }
-    /* 首列作为卡片标题独占整行，操作列铺满整行，均不显示字段名 */
     .file-table td:first-child { display: block; padding: 0 0 10px; margin-bottom: 2px; border-bottom: 1px solid var(--line); text-align: left; }
     .file-table td:first-child::before, .file-table td:last-child::before { display: none; }
     .file-table td:last-child { display: block; padding: 11px 0 0; border-bottom: 0; }
@@ -488,11 +472,9 @@ fieldset legend { margin-bottom: 10px; }
     .file-actions { flex-direction: row; flex-wrap: wrap; align-items: stretch; width: 100%; gap: 8px; }
     .file-actions a, .file-actions button { flex: 1 1 0; min-width: 0; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--control-radius); font-size: .78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .file-actions .inline-form { flex: 1 1 0; min-width: 0; }
-    /* 订单表操作项较多（含表单按钮），小屏按两列排布 */
     .file-actions:has(.inline-form) a, .file-actions:has(.inline-form) .inline-form { flex: 1 1 calc(50% - 4px); }
     .empty-state { padding: 40px 16px; }
 
-    /* 管理后台表单：小屏一律单列，按钮独占整行便于点按 */
     .create-user-row, .connection-form { grid-template-columns: 1fr; }
     .create-user-row { padding: 14px; }
     .create-user-row.slim { grid-template-columns: 1fr; }
@@ -503,15 +485,12 @@ fieldset legend { margin-bottom: 10px; }
     .admin-user-row, .admin-user-row.assign-row, .admin-user-row.group-row { grid-template-columns: 1fr; gap: 10px; padding: 16px 0; }
     .admin-user-row .user-identity { grid-column: 1 / -1; }
     .admin-user-row .user-meta { grid-column: 1 / -1; }
-    /* 窄屏下开通/作废控件平铺：下拉框与按钮各占满整行更易点按 */
-    /* 窄屏下用户行的编辑区单列排布，操作按钮整行平铺更易点按 */
     .admin-user-row.user-row-fold .user-row-editor-body { grid-template-columns: 1fr; }
     .admin-user-row .checkbox { min-height: 32px; }
     .admin-user-row .row-actions { justify-self: stretch; }
     .admin-user-row .row-actions > * { flex: 1; }
     .admin-user-row > .text-action, .admin-user-row > .save-action, .admin-user-row > .delete-action { width: 100%; }
 
-    /* 账户页 */
     .account-form, .account-form.password, .account-form.email, .account-form.notion { grid-template-columns: 1fr; }
     .avatar-editor { flex-direction: column; gap: 16px; }
     .avatar-editor > .avatar { align-self: center; }
@@ -522,13 +501,11 @@ fieldset legend { margin-bottom: 10px; }
     .subscribe-actions .field-hint { flex: 1 1 auto; min-width: 0; }
     .subscribe-actions > a, .subscribe-actions > button { width: 100%; }
 
-    /* 订单列表 */
     .order-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 8px; }
     .order-main { grid-column: 1 / -1; }
     .order-actions { grid-column: 1 / -1; justify-content: flex-start; }
     .order-actions .secondary-button { width: 100%; }
 
-    /* 运行日志 */
     .log-file-list { gap: 6px; }
     .log-file-chip { min-height: 44px; align-items: center; }
     .log-quick { flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -537,14 +514,12 @@ fieldset legend { margin-bottom: 10px; }
     .log-filters input, .log-filters select { width: 100%; min-width: 0; }
     .log-view { max-height: 60vh; padding: 12px; font-size: 11.5px; }
 
-    /* 提示条与公告 */
     .alert-head, .alert-list li { flex-wrap: wrap; }
     .alert-head button, .alert-list button { min-height: 44px; padding: 0 4px; }
 
-    /* 横幅提示改为贴底并抬到底部导航之上，避免被导航遮挡 */
+    /* 横幅提示贴底并抬到底部导航之上，避免被导航遮挡 */
     .toast { left: 12px; right: 12px; bottom: calc(84px + env(safe-area-inset-bottom)); max-width: none; }
 
-    /* 上传重名确认弹窗 */
     .duplicate-dialog { padding: 18px; max-height: 86vh; overflow: auto; }
     .duplicate-actions { flex-direction: column; gap: 8px; }
     .duplicate-actions > * { width: 100%; }

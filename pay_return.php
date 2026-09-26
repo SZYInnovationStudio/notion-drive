@@ -10,22 +10,34 @@ use NotionDrive\Database;
 $user = Auth::requireLogin();
 $userId = (int) $user['id'];
 
-// 易支付的 return_url 不支持带参数，因此回跳后由本页自行定位订单并向网关对账
-$statement = Database::connection()->prepare(
-    'SELECT * FROM orders WHERE user_id = :user_id ORDER BY id DESC LIMIT 5'
-);
-$statement->execute(['user_id' => $userId]);
-$orders = $statement->fetchAll();
-
+// 用 out_trade_no 精确定位本次订单，避免多笔待支付时对错账；定位仅用于找订单，真实性由 reconcileOrder() 主动查单确认
+$candidateNo = trim((string) ($_GET['out_trade_no'] ?? ''));
 $target = null;
-foreach ($orders as $order) {
-    // 优先处理最近一笔待支付订单；没有待支付订单时回落到最新一笔，用于展示最终状态
-    if ((string) $order['status'] === 'pending') {
-        $target = $order;
-        break;
+if ($candidateNo !== '') {
+    $statement = Database::connection()->prepare(
+        'SELECT * FROM orders WHERE user_id = :user_id AND order_no = :order_no LIMIT 1'
+    );
+    $statement->execute(['user_id' => $userId, 'order_no' => $candidateNo]);
+    $found = $statement->fetch();
+    if (is_array($found)) {
+        $target = $found;
     }
-    if ($target === null) {
-        $target = $order;
+}
+
+// 回跳参数缺失或不匹配时退化为「最近 5 笔订单」：优先最近一笔待支付，否则回落到最新一笔用于展示状态
+if ($target === null) {
+    $statement = Database::connection()->prepare(
+        'SELECT * FROM orders WHERE user_id = :user_id ORDER BY id DESC LIMIT 5'
+    );
+    $statement->execute(['user_id' => $userId]);
+    foreach ($statement->fetchAll() as $order) {
+        if ((string) $order['status'] === 'pending') {
+            $target = $order;
+            break;
+        }
+        if ($target === null) {
+            $target = $order;
+        }
     }
 }
 

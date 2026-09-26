@@ -19,8 +19,6 @@ $remainingBytes = $quotaBytes === null ? null : max(0, $quotaBytes - $usedBytes)
 $needsEmail = !mayUpload($user);
 $uploadBlocked = uploadBlockedReason($user);
 $notionReady = notionSourceUsable($user);
-$usagePercent = $quotaBytes && $quotaBytes > 0 ? min(100, (int) round($usedBytes / $quotaBytes * 100)) : 0;
-// 文件列表分页：文件多了以后不能一次全查出来
 $perPage = 50;
 $countStatement = Database::connection()->prepare(
     "SELECT COUNT(*) FROM uploads WHERE user_id = :user_id AND status = 'active'"
@@ -38,7 +36,6 @@ $statement = Database::connection()->prepare(
 $statement->execute(['user_id' => $user['id']]);
 $files = $statement->fetchAll();
 $replicaSources = uploadReplicaSources(array_column($files, 'id'));
-$planLabel = premiumShortStatus($user);
 $premiumNotice = premiumNotice($user);
 ?>
 <!doctype html>
@@ -47,7 +44,7 @@ $premiumNotice = premiumNotice($user);
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>我的文件 · Notion Drive</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <link rel="stylesheet" href="assets/app.css?v=24">
+    <link rel="stylesheet" href="assets/app.css?v=31">
 </head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>" data-limit="<?= $singleLimit ?>" data-remaining="<?= $remainingBytes === null ? '' : $remainingBytes ?>">
     <aside class="drive-sidebar">
@@ -58,14 +55,9 @@ $premiumNotice = premiumNotice($user);
             <a href="account.php"><span>◍</span>账户管理</a>
             <?php if (!isAdmin($user)): ?><a href="pay.php"><span>★</span>会员套餐</a><?php endif; ?>
         </nav>
-        <div class="sidebar-storage">
-            <div><span>已用空间</span><strong><?= e(formatBytes($usedBytes)) ?></strong></div>
-            <?php if ($quotaBytes !== null): ?><progress max="100" value="<?= $usagePercent ?>"></progress><small>共 <?= e(formatBytes($quotaBytes)) ?></small><?php else: ?><small>不限总容量</small><?php endif; ?>
-            <?php if (!isAdmin($user)): ?>
-            <div><span>会员套餐</span><strong><?= e($planLabel) ?></strong></div>
-            <small><a href="pay.php"><?= isPremiumUser($user) ? '续费 / 延长' : '升级高级用户' ?></a></small>
-            <?php endif; ?>
-        </div>
+        <?= sidebarStorageHtml($user) ?>
+        <?= sidebarIcpHtml() ?>
+        <?= sidebarPoliceHtml() ?>
         <div class="account-menu">
             <?= avatarHtml($user) ?>
             <div><strong><?= e($user['username']) ?></strong><small><?= isAdmin($user) ? '管理员' : e((string) ($user['group_name'] ?? '用户')) ?></small></div>
@@ -153,7 +145,8 @@ $premiumNotice = premiumNotice($user);
             <?php endif; ?>
         </section>
     </main>
+    <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=14" defer></script>
+    <script src="assets/app.js?v=15" defer></script>
 </body>
 </html>

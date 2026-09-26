@@ -9,9 +9,9 @@
    - 条目标题里的时间必须**精确到时分秒**，统一格式 `[YYYY-MM-DD HH:MM:SS]`，**时区固定 UTC+8（北京 / 上海）**，例如 `### [2026-09-26 19:00:53] 标题`。
    - 取时间的可靠来源：改动已提交时用该提交的时间（`git log --date=format:"%Y-%m-%d %H:%M:%S"`，本机即 UTC+8）；未提交时用写日志当下时间；两者都必须按 UTC+8 记录，不要写带时区猜测或只有日期的值。24 小时制。
 2. **每条记录必须写「修改人」，用于区分谁改了什么。**
-   - 人名统一用方括号包裹，如 `[Beibing]`；**当前默认/第一位修改人为 `[Beibing]`**。
-   - 若改动由 AI 代理执行但由某人决策，写成 `[Beibing]`（不在括号里塞 "AI" 之类的词）。
-   - 多人协作时各自具名，例如 `[Beibing]`、`[张三]`；不要留空、不要写"我""作者"。
+   - 人名统一用方括号包裹，如 `[ShiZhongyan]`；**当前默认/第一位修改人为 `[ShiZhongyan]`（Github: ShiZhongyanGH）**。
+   - 若改动由 AI 代理执行但由某人决策，写成 `[ShiZhongyan]`（不在括号里塞 "AI" 之类的词）。
+   - 多人协作时各自具名，例如 `[ShiZhongyan]`、`[张三]`；不要留空、不要写"我""作者"。
 3. 每条记录必须包含三要素：**改了哪些文件、具体行号、目的是什么**。
    - 行号写**改动后的当前行号**，支持 `L88`、`L88-L90` 形式。
    - 删除代码写成「原 Lxx-Lyy 删除」。
@@ -33,9 +33,196 @@
 
 ---
 
+### [2026-09-27 00:55:45] 全库清理记录性 / 臃肿注释，只保留重要功能性注释
+
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
+- 目的：用户要求「将代码库中所有文件中因修改而留下的记录性注释删除，以及臃肿注释全部删除，仅保留部分重要功能性注释」。清理口径经用户确认为**标准力度**（删：改动记录类「原为…/改为…/此前…/已废弃…/不再…/兼容旧版本…」、重述代码类、超过 1~2 行的冗长「为什么」铺陈、只重复函数名/参数类型的 docblock；留：并发/加锁/幂等、安全（路径穿越/CSRF/加密/权限）、外部协议兼容（Notion API / 易支付字段差异）、业务规则（配额/套餐/续费顺延/到期降级/订单状态机）、时序要求、前端非直观行为（移动端断点 / 44px 触摸目标 / 焦点陷阱 / 滚动锁）、Schema 迁移意图）与**全部源文件**范围（根目录页面、`api/`、`src/`、`assets/`、`config/`、`scripts/`、`.dev/`）。
+- 验证：
+  - 改动前把全部 44 个 php/js/css/ps1 源文件快照到 `%TEMP%\nd-cmt-bak`；事后用 PHP `token_get_all` 剥掉 `T_COMMENT` / `T_DOC_COMMENT` / `T_WHITESPACE`（`T_INLINE_HTML` 去掉 HTML 注释并折叠空白）后逐 token 比对代码序列 → 38 个 PHP 文件全部 `OK`，输出 `== ALL PHP CODE-TOKENS MATCH ==`，证明**未改动任何代码 token**。
+  - `C:\php-8.5.9\php.exe -l` 全量扫描 → 0 个语法错误。
+  - `node --check` → `assets/app.js` / `assets/admin.js` / `assets/verify.js` 均 exit=0。
+  - JS/CSS 用 `git diff --no-index`（快照 vs 工作区）逐行复核 → 变更均为「整行注释删除」或「多行注释压缩为一行」，无规则/属性值/字符串/正则/URL 改动；`assets/verify.js`、`config/database.php`、`scripts/dev-start.ps1`、`scripts/dev-stop.ps1` 本身无注释，未改动。
+  - 快照目录与临时校验脚本已删除，仓库未新增文件（`1.md` 为用户未跟踪文件，未处理）。
+- 改动明细（仅删注 / 压缩注，无功能变更）：
+  - `src/helpers.php` — 清理约 80 处（删约 19 处无信息量 docblock + 压缩 14 处业务注释），88026 → 78069 字节；保留并发加锁、结算幂等与「已作废订单不得被回调复活」、续费顺延、到期懒降级、配额与单文件上限、路径穿越、Token 密文容错等注释。
+  - 未改动（现有注释均为功能 / 安全 / 迁移意图类）：`src/Schema.php`、`src/Security.php`、`src/Verification.php`、`src/NotionApiException.php`、`avatar.php`、`logout.php`、`logs.php`、`index.php`、`assets/verify.js`、`config/database.php`。
+  - `src/` 其余：`Auth.php` −1、`bootstrap.php` 压缩 1、`Database.php` 压缩 1、`Epay.php` −1 / 压缩 1、`Logger.php` −6 / 压缩 1、`Mailer.php` −2、`NotionClient.php` −3 / 压缩 1。
+  - 根目录页面：`admin.php` 处理 8 处、`admin_orders.php` 4 处、`account.php` 精简 2、`dashboard.php` −1、`captcha.php` 压缩 1、`install.php` 压缩 2、`register.php` 压缩 2、`pay.php` −1 / 压缩 3、`pay_notify.php` 压缩 2、`pay_return.php` 压缩 1。
+  - `api/`：`file.php` −4 / 压缩 3、`upload.php` −15 / 压缩 4、`verify.php` −3 / 压缩 3。
+  - `assets/`：`app.css` 删除 48 行注释 / 压缩 3、`app.js` −6 / 压缩 3、`admin.js` −4。
+  - `.dev/`：`e2e.php` −10 / 压缩 1、`page-check.php` −3、`pay-check.php` −10 / 压缩 3、`mock-notion/router.php` −2；其余 `.dev` 脚本无改动。
+- 备注：**零功能改动**，未触碰任何代码 token、SQL、HTML 结构、CSS 规则、JS 字符串/正则、资源缓存版本号（`?v=31` 保持不变）；未改表结构，旧库无需补列（`schema_version` 仍为 10）。注意：因删注释，仓库多文件**行号整体前移**，本文件更早条目中记录的历史行号已与当前文件不一致（属预期，历史条目不回改）。
+
+---
+
+### [2026-09-26 23:48:40] 侧栏备案号改为居中并调整上下间距
+
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
+- 目的：用户要求「优化备案号样式，间隔距离适当，侧边栏居中显示」。此前侧栏备案号是左对齐（沿用侧栏正文默认对齐），且 `.sidebar-icp + .sidebar-police` 的上间距只有 2px，两条备案号挤在一起；同时最后一条备案号紧贴账号信息上方的分隔线。本次统一居中，并把上、内、下三处间距调到均衡。
+- 验证：`assets/app.css` 单文件 CSS 改动，无 PHP 变更，无需 `php -l`；产品页面渲染出 `<p class="sidebar-icp">` / `<p class="sidebar-police">` 的 DOM 未变（仍由 `sidebarIcpHtml()` / `sidebarPoliceHtml()` 输出），仅样式生效。逻辑核对：`.sidebar-storage` 下内边距 16px 与备案号上内边距 4px 构成上方间距 20px，备案号下内边距 12px 与 `.account-menu` 上内边距 14px 构成下方间距 26px，两条备案号之间间距 4px；由于 `.account-menu` 顶部有 1px 分隔线，视觉上下方留白不会被文字压住。
+- 改动明细：
+  - `assets/app.css` L138 — `.sidebar-icp, .sidebar-police`：`padding` 由 `12px 10px 0` 改为 `4px 10px 0`（上间距交回 `.sidebar-storage` 的下内边距统管，避免 16px + 12px 过空）；`line-height` 由 `1.5` 提到 `1.6`；新增 `text-align: center`（侧栏居中）。
+  - `assets/app.css` L140 — 相邻两条备案号的 `padding-top` 由 `2px` 调到 `4px`，两条之间不再粘连。
+  - `assets/app.css` L142（新增）— `.sidebar-icp:has(+ .account-menu), .sidebar-police:has(+ .account-menu) { padding-bottom: 12px; }`：给备案号组最后一条补下内边距，防止文字贴住账号信息上方的分隔线；`:has()` 不被支持时优雅降级为原样（无多余留白）。
+  - 资源缓存版本号：`assets/app.css?v=30 → v=31`（`admin.php` L836、`admin_orders.php` L268、`account.php` L189、`logs.php` L65、`pay.php` L142、`index.php` L57、`dashboard.php` L48、`install.php` L217、`register.php` L141）。`app.js?v=15` / `admin.js?v=9` 未改动。
+- 备注：未改表结构，旧库无需手工补列（`schema_version` 仍为 10）。改动仅桌面端侧栏生效；移动端（`@media (max-width: 760px)`）备案号仍由 `.site-credit` 页脚居中展示，不受影响。
+
+---
+
+### [2026-09-26 23:46:19] 管理后台 / 订单管理 / 运行日志侧栏也展示「用量信息」
+
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
+- 目的：用户要求「管理员也要在包含管理面板、日志查看等页面有同样的已用空间 / 不限总容量」。上一条已把用量区块抽成共用 helper 并让「我的文件 / 账户管理 / 会员套餐」三页统一调用，但管理员可见的 `admin.php`（管理后台）、`admin_orders.php`（订单管理）、`logs.php`（运行日志）三页侧栏仍没有该区块，管理员在这几页看不到已用空间。本次把同一 helper 也接入这三页，管理员全站侧栏用量信息保持一致。
+- 验证：`php -l admin.php / admin_orders.php / logs.php` → `No syntax errors detected`。grep 确认 6 个侧栏页均已调用 `sidebarStorageHtml()`（`dashboard.php` L59、`account.php` L199、`pay.php` L151、`admin.php` L841、`admin_orders.php` L273、`logs.php` L70）。管理员渲染结果沿用上一条 CLI 实测（id=1 `admin`）→ `<div class="sidebar-storage"><div><span>已用空间</span><strong>11.7 KB</strong></div><small>不限总容量</small></div>`，正是用户要求的形态；`sidebarStorageHtml()` 对管理员不输出「会员套餐」两行。
+- 改动明细：
+  - `admin.php` L841（新增）— 在 `</nav>` 与 `<?= sidebarIcpHtml() ?>` 之间插入 `<?= sidebarStorageHtml($currentUser) ?>`。
+  - `admin_orders.php` L273（新增）— 同上，插入 `<?= sidebarStorageHtml($currentUser) ?>`。
+  - `logs.php` L70（新增）— 同上，插入 `<?= sidebarStorageHtml($currentUser) ?>`。
+  - `assets/app.css` 原 L137-L138、原 L145-L146 删除 — `.drive-nav + .account-menu` 与 `.drive-nav + .sidebar-icp, .drive-nav + .sidebar-police` 两条 `margin-top: auto` 兜底规则，是「侧栏没有用量区块」时的贴底方案；现在 6 个侧栏页都必然输出 `.sidebar-storage`（其自带 `margin-top: auto`），这两条选择器已不可能命中，属死代码，连同其注释一并删除。
+  - 资源缓存版本号：`assets/app.css?v=29 → v=30`（`admin.php` L836、`admin_orders.php` L268、`account.php` L189、`logs.php` L65、`pay.php` L142、`index.php` L57、`dashboard.php` L48、`install.php` L217、`register.php` L139）。`app.js?v=15` / `admin.js?v=9` 未改动。
+- 备注：未改表结构，旧库无需手工补列（`schema_version` 仍为 10）。移动端（`@media (max-width: 760px)`）`.sidebar-storage` 仍被 `display: none` 隐藏，底部导航栏不变。
+
+---
+
+### [2026-09-26 23:41:39] 公网安备号改为可跳转 + 统一三页侧边栏「用量信息」区块
+
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
+- 目的：用户要求「公网安备跳转 `https://beian.mps.gov.cn/#/query/webSearch`，同时让不同页面侧边栏显示的用量信息完全相同」。此前公网安备号是纯文本（ICP 已在上一条改为链接）；且「我的文件 / 账户管理 / 会员套餐」三页侧栏的用量区块是各自内联的重复代码，内容不一致——`dashboard.php` 有「会员套餐」两行，`account.php` / `pay.php` 只有「已用空间」一行且整块依赖 `if (!isAdmin($user))`。本次把用量区块抽成一个共用 helper，三页统一调用，保证不同页面显示逐字节一致。
+- 验证：`php -l`（`src/helpers.php` / `dashboard.php` / `account.php` / `pay.php` 及全部 9 个含版本号页面）→ `No syntax errors detected`。CLI 实测（`require src/bootstrap.php`，临时写入 `config.icp_license` / `config.police_license` 后渲染真实用户，跑完已删除该两行、临时脚本 `.dev/render-check.php` 已删除，库中仅剩 id=1 `admin` / id=2 `test`）：
+  - 非管理员 id=2 `test`（高级用户）→ `<div class="sidebar-storage"><div><span>已用空间</span><strong>40.5 KB</strong></div><small>不限总容量</small><div><span>会员套餐</span><strong>高级 · 30 天</strong></div><small><a href="pay.php">续费 / 延长</a></small></div>`，正是用户要求的形态。
+  - 管理员 id=1 `admin` → 只有「已用空间 11.7 KB + 不限总容量」（无会员套餐行，符合管理员不受套餐限制的语义）。
+  - `sidebarPoliceHtml()` → `<p class="sidebar-police"><a href="https://beian.mps.gov.cn/#/query/webSearch" target="_blank" rel="noopener noreferrer">POLICE-TEST-11010502030123</a></p>`；`siteCreditHtml()` 页脚 `<span class="police-license">` 同为该链接。
+  → 三页侧栏用量区块由同一 helper 渲染，内容天然一致；公网安备侧栏与页脚两处均为全国互联网安全管理服务平台链接。
+- 改动明细：
+  - `src/helpers.php` L63-L67（新增）— `policeLink()`：把公网安备号包成指向 `https://beian.mps.gov.cn/#/query/webSearch` 的 `<a>`（`target="_blank" rel="noopener noreferrer"`，与 ICP 链接同一套属性）。
+  - `src/helpers.php` L55-L61 — `sidebarPoliceHtml()` 输出由 `e($police)` 纯文本改为 `policeLink($police)`（函数体在本次改动前已就位）。
+  - `src/helpers.php` L69-L91（新增）— `sidebarStorageHtml(array $user)`：三页共用的侧栏「用量信息」区块，输出「已用空间 + 占用值 +（有配额则进度条 + `共 X`，否则 `不限总容量`）」，非管理员再追加「会员套餐 + 状态」与 `pay.php` 的「续费 / 延长」（有效高级用户）或「升级高级用户」入口。
+  - `src/helpers.php` L101 — `siteCreditHtml()` 页脚 `<span class="police-license">` 内容由 `e($police)` 改为 `policeLink($police)`。
+  - `dashboard.php` L59 — 原 L60-L67 内联 `<div class="sidebar-storage">…</div>` 删除，替换为 `<?= sidebarStorageHtml($user) ?>`；原 L21 `$usagePercent`、原 L40 `$planLabel` 删除（替换后已无其它引用；L14-L15 的 `$usedBytes` / `$quotaBytes` 仍被 L17 剩余容量与文件面板使用，保留）。
+  - `account.php` L199 — 原 L199-L204（含 `if (!isAdmin($user))` 包裹）删除，替换为 `<?= sidebarStorageHtml($user) ?>`；原 L176 `$usagePercent` 删除（L174-L175 的 `$quotaBytes` / `$usedBytes` 仍被页内面板使用，保留）。
+  - `pay.php` L151 — 原 L152-L157（含 `if (!isAdmin($user))` 包裹）删除，替换为 `<?= sidebarStorageHtml($user) ?>`；原 L100 `$usagePercent` 删除（L98-L99 仍被页内面板使用，保留）。
+  - `assets/app.css` L143-L144 — 悬停下划线由 `.sidebar-icp a:hover` 扩为 `.sidebar-icp a:hover, .sidebar-police a:hover`，公网安备链接同样有可点击反馈。
+  - 资源缓存版本号：`assets/app.css?v=28 → v=29`（`admin.php` L836、`admin_orders.php` L268、`account.php` L189、`logs.php` L65、`pay.php` L142、`index.php` L57、`dashboard.php` L48、`install.php` L217、`register.php` L141）。`app.js?v=15` / `admin.js?v=9` 未改动。
+- 备注：未改表结构，旧库无需手工补列（`schema_version` 仍为 10）。`dashboard.php` / `account.php` / `pay.php` 三页不再各自维护用量区块，后续调整只需改 `sidebarStorageHtml()` 一处；若公安备案查询入口变更，只需改 `policeLink()` 一处。
+
+---
+
+### [2026-09-26 23:35:22] ICP 备案号改为可点击跳转工信部备案系统
+
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
+- 目的：用户要求「ICP备跳转工信部网页」。此前 ICP 备案号是纯文本，按国内备案合规惯例应可点击跳转工信部备案系统（`https://beian.miit.gov.cn/`）。本次只处理 ICP，公网安备号未要求、保持纯文本不动。
+- 验证：`php -l src/helpers.php` → `No syntax errors detected`。CLI 实测（`php -r 'require "src/bootstrap.php"; ...'`，临时写入 `config.icp_license` / `config.police_license` 后渲染，跑完已删除该两行、库中仅剩 id=1 `admin` / id=2 `test`）：
+  - `sidebarIcpHtml()` → `<p class="sidebar-icp"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">ICP-TEST-2024000000-1</a></p>`
+  - `siteCreditHtml()` → `<span class="icp-license"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">ICP-TEST-2024000000-1</a></span><span class="police-license">POLICE-TEST-11010502030123</span>…`
+  → 侧栏与页脚两处 ICP 均成为工信部链接（新标签页打开），公网安备保持纯文本。
+- 改动明细：
+  - `src/helpers.php` L48-L52（新增）— `icpLink()`：把备案号包成指向 `https://beian.miit.gov.cn/` 的 `<a>`（`target="_blank" rel="noopener noreferrer"`，与署名链接同一套属性）。
+  - `src/helpers.php` L45 — `sidebarIcpHtml()` 输出由 `e($icp)` 纯文本改为 `icpLink($icp)`。
+  - `src/helpers.php` L69 — `siteCreditHtml()` 页脚 `<span class="icp-license">` 内容由 `e($icp)` 改为 `icpLink($icp)`。
+  - `assets/app.css` L143-L144（新增）— `.sidebar-icp a:hover { text-decoration: underline; }`，给侧栏 ICP 链接可点击反馈（页脚侧已有 `.site-credit a:hover` 覆盖；全局 `a { color: inherit }`，两处仍为 muted 灰）。
+  - 资源缓存版本号：`assets/app.css?v=27 → v=28`（`admin.php` L836、`admin_orders.php` L268、`account.php` L190、`logs.php` L65、`pay.php` L142、`index.php` L57、`dashboard.php` L50、`install.php` L217、`register.php` L141）。`app.js?v=15` / `admin.js?v=9` 未改动。
+- 备注：未改表结构，旧库无需手工补列（`schema_version` 仍为 10）。若工信部后续更换备案查询入口，只需改 `icpLink()` 一处。
+
+---
+
+### [2026-09-26 23:30:17] 在 ICP 备案号基础上新增「公网安备号」展示（后台可填、留空不显示）
+
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
+- 目的：用户要求「原有基础上再加一个公网安备」，即在既有 ICP 备案号之外，再增加一个独立的公网安备号字段，行为与 ICP 完全一致：后台「系统设置 → 站点信息」可填、留空则不显示、有侧栏页显示在侧栏 ICP 之下、无侧栏页显示在页脚 ICP 右侧；两个字段相互独立，只填其一不影响另一个。原 `sidebarIcpHtml()` / `.sidebar-icp` 与 `config.icp_license` 均不改名（保持上一条记录的行号引用仍有效），本次为纯增量。
+- 验证：`php -l` 校验 10 个受影响 PHP 文件全部 `No syntax errors detected`。实机冒烟（PHP 8.5.9 内建服务器 `127.0.0.1:8088` + MariaDB 3306，临时脚本 `.dev/smoke-police.ps1` / `.dev/smoke-anon.ps1` 跑完已删除）四阶段结果：
+  1. 两条都未填：6 个侧栏页与匿名 `index / register` 全部 `sidebarIcp=N sidebarPolice=N footerIcp=N footerPolice=N`，`credit=Y`。
+  2. 两条都填：6 个侧栏页 `sidebarIcp=Y sidebarPolice=Y`；匿名 `index / register`（全新会话，200）`footerIcp=Y footerPolice=Y` 且 `shell=N`（确认无侧栏页走页脚）。
+  3. 只填 ICP：`dashboard` 与匿名 `index` 均 `sidebarIcp=Y sidebarPolice=N footerPolice=N`。
+  4. 只填公网安备：均 `sidebarIcp=N sidebarPolice=Y footerPolice=Y`。
+  → 两条备案号渲染相互独立、「留空不显示」成立。
+  5. 上述验证使用的临时账号 `zzsmoke_admin`(group 1) / `zzsmoke_user`(group 3)、测试写入的 `icp_license` / `police_license` 行、`login_attempts` 记录已全部删除还原（库中仅剩 id=1 `admin`、id=2 `test`）。
+- 改动明细：
+  - `src/helpers.php` L30-L39（新增）— `policeLicense()`，读 `config.police_license`，与 `icpLicense()` 同构（含 `storage/installed.lock` 守卫，安装向导阶段返回空串，避免 `install.php` 因连库失败 500）。
+  - `src/helpers.php` L49-L55（新增）— `sidebarPoliceHtml()`，非空时输出 `<p class="sidebar-police">`，未填返回空串。
+  - `src/helpers.php` L57-L68 — `siteCreditHtml()` 页脚在 `<span class="icp-license">` 之后插入 `<span class="police-license">`（页脚里公网安备位于 ICP 右侧）。
+  - `admin.php` L279 — `save_site` 分支新增 `Database::setConfig('police_license', trim((string) ($_POST['police_license'] ?? '')))`，与 `icp_license` 一样原样保存、不做格式校验。
+  - `admin.php` L1051-L1055 — 「站点信息」面板说明文案改为「备案号将显示在登录页与各页面侧边栏（用量信息下侧）」，并在 ICP 输入框下新增「公网安备号」输入框（`maxlength="64"`，placeholder「如 京公网安备 11010502030123号，留空则不显示」）。
+  - `admin.php` L842、`dashboard.php` L70、`account.php` L207、`pay.php` L159、`logs.php` L71、`admin_orders.php` L274 — 6 个侧栏页在 `sidebarIcpHtml()` 之后各插入一行 `sidebarPoliceHtml()`（公网安备紧随 ICP 之下）。
+  - `assets/app.css` L140 — `.sidebar-icp, .sidebar-police` 合并为同一组样式；L142 新增 `.sidebar-icp + .sidebar-police { padding-top: 2px }`（两条相邻时收窄上间距，视觉归为一组）；L144 新增 `.drive-nav + .sidebar-police { margin-top: auto }`（无用量块的侧栏页里公网安备随 ICP 一起贴底）。
+  - `assets/app.css` L150 — 桌面端隐藏页脚备案号的规则扩到 `.police-license`；L456 移动端（`≤760px`）`display:none` 名单加入 `.sidebar-police`；L473 移动端把页脚 `.police-license` 重新 `display:inline`（与 ICP 同规则）。
+  - 资源缓存版本号：`assets/app.css?v=26 → v=27`（`admin.php` L836、`admin_orders.php` L268、`account.php` L190、`logs.php` L65、`pay.php` L142、`index.php` L57、`dashboard.php` L50、`install.php` L217、`register.php` L141）。`app.js?v=15` / `admin.js?v=9` 未改动。
+- 备注：未改表结构，旧库无需手工补列（`schema_version` 仍为 10）。公网安备复用现有 `config` 表的 KV 行（`config_key = 'police_license'`），**无需迁移**：老库没有该行时 `Database::config()` 返回默认空串，表现为「未填写、不显示」，直到管理员在后台保存才会插入该行。
+
+---
+
+### [2026-09-26 23:22:42] 新增可配置 ICP 备案号展示与 SZY创新工作室技术支持署名，并把用量信息补到账户管理 / 会员套餐页
+
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
+- 目的：三条需求。① 系统设置里预留 ICP 备案号填写位，留空则不显示，填写后在登录页与所有页面展示；② 所有页面注明「由 SZY创新工作室 提供技术支持」并链接 `https://www.szystudio.cn`（固定不可配置）；③ 非管理员用户的用量信息此前只在「我的文件」侧栏出现，要同时出现在「账户管理」与「会员套餐」页。
+  1. **展示位置（已与用户确认）**：无侧栏页（`index` / `register` / `install`）放页面底部居中页脚；有侧栏页（`dashboard` / `account` / `pay` / `admin` / `admin_orders` / `logs`）的 ICP 放侧边栏「用量信息下侧」，署名放页面底部页脚。窄屏（`≤760px`）侧栏被压缩成底部导航条、放不下 ICP，改由页脚展示（`body.drive-shell` 下桌面端隐藏页脚 ICP、移动端再显示回来）。
+  2. **署名不可修改**：直接写在 `siteCreditHtml()` 里，不读 `config` 表，后台也没有对应开关，避免被改掉或去掉。链接 `target="_blank" rel="noopener noreferrer"` 新标签页打开。
+- 验证：`php -l` 校验 10 个受影响 PHP 文件全部 `No syntax errors detected`。实机冒烟（PHP 8.5.9 内建服务器 `127.0.0.1:8088` + MariaDB 3306，临时脚本 `.dev/smoke-icp.ps1` 跑完已删除）：
+  1. 未填写 ICP 时，`dashboard / account / admin?tab=system / logs / admin_orders` 与 `index / register / install` 全部 `sidebarIcp=N`、`footerIcp=N`、`credit=Y`；填写后上述侧栏页 `sidebarIcp=Y`，三个无侧栏页 `footerIcp=Y`，`credit` 恒为 `Y`。
+  2. 非管理员在 `account.php` / `pay.php` 的侧栏出现 `class="sidebar-storage"`（用量块），管理员这两页 `storage=N`（`dashboard` 两者都有，属原有行为）。
+  3. 上述验证使用的两个临时账号（`zzsmoke_admin` / `zzsmoke_user`）与测试写入的 `icp_license` 行已全部从库里删除还原。
+- 改动明细：
+  - `src/helpers.php` L18-L50（新增，紧跟 `e()` 之后）— 新增 `icpLicense()`（读 `config.icp_license`，`trim` 后返回，未填返回空串）、`sidebarIcpHtml()`（未填返回空串，否则输出 `<p class="sidebar-icp">`）、`siteCreditHtml()`（输出 `<footer class="site-credit">`，ICP 非空才渲染 `<span class="icp-license">`，署名固定）。
+    - **关键点**：`icpLicense()` 先判断 `storage/installed.lock` 是否存在，不存在直接返回 `''`。`Database::config()` 必须连库（依赖 `config/database.php`），而安装向导阶段这两者都还没生成，不加守卫会让 `install.php` 直接 500。
+  - `admin.php` L276-L279（新增 `save_site` 分支）、L1048-L1055（「站点信息」面板，位于「支付设置」之后）、L840、L1058 — 后台「系统设置」新增 ICP 备案号输入（`maxlength="64"`，留空即不显示，故不做格式校验）；侧栏与页脚接入两个新 helper。
+  - `dashboard.php` L69、L157 — 侧栏用量块之后插 ICP，`</main>` 之后插页脚署名。`account.php` L206、L343 与 `pay.php` L158、L265 同理。
+  - `account.php` L176（新增 `$usagePercent`）、L200-L205（新增非管理员 `sidebar-storage` 用量块）；`pay.php` L98（新增 `$usedBytes` 与 `$usagePercent`）、L152-L157（同款用量块）。两处的用量块与 `dashboard.php` L61-L68 完全同构，且都只在 `!isAdmin($user)` 时渲染。
+  - `logs.php` L70、L121 与 `admin_orders.php` L273、L353 — 同样的侧栏 ICP + 页脚署名（这两页没有用量块）。
+  - `index.php` L82、`register.php` L184、`install.php` L277 — 无侧栏页只在 `</main>` 之后输出页脚（含 ICP + 署名）。
+  - `assets/app.css` L36-L40 — 登录 / 安装页由「绝对居中」改成 `display:flex; flex-direction:column`，`.login-layout / .install-layout` 在 shell 内改为 `min-height:auto; flex:1; margin:0 auto`，让页脚自然贴在视口底部。
+  - `assets/app.css` L100、L149 — `.drive-shell` 加 `display:flex; flex-direction:column`、`.drive-main` 加 `flex: 1 0 auto`，使有侧栏页的署名页脚在内容较短时也贴底，而不是悬在页面中间。
+  - `assets/app.css` L140-L148 — 新增 `.sidebar-icp`、`.drive-nav + .sidebar-icp { margin-top: auto }`（侧栏没有用量块时 ICP 与账号信息一起贴底，否则原先 `.drive-nav + .account-menu` 的 `margin-top:auto` 会因中间插入了 ICP 而失效）、`.site-credit` 系列样式、`body.drive-shell .site-credit .icp-license { display:none }`。
+  - `assets/app.css` L454、L471-L472 — 移动端（`≤760px`）把 `.sidebar-icp` 加进 `display:none` 名单，并让 `body.drive-shell .site-credit .icp-license` 重新 `display:inline`，实现「ICP 在桌面端走侧栏、移动端走页脚」。
+  - 资源缓存版本号：`assets/app.css?v=25 → v=26`（`admin.php` L835、`admin_orders.php` L268、`account.php` L190、`logs.php` L65、`pay.php` L142、`index.php` L57、`dashboard.php` L50、`install.php` L217、`register.php` L141）。`app.js?v=15` / `admin.js?v=9` 未改动。
+- 备注：未改表结构，旧库无需手工补列（`schema_version` 仍为 10）。ICP 复用现有 `config` 表的 KV 行（`config_key = 'icp_license'`），**无需迁移**：老库没有该行时 `Database::config()` 返回默认空串，表现为「未填写、不显示」，直到管理员在后台保存才会插入该行。
+
+---
+
+### [2026-09-26 22:36:58] 全流程功能检查后的 P1/P2 缺陷修复与上传队列、确认弹窗交互优化
+
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
+- 目的：对「安装 → 注册 → 登录 → 绑定 Notion → 上传/下载 → 购买会员 → 支付回调 → 开通/到期降级 → 后台管理」全链路做一轮功能检查，修掉 12 项缺陷（6 项 P1 + 6 项 P2，其中 1 项核实后撤销），并顺带优化上传队列、自定义确认弹窗的交互与样式。
+- 验证：
+  1. `php -l` 校验 13 个受影响 PHP 文件，均无语法错误；`node --check assets/app.js` 退出码 0。
+  2. 实机冒烟（PHP 8.5.9 内建服务器 `127.0.0.1:8088` + MariaDB 3306）：`install.php → 302`（已安装正常跳转），`index.php / register.php / captcha.php / forgot.php → 200`，`assets/app.css?v=25 → 200`、`assets/app.js?v=15 → 200`、`assets/admin.js?v=9 → 200`。
+  3. 结论：主链路无 P0 级阻断性 bug；本次修复为「部分失败被静默丢弃 / 资源残留 / 对账错单 / 提示错误」这类非阻断但会造成数据与体验问题的缺陷。
+- 改动明细：
+
+  **P1（功能性缺陷）**
+  - `assets/app.js` L469-L490 — `runQueue` 在多文件上传存在失败条目时不再 `location.replace` 刷新。原来「成功若干 + 失败若干」会直接刷新，把失败原因与待重传文件一起冲掉（用户误以为全部成功）；现在有失败项时保留错误文案与「重试」按钮，并 toast 汇总「成功 x 个，失败 y 个」。
+  - `api/upload.php` L454-L456 — finish 阶段「分块已齐全且字节数完全一致」之后统一登记 `$cleanupChunkTokens[$token]`。原来只有 `assertUploadAllowed()` 分支登记，导致后续「重新校验文件名 / 配额 / 解析目标账户」抛错时 `.part` 残留（最大 5GB，最长 12 小时才被回收）。
+  - `pay_return.php` L16-L28 — 易支付回跳实际携带 `out_trade_no`，改为优先用它精确定位本次订单；参数缺失或不匹配时才退化为「最近 5 笔订单，优先待支付」。原来一律取最近一笔 pending，用户同时开多笔待支付订单时会拿错订单对账（是否真实支付仍由 `reconcileOrder()` 主动查单确认，未降低安全性）。
+  - `admin.php` L650-L657 — 人工开通/续费时，若用户原本就是永久会员，`grantPremium()` 不写到期时间，原代码 `strtotime(null)` 被截断为 0，flash 显示「1970-01-01 08:00」；改为 `expires_after === null` 时显示「永久有效」。
+  - `admin.php` L253-L277 — `test_mail` 与 `save_access` 统一落库 `registration_enabled` / `email_required`。「发送测试邮件」与「保存设置」共用同一表单，原来点测试只发信、静默丢弃同表单里改动的注册开关与强制邮箱勾选；同时保留「开启强制绑定邮箱前必须已配置 SMTP」的校验（`Database::config()` 每次读库、无内存缓存，故先存 SMTP 再校验是安全的）。
+  - `admin_orders.php` L149-L172 — `mark_paid` 按订单状态分支：`paid` 提示「无需重复开通」，`void` 提示「该订单已作废，无法标记为已支付，如需为用户开通请到用户管理手动开通」，其余状态才执行 `settleOrderPayment`。`void` 由 `src/helpers.php` 的 `revokePremium()` 写入、可从「用户管理」触发，故「旧页面 + 另一标签页作废后 POST 回 mark_paid」是真实可达路径。
+
+  **P2（清理与健壮性）**
+  - `logs.php` L59-L60（原 L60-L66 删除）— 删除 `$currentFile` 死代码（组装后从未被使用）。
+  - `admin_orders.php` L220-L226 — 订单搜索关键字未转义 LIKE 通配符，搜「50%」「a_b」会命中大量无关订单；改用独立变量 `$keywordLike` 转义 `\ % _`（不覆盖 `$keyword`，避免污染输入框回显与分页链接），并把关键字匹配拆成三个不同占位符（原生预处理不允许同名占位符复用）。
+  - `install.php` L57-L64 — 安装阶段的 DSN 连接补 `SET time_zone`，与 `Database::connection()` 对齐会话时区。否则安装时由 MySQL `CURRENT_TIMESTAMP` 写入的初始管理员等记录，会与后续记录整体偏移数小时。
+  - `captcha.php` L5-L12 — GD 缺失检查由 `issueCaptcha()` 之后移到之前。原来验证码已写入会话、页面却因缺扩展直接 500，用户拿到一个永远看不到答案的验证码。
+  - `api/file.php` L45-L56 — `Content-Disposition` 的 ASCII 兜底文件名由写死的 `download` 改为按原名剔除不可打印字符后派生，并保证至少保留扩展名；否则老浏览器/下载工具（不认 `filename*=`）拿到的文件没有后缀、无法用默认程序打开。
+  - `src/NotionClient.php` L13 — `API_VERSION = '2026-03-11'` 曾列为可疑项，经 `developers.notion.com`（upload-file / uploading-small-files / sending-larger-files 三处示例）核实为当前最新版本，**本项不做修改**。
+
+  **交互与样式优化**
+  - `assets/app.js` L393-L465 — 分块上传失败自动重试：仅 `status === 0`（网络中断）与 `>= 500` 值得重试，最多 3 次、退避 `500ms × attempt`；4xx 不重试（重试也不会成功）。遇 `409 chunk_out_of_order` 时按服务端回传的 `received` 续传，替代原「整块失败即退出」。
+  - `assets/app.js` L364-L391 — 新增 `addRetry()`：失败条目附「重试」按钮，点击后清空进度条并重新入队（配合 L382 `pending.push(entry)`），无需重新选择文件。
+  - `assets/app.js` L394-L467 — `upload` 由 `new Promise(async …)` 反模式重构为 async 函数，失败统一走 `fail()`（L397）返回 `false`，消除 promise 构造器内吞异常的写法。
+  - `assets/app.js` L24-L95、L54、L46、L83 — `askConfirm` 引入 `overlayStack` 栈：Esc/Tab 只作用于最上层弹窗，支持 focus trap（Tab 在弹窗内循环），并在栈空时才移除 `has-overlay` 滚动锁，关闭后恢复原焦点。
+  - `assets/app.js` L116、L130 — `[data-action]` 增加 `disabled` 判断；删除操作在已存在 `.confirm-overlay` 时直接忽略，避免快速双击叠出两个确认弹窗。
+  - `assets/app.js` L144-L145 — 重命名回填由裸 `.textContent` 改为先 `querySelector('.display-name')` 判空，避免空引用报错。
+  - `assets/app.js` L166-L185 — `[data-confirm]` 提交前设 `form.noValidate = true` 再 `requestSubmit(trigger)`。这类按钮所在表单常混有与本次操作无关的字段（如用户行里可编辑的 `required` 用户名），走默认交互式校验时一个空 `required` 就会静默拦下删除/开通，表现为「点了确认却什么都没发生」；确认弹窗已承担确认职责，故关闭浏览器校验（服务端仍有兜底校验，例如 admin_orders 的「设置到期时间」会 flash「请填写要设置到期时间的用户名。」）。
+  - `assets/app.css` L172-L173 — 新增 `.queue-retry` 样式，与后台弹窗风格保持一致。
+  - `assets/app.css` L322 — `.toast` 的 `z-index` 由 100 提到 300，原来会被 `.confirm-overlay`（`z-index: 200`）盖住。
+  - `assets/app.css` L337 — 新增 `body.has-overlay { overflow: hidden; }`：弹窗打开期间锁背景滚动，否则移动端滑动遮罩会把后面整页一起带着滚。
+  - `assets/app.css` L453 — 移动端（`≤760px`）`.admin-tabs a` 触摸目标补足 `min-height: 44px`（分区条是移动端的主要切换入口）。
+  - 资源缓存版本号：`assets/app.css?v=24 → v=25`（`admin.php` L831、`admin_orders.php` L268、`account.php` L189、`logs.php` L64、`pay.php` L140、`index.php` L57、`dashboard.php` L50、`install.php` L217、`register.php` L141）；`assets/app.js?v=14 → v=15`（`admin.php` L1044、`admin_orders.php` L353、`account.php` L336、`logs.php` L120、`pay.php` L257、`index.php` L82、`dashboard.php` L157、`register.php` L184）。`assets/admin.js?v=9` 本次未改动，保持不变。
+- 备注：未改任何表结构，旧库无需手工补列（`schema_version` 仍为 10）；改动全部集中在前端与 PHP 逻辑层，无迁移脚本。
+
+---
+
 ### [2026-09-26 21:30:07] 权限组「查看该组用户」入口改为右对齐页脚，消除「位置不对」的观感
 
-- 修改人：[Beibing]
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：用户反馈管理后台权限组区块里「查看该组用户（1）」位置不对（截图红框标出它孤零零贴在左栏头像下方）。
   1. **先做实机复现，排除「重复渲染」**：用临时 CLI 脚本伪造 `$_SESSION['user_id']` 后 `include admin.php`（`?tab=users`）统计渲染结果，`查看该组用户` 出现 3 次、`class="group-members"` 3 次、DOM 顺序为「组行 form → 该组 details」交替出现。数据库里确有 3 个权限组（管理员 / 高级用户 / 普通用户），前两个各 1 位成员，因此页面上**本来就会有两处「查看该组用户（1）」**，分属不同组，并非模板重复或 CSS 伪元素复制（全项目 Grep 该文案仅 `admin.php` L912 一处，`assets/` 下无相关 JS 克隆）。
   2. **真正的问题是位置**：`.group-members` 是 `.admin-user-list` 网格里的独立一行，铺满整行却只把文字留在左栏，右侧空出大片，视觉上像不属于上面那个组；而「用户管理」里用户行的操作按钮（开通订阅 / 编辑）都在右侧，此处应与组行的「保存」同侧保持一致。改为页脚右对齐。
@@ -49,7 +236,7 @@
 
 ### [2026-09-26 21:18:54] 结算白名单修正为「待支付 + 已关闭」并统一加锁顺序，补记 README 的 Nginx 规则
 
-- 修改人：[Beibing]
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：接着上一轮审计的未修项继续处理（L1 锁顺序、L2、L4、B4），过程中发现上一轮 H1 修得过严，会引入「用户已付款却开通不了」的资金风险，一并纠正。
   1. **修正 H1 过度收窄（重要）**：上一轮把可结算状态收窄成只允许 `pending`。但 `createOrder()` 会用新订单把该用户的旧 `pending` 订单置为 `closed`（`src/helpers.php` L1467-L1468），若用户在下单页与收银台之间反复点击、旧单其实已在网关付款成功，回调到达时订单已是 `closed`，此时会被直接拒绝且网关只收到 `fail`/不再重推，钱就白付了。因此白名单改为 `['pending','closed']`：仍然拒绝 `paid`（幂等）与 `void`（管理员已撤销并回滚过时长，绝不能被复活），但允许 `closed` 被付款回调开通回来。
   2. **L1 死锁**：`settleOrderPayment()` 原先是「先锁 orders 行 → 再等 users 行」，而 `createOrder()`（L1460-L1468）、`revokePremium()`（L1940 起）都是「先锁 users 行 → 再动 orders 行」。当用户点「立即支付」与上一笔订单的支付回调同时到达时，两边互相等待对方持有的行锁，构成真实死锁环。现统一为 `users → orders`。
@@ -68,7 +255,7 @@
 
 ### [2026-09-26 21:12:58] 安全审计后的 4 处修复：作废订单防复活、回调金额核对、永久会员不被降级、月末时长不溢出
 
-- 修改人：[Beibing]
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：全项目安全审计发现 1 个高危 + 2 个业务 Bug，本次一并修掉。
   1. **高危**：`settleOrderPayment()` 的幂等判断只挡 `paid`，不挡 `void`/`closed`，管理员作废订单（时长已精确回滚）后，攻击者重放原支付回调即可让订单重新开通，作废白做；易支付签名不含时间戳/nonce，回调可长期重放。
   2. **中危**：`pay_notify.php` 用 `$params['money'] ?? '0'` 兜底，回调一旦不带 `money` 就被当成 0 元判为「金额不符」并拒开，语义是错的（应为「无法核对」）；同时缺失金额与金额不等两种情况在日志里无法区分。
@@ -90,7 +277,7 @@
 
 ### [2026-09-26 21:05:11] 用户管理页两处 UI 修正：搜索框对齐、点「续费订阅」不再连带展开编辑区
 
-- 修改人：[Beibing]
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：
   1. 用户管理页「搜索用户」把 `.log-filters` 直接套在 `<label>` 上，而该样式是「横排 flex + `align-items: flex-end`」的**容器**样式，导致「搜索用户」四个字与输入框被排成并排且底部对齐，看起来错位；本页所有其它字段都是「文字在上、控件在下」。
   2. 行内「开通订阅 / 续费订阅」面板 `<div class="user-row-grant">` 原先放在 `<details>` **内部**（`</summary>` 之后），因此打开面板必须先展开折叠，会把「编辑」区一起摊开；点「取消」只把面板置 `hidden`，折叠状态仍为展开，必须再点「收起」才能关掉——与「编辑」「续费订阅」本应是两个并列入口的预期不符。
@@ -108,7 +295,7 @@
 
 ### [2026-09-26 20:06:20] 管理后台二级菜单「内容与账户」改名为「账户池管理」
 
-- 修改人：[Beibing]
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：原标签「内容与账户」与该分区实际职责（用户文件 + 官方账户池分配）不符，容易误解，改为「账户池管理」更贴合用途。
 - 验证：`php -l admin.php` → `No syntax errors detected`；本地 `http://127.0.0.1:8088` 以 admin 登录访问 `admin.php?tab=content` → HTTP 200，页面标题与侧栏/页签均显示「账户池管理」，页面内已无「内容与账户」字样；**tab 键保持 `content` 不变**，`?tab=content` 链接与 `user_id` 跳转（订单页「用户」、用户行「管理文件」）不受影响。
 - 改动明细：
@@ -119,7 +306,7 @@
 
 ### [2026-09-26 19:56:30] 全站时区改为 UTC+8；作废订单只扣减该笔订单月数（叠加 1+1 撤 1）；用户列表新增「到期时长」
 
-- 修改人：[Beibing]
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：
   1. **时区修正（订单创建时间显示成 UTC+0）**：项目此前没有任何时区设置，PHP 默认 `UTC`；`Database::connection()` 会把 MySQL 会话时区设成 PHP 时区偏移，于是 `orders.created_at`（`TIMESTAMP` 列）被按 UTC 显示，比北京时间少 8 小时。框架要求全站时间统一 UTC+8，故在 `bootstrap.php` 设置 `date_default_timezone_set('Asia/Shanghai')`，PHP 与 MySQL 会话时区同时变为 `+08:00`（17 个入口文件都 `require` 该文件，一处生效全站）。
   2. **作废语义修正（作废 1+1 应只撤 1）**：因购买可叠加（`grantPremium` 以 `max(现有到期时间, now)` 为基准再 `+months`），原先 `revokePremium()` 直接 `UPDATE users SET premium_expires_at = NOW()`，把叠加出来的会员时长**全部清空**——表现为"看着只作废了一条，实际会员全没了"。现改为按该笔订单的 `months` 反向扣减：从当前到期时间 `strtotime('-N month')`，扣减后仍晚于当前时刻则保持高级用户（只缩短到期时间），**扣完才**降回默认用户组；`premium_expires_at IS NULL`（永久有效）无具体时间可扣，保持原状；管理员组不降级，避免把管理员移出管理组。
@@ -157,7 +344,7 @@
 
 ### [2026-09-26 19:48:02] 修复「作废一笔连作废全部」+ 已作废不可重复作废 + 自定义确认弹窗替换浏览器原生 confirm
 
-- 修改人：[Beibing]
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：
   1. **修 Bug（作废溢出）**：管理员点「作废订阅」时，原 `revokePremium()` 是按 **userId** 把该用户**所有**已支付订单一次性全部作废，因此出现"作废一条就把所有都给作废了"。改为按 **orderId** 只作废当前这一笔，同一用户的其他已支付订单保持原状（`revokePremium($userId, $orderId)`）。
   2. **已作废订单不可重复作废**：前端在状态不是 `paid` 时不再渲染「作废订阅」按钮；后端在动作分支先判 `status === 'void'` 直接拒绝并提示「该订单已作废，无需重复操作。」；`revokePremium()` 内 UPDATE 追加 `status = 'paid'` 条件并用 `rowCount() === 0` 回滚兜底，防并发下重复作废。
@@ -188,10 +375,10 @@
 
 ### [2026-09-26 19:40:15] 会员操作入口归位 + 用户/权限组折叠与搜索 + 删除「套餐与订单」二级菜单
 
-- 修改人：[Beibing]
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：
   1. **开通订阅入口归位**：此前把「开通订阅」放进了订单列表（顶部表单 + 行内按钮），与「订单只读、会员操作归用户」的心智冲突——管理员要开通订阅应当面向「用户」而不是「某笔订单」。现改为：用户管理页每行「编辑」旁新增「开通订阅 / 续费订阅」，点击后在行内展开时长选择，再点「确认开通」提交。
-  2. **删除名不副实的「套餐与订单」二级菜单**：该菜单（`?tab=premium`）不含任何订单列表，实际只有「选中用户后的会员与到期」面板，必须先到用户管理选用户才显示，对管理员长期是"不知道干啥用"的死入口。按 [Beibing] 决策（选项 1）整块删除，其中唯一独有的「保存到期时间（含永久有效）」搬到订单管理页成为独立面板。
+  2. **删除名不副实的「套餐与订单」二级菜单**：该菜单（`?tab=premium`）不含任何订单列表，实际只有「选中用户后的会员与到期」面板，必须先到用户管理选用户才显示，对管理员长期是"不知道干啥用"的死入口。按 [ShiZhongyan] 决策（选项 1）整块删除，其中唯一独有的「保存到期时间（含永久有效）」搬到订单管理页成为独立面板。
   3. **用户管理页减噪**：列表每行默认只显示头像、用户名与概览，展开「编辑」后才出现可修改控件；新增搜索框按用户名 / 邮箱即时筛选，用户多时不必长滚动。
   4. **权限组可下钻**：3 个权限组每块下方新增折叠「查看该组用户（N）」，展开列出组内成员（头像、用户名、文件数、会员状态），解决"权限组看不到到底有谁"。
   5. **作废订阅可追溯**：新增 `orders.voided_at`，一键作废后该用户已支付订单标记为「已作废」并记录作废时间，金额与订单号保留以便对账。
@@ -223,7 +410,7 @@
   - `admin_orders.php` L232 / L317 — 缓存版本 `app.css?v=21` → `v=22`、`admin.js?v=6` → `v=7`。
   - `assets/admin.js` L28-L52 — 新增 `[data-grant-toggle]` 逻辑：点击「开通订阅」先 `preventDefault()+stopPropagation()`（否则会连带触发 summary 的折叠切换），再展开折叠并显示 `.user-row-grant`；「取消」收起面板。
   - `assets/app.css` L243-L249 — 新增 `.user-row-actions`（「开通订阅」与「编辑」并排）、`.user-row-grant`（面板样式）、`.user-row-grant[hidden]`。
-  - `assets/app.css` 原 `.user-premium-actions` 两条样式删除 — 该快捷按钮组已撤销，改为订单页行内操作（其后又按 [Beibing] 要求改为用户页开通 + 订单页仅作废）。
+  - `assets/app.css` 原 `.user-premium-actions` 两条样式删除 — 该快捷按钮组已撤销，改为订单页行内操作（其后又按 [ShiZhongyan] 要求改为用户页开通 + 订单页仅作废）。
   - `assets/app.css` L258-L259 — 新增 `.status-badge.void`（危险色，已作废）与 `.status-badge.granted`（主色，管理员授权），与线上支付成功色区分。
   - `assets/app.css` L233-L255 — 用户行折叠（`.user-row-fold`）、搜索框（`.log-filters.user-search`）、过滤隐藏（`.is-filtered-out`，用类而非 `hidden` 以免被行内 `display` 覆盖）、组员清单（`.group-member-list`）等样式。
   - `src/helpers.php` L1358 — `payTypeLabel()` 增加 `'manual' => '管理员授权'`。
@@ -239,11 +426,11 @@
 
 ### [2026-09-26 19:00:53] 管理后台二级菜单分区，并修复「管理文件」点进去看不到文件
 
-- 修改人：[Beibing]
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：
   1. **修 Bug（管理员查看任意用户文件）**：此后端一直放行管理员操作他人文件（`api/file.php` 的 `isAdmin()` 分支），但 `admin.php` 里「管理文件」是无锚点链接 `admin.php?user_id=N`，点击后只回到页面顶部；而真正的文件面板（`id="user-files"`）被「权限组」「官方账户池」夹在页面最底部，管理员视觉上等于"点了没反应"，误以为功能没实现。
   2. **治理后台杂乱**：`admin.php` 单页平铺 10 块面板（约 1080 行），管理员要靠长滚动找入口；改为侧边栏可折叠二级菜单 + `?tab=` 服务端分区，一屏只渲染一个分区。
-- 方案（已与 [Beibing] 确认）：单页面板 + 锚点自动定位（`#user-files` + CSS `:target` 高亮）；侧栏 `<details>` 二级菜单；四分组 = 用户管理 / 内容与账户 / 套餐与订单 / 系统设置。不引入 JS，不改表单提交与权限逻辑。
+- 方案（已与 [ShiZhongyan] 确认）：单页面板 + 锚点自动定位（`#user-files` + CSS `:target` 高亮）；侧栏 `<details>` 二级菜单；四分组 = 用户管理 / 内容与账户 / 套餐与订单 / 系统设置。不引入 JS，不改表单提交与权限逻辑。
 - 验证：`php -l admin.php`、`php -l admin_orders.php` 均无语法错误。本地跑起后以 admin 登录做端到端校验：
   - `?tab=users` → 仅「用户与容量 + 权限组」；`?tab=content` → 仅「官方账户池 + 用户文件 + 用户官方账户」；`?tab=premium` → 仅「会员与到期」；`?tab=system` → 仅「注册与邮箱 / Notion 连接 / 上传与容量 / 支付设置」。四个分区互不泄漏。
   - `admin.php?user_id=1`（不带 tab）→ 自动落到 `content` 分区并渲染 `id="user-files"` 面板。
@@ -274,7 +461,7 @@
 
 ### [2026-09-26 18:29:57] 修复全新安装后登录任意页面即 500（users 表缺列）
 
-- 修改人：[Beibing]
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：`install.php` 建 `users` 表时未包含 `premium_reminder_sent_at`，却在安装流程里把 `config.schema_version` 直接写成 `Schema::CURRENT_VERSION`（9），导致 `Schema::migrate()` 中 v8 的加列迁移被判定为「已是最新」而跳过；而 `Auth::user()` 的 SELECT 又包含该列，于是全新安装后一登录就抛 `Unknown column 'u.premium_reminder_sent_at'`，管理端所有页面 500。属于"新装即坏"的阻断性 Bug。
 - 验证：删库并删除 `storage/installed.lock`、`config/database.php` 后重装，`SHOW COLUMNS FROM users` 可见该列；admin 登录后 `dashboard.php`、`account.php`、`admin.php`、`logs.php`、`admin_orders.php` 均返回 200，PHP 内置服务器日志无新增报错。
 - 改动明细：
@@ -287,7 +474,7 @@
 
 ### [2026-09-26 17:59:57] 初始化本地开发环境
 
-- 修改人：[Beibing]
+- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：仓库克隆后 `.dev/` 不存在，`scripts/dev-start.ps1` 会因缺少 `.dev/mariadb-data/my.ini` 直接报「MariaDB 数据目录尚未初始化」，无法本地运行。
 - 改动明细（均在 `.dev/`，已被 `.gitignore` 忽略，不进版本库）：
   - `.dev/mariadb-data/data` — 用 `C:\Program Files\MariaDB 13.0\bin\mysql_install_db.exe` 初始化的隔离数据目录。

@@ -16,10 +16,7 @@ use NotionDrive\Security;
 $currentUser = Auth::requireAdmin();
 $error = '';
 
-/**
- * 后台二级分区：把原先堆在一页的管理面板按功能模块分组。
- * 键名为 ?tab= 取值；label 用于侧边栏二级菜单与移动端分区条，desc 显示在页头。
- */
+/** 后台二级分区：键名为 ?tab= 取值；label 用于菜单，desc 显示在页头。 */
 function adminTabs(): array
 {
     return [
@@ -29,7 +26,6 @@ function adminTabs(): array
     ];
 }
 
-/** 校验 ?tab= 取值；非法或缺失时返回空串，由页面按上下文决定默认分区。 */
 function normalizeAdminTab(mixed $value): string
 {
     return is_string($value) && array_key_exists($value, adminTabs()) ? $value : '';
@@ -255,20 +251,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($action === 'test_mail' || trim((string) ($_POST['smtp_host'] ?? '')) !== '') {
                 saveSmtpSettings();
             }
+
+            // 测试邮件与保存设置共用同一张表单，统一落库，避免开关改动被静默丢弃
+            $emailRequired = isset($_POST['email_required']) ? '1' : '0';
+            if ($emailRequired === '1' && !smtpConfigured()) {
+                throw new RuntimeException('开启「强制绑定邮箱」前，请先填写完整的 SMTP 配置。');
+            }
+            Database::setConfig('registration_enabled', isset($_POST['registration_enabled']) ? '1' : '0');
+            Database::setConfig('email_required', $emailRequired);
+
             if ($action === 'test_mail') {
                 $recipient = trim((string) ($_POST['smtp_test_to'] ?? ''));
                 Mailer::fromConfig()->send($recipient, 'Notion Drive 测试邮件', "这是一封来自 Notion Drive 的测试邮件。\n\n如果你收到了它，说明 SMTP 配置可以正常发信。");
                 Logger::info('mail', '已发送 SMTP 测试邮件。', ['to' => $recipient, 'operator' => $currentUser['username']]);
-                flash('success', '测试邮件已发送至 ' . $recipient . '，请检查收件箱。');
+                flash('success', '测试邮件已发送至 ' . $recipient . '，请检查收件箱。注册与邮箱设置也已一并保存。');
             } else {
-                $emailRequired = isset($_POST['email_required']) ? '1' : '0';
-                if ($emailRequired === '1' && !smtpConfigured()) {
-                    throw new RuntimeException('开启「强制绑定邮箱」前，请先填写完整的 SMTP 配置。');
-                }
-                Database::setConfig('registration_enabled', isset($_POST['registration_enabled']) ? '1' : '0');
-                Database::setConfig('email_required', $emailRequired);
                 flash('success', '注册与邮箱设置已保存。');
             }
+        } elseif ($action === 'save_site') {
+            // 备案号留空即不显示，因此不做任何格式校验，原样保存
+            Database::setConfig('icp_license', trim((string) ($_POST['icp_license'] ?? '')));
+            Database::setConfig('police_license', trim((string) ($_POST['police_license'] ?? '')));
+            flash('success', '站点信息已保存。');
         } elseif ($action === 'delete_user') {
             $id = (int) ($_POST['user_id'] ?? 0);
             if ($id === (int) $currentUser['id']) {
@@ -281,8 +285,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new RuntimeException('该用户不存在或已被删除。');
             }
 
-            // 每个副本可能存放在不同账户（自有账户 / 官方账户池中的任意账户），必须逐一用对应账户的
-            // Token 归档，否则官方账户里会残留孤儿文件块，管理员在 Notion 中永远看不到本地记录。
+            // 副本可能分布在自有账户或官方账户池中的任意账户，必须用对应账户的 Token 归档，否则会残留孤儿块
             $ownToken = userNotionToken($target);
             $clients = [];
             $clientFor = static function (string $token) use (&$clients): ?NotionClient {
@@ -363,7 +366,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ]);
                 }
             }
-            // 顺带清理该用户的本地残留：头像文件与邮箱验证码记录（后者按 email 关联，无 user_id）
             removeAvatarFile((string) ($target['avatar_path'] ?? ''));
             $email = trim((string) ($target['email'] ?? ''));
             if ($email !== '') {
@@ -641,11 +643,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'order_no' => $result['order_no'],
                 'expires_after' => $result['expires_after'],
             ]);
+            // 永久会员时 grantPremium 不设到期时间，需单独提示，否则会显示成 1970-01-01 08:00
+            $expiryText = $result['expires_after'] === null
+                ? '永久有效'
+                : date('Y-m-d H:i', (int) strtotime((string) $result['expires_after']));
             flash('success', sprintf(
                 '已为 %s 开通 %d 个月高级套餐，有效期至 %s（授权订单 %s）。',
                 (string) $targetUser['username'],
                 $months,
-                date('Y-m-d H:i', (int) strtotime($result['expires_after'])),
+                $expiryText,
                 $result['order_no']
             ));
             header('Location: admin.php?tab=' . $activeTab . '&user_id=' . $userId);
@@ -783,7 +789,6 @@ $accountOptions = function (int $selectedId) use ($officialAccounts): string {
 
     return $html;
 };
-/** 用户列表与会员面板中的会员状态文案。 */
 $premiumGroupId = premiumGroupId();
 $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
     if (isAdmin($managedUser)) {
@@ -800,7 +805,6 @@ $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
 
     return strtotime($expiresAt) > time() ? '高级用户 · 至 ' . $date : '高级已到期 · ' . $date;
 };
-/** 用户列表中的「到期时长」文案：管理员与永久会员显示「永久」，未开通显示「未开通」。 */
 $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
     if (isAdmin($managedUser)) {
         return '永久';
@@ -819,11 +823,14 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>管理后台 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=24"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>管理后台 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=31"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <a class="brand" href="dashboard.php"><span class="brand-mark">N</span><span>Notion Drive</span></a>
         <nav class="drive-nav"><a href="dashboard.php"><span>▣</span>我的文件</a><details class="nav-group" open><summary><span>⚙</span>管理后台</summary><div class="nav-sub"><?php foreach ($adminTabs as $tabKey => $tabMeta): ?><a class="<?= $tabKey === $activeTab ? 'active' : '' ?>" href="<?= e($tabUrl((string) $tabKey)) ?>"><?= e($tabMeta['label']) ?></a><?php endforeach; ?></div></details><a href="admin_orders.php"><span>¥</span>订单管理</a><a href="logs.php"><span>☰</span>运行日志</a><a href="account.php"><span>◍</span>账户管理</a></nav>
+        <?= sidebarStorageHtml($currentUser) ?>
+        <?= sidebarIcpHtml() ?>
+        <?= sidebarPoliceHtml() ?>
         <div class="account-menu"><?= avatarHtml($currentUser) ?><div><strong><?= e($currentUser['username']) ?></strong><small>管理员</small></div><form method="post" action="logout.php"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><button>退出</button></form></div>
     </aside>
     <main class="drive-main admin-main">
@@ -1030,7 +1037,18 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
             <p class="log-meta">建议把「站点地址」填写为对外可访问的固定地址（如 https://drive.example.com）：留空时系统按本次访问的域名自动识别，域名变化或经反向代理时回调地址可能不准。</p>
             <?php endif; ?>
         </section>
+
+        <section class="admin-panel connection-panel">
+            <div class="panel-title"><div><h2>站点信息</h2><p>备案号将显示在登录页与各页面侧边栏（用量信息下侧）；留空则不显示。技术支持署名由 SZY创新工作室 固定提供，不可修改。</p></div></div>
+            <form method="post" class="connection-form">
+                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_site">
+                <label><span>ICP 备案号</span><input name="icp_license" value="<?= e(icpLicense()) ?>" maxlength="64" placeholder="如 京ICP备2024000000号-1，留空则不显示"></label>
+                <label><span>公网安备号</span><input name="police_license" value="<?= e(policeLicense()) ?>" maxlength="64" placeholder="如 京公网安备 11010502030123号，留空则不显示"></label>
+                <div class="form-actions"><button class="primary-button compact">保存设置</button></div>
+            </form>
+        </section>
         <?php endif; ?>
     </main>
-    <div id="toast" class="toast"></div><script src="assets/app.js?v=14" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <?= siteCreditHtml() ?>
+    <div id="toast" class="toast"></div><script src="assets/app.js?v=15" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body></html>

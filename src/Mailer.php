@@ -28,7 +28,6 @@ final class Mailer
     ) {
     }
 
-    /** 依据管理后台保存的配置构建实例。 */
     public static function fromConfig(): self
     {
         $host = trim((string) Database::config('smtp_host', ''));
@@ -171,7 +170,6 @@ final class Mailer
         }
     }
 
-    /** @param list<int> $expectedCodes */
     private function expect(array $expectedCodes): string
     {
         $reply = $this->readReply();

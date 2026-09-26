@@ -16,7 +16,88 @@ function e(?string $value): string
     return htmlspecialchars($value ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
-/** @param array<string,mixed> $data */
+/** 站点 ICP 备案号：在「管理后台 · 系统设置 → 站点信息」填写，留空则不显示。 */
+function icpLicense(): string
+{
+    // 安装向导阶段还没有 config 表（installed.lock 未生成），此时视为未填写
+    if (!is_file(dirname(__DIR__) . '/storage/installed.lock')) {
+        return '';
+    }
+
+    return trim((string) Database::config('icp_license', ''));
+}
+
+/** 站点公网安备号：在「管理后台 · 系统设置 → 站点信息」填写，留空则不显示。 */
+function policeLicense(): string
+{
+    // 安装向导阶段还没有 config 表（installed.lock 未生成），此时视为未填写
+    if (!is_file(dirname(__DIR__) . '/storage/installed.lock')) {
+        return '';
+    }
+
+    return trim((string) Database::config('police_license', ''));
+}
+
+/** 侧边栏底部的 ICP 备案号（用量信息下侧，点击跳转工信部备案系统）；未填写返回空串。移动端由 CSS 隐藏并改由页脚展示。 */
+function sidebarIcpHtml(): string
+{
+    $icp = icpLicense();
+
+    return $icp === '' ? '' : '<p class="sidebar-icp">' . icpLink($icp) . '</p>';
+}
+
+function icpLink(string $icp): string
+{
+    return '<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">' . e($icp) . '</a>';
+}
+
+/** 侧边栏底部的公网安备号（紧随 ICP 之下，点击跳转全国互联网安全管理服务平台）；未填写返回空串。移动端由 CSS 隐藏并改由页脚展示。 */
+function sidebarPoliceHtml(): string
+{
+    $police = policeLicense();
+
+    return $police === '' ? '' : '<p class="sidebar-police">' . policeLink($police) . '</p>';
+}
+
+function policeLink(string $police): string
+{
+    return '<a href="https://beian.mps.gov.cn/#/query/webSearch" target="_blank" rel="noopener noreferrer">' . e($police) . '</a>';
+}
+
+/** 侧边栏「用量信息」区块：我的文件 / 账户管理 / 会员套餐三页共用，非管理员额外展示套餐状态与续费/升级入口。 */
+function sidebarStorageHtml(array $user): string
+{
+    $quotaBytes = userQuotaBytes($user);
+    $usedBytes = userUsedBytes((int) $user['id']);
+    $usagePercent = $quotaBytes && $quotaBytes > 0 ? min(100, (int) round($usedBytes / $quotaBytes * 100)) : 0;
+
+    $html = '<div class="sidebar-storage">'
+        . '<div><span>已用空间</span><strong>' . e(formatBytes($usedBytes)) . '</strong></div>'
+        . ($quotaBytes !== null
+            ? '<progress max="100" value="' . $usagePercent . '"></progress><small>共 ' . e(formatBytes($quotaBytes)) . '</small>'
+            : '<small>不限总容量</small>');
+
+    if (!isAdmin($user)) {
+        $html .= '<div><span>会员套餐</span><strong>' . e(premiumShortStatus($user)) . '</strong></div>'
+            . '<small><a href="pay.php">' . (isPremiumUser($user) ? '续费 / 延长' : '升级高级用户') . '</a></small>';
+    }
+
+    return $html . '</div>';
+}
+
+/** 全站页脚：ICP 备案号 + 公网安备号（有侧边栏的页面桌面端改由侧边栏展示）+ SZY创新工作室技术支持署名（固定不可配置）。 */
+function siteCreditHtml(): string
+{
+    $icp = icpLicense();
+    $police = policeLicense();
+
+    return '<footer class="site-credit">'
+        . ($icp === '' ? '' : '<span class="icp-license">' . icpLink($icp) . '</span>')
+        . ($police === '' ? '' : '<span class="police-license">' . policeLink($police) . '</span>')
+        . '<span class="site-credit-owner">由 SZY创新工作室 提供技术支持：<a href="https://www.szystudio.cn" target="_blank" rel="noopener noreferrer">www.szystudio.cn</a></span>'
+        . '</footer>';
+}
+
 function jsonResponse(array $data, int $status = 200): never
 {
     http_response_code($status);
@@ -27,7 +108,6 @@ function jsonResponse(array $data, int $status = 200): never
 
 function appConfig(): array
 {
-    /** @var array<string,mixed> $config */
     $config = require dirname(__DIR__) . '/config/database.php';
     return $config;
 }
@@ -123,7 +203,6 @@ function userUsedBytes(int $userId): int
     return (int) $statement->fetchColumn();
 }
 
-/** 读取权限组；不存在时返回 null。 */
 function findGroup(int $groupId): ?array
 {
     $statement = Database::connection()->prepare('SELECT * FROM `groups` WHERE id = :id LIMIT 1');
@@ -133,7 +212,6 @@ function findGroup(int $groupId): ?array
     return is_array($group) ? $group : null;
 }
 
-/** 全部权限组（按等级从高到低）。 */
 function allGroups(): array
 {
     return Database::connection()
@@ -141,7 +219,6 @@ function allGroups(): array
         ->fetchAll();
 }
 
-/** 默认权限组 ID（新注册用户自动加入的内置普通用户组）。 */
 function defaultGroupId(): int
 {
     $statement = Database::connection()->prepare('SELECT id FROM `groups` WHERE name = :name LIMIT 1');
@@ -170,7 +247,6 @@ function removeAvatarFile(string $avatarPath): void
     }
 }
 
-/** 渲染用户头像：有自定义头像时经 avatar.php 输出，否则显示用户名首字母。 */
 function avatarHtml(array $user, string $class = 'avatar'): string
 {
     $avatarPath = (string) ($user['avatar_path'] ?? '');
@@ -182,13 +258,11 @@ function avatarHtml(array $user, string $class = 'avatar'): string
         . e(substr(md5(basename($avatarPath)), 0, 8)) . '" alt="' . e((string) $user['username']) . ' 的头像"></span>';
 }
 
-/** 用户是否为管理员（依据权限组的管理员标记）。 */
 function isAdmin(array $user): bool
 {
     return (int) ($user['group_is_admin'] ?? 0) === 1;
 }
 
-/** 用户实际生效的容量：用户级 quota_bytes 非空时覆盖组容量。 */
 function userQuotaBytes(array $user): ?int
 {
     $override = $user['quota_bytes'] ?? null;
@@ -206,7 +280,6 @@ function userQuotaBytes(array $user): ?int
     return $groupQuota === null ? null : (int) $groupQuota;
 }
 
-/** 用户实际生效的单文件上限：先按账户来源取 Notion 侧上限，再与组上限取小。 */
 function userSingleFileLimit(array $user): int
 {
     $sourceLimit = userNotionSource($user) === 'own' ? ownFileLimitBytes() : officialFileLimitBytes();
@@ -230,19 +303,16 @@ function userUploadLimit(array $user): int
     return min($singleFileLimit, $remaining);
 }
 
-/** 是否开放新账号注册。 */
 function registrationEnabled(): bool
 {
     return Database::config('registration_enabled', '0') === '1';
 }
 
-/** 是否强制所有用户绑定邮箱。 */
 function emailRequired(): bool
 {
     return Database::config('email_required', '0') === '1';
 }
 
-/** 用户是否已绑定并验证邮箱。 */
 function emailBound(array $user): bool
 {
     return (string) ($user['email'] ?? '') !== '' && !empty($user['email_verified_at']);
@@ -254,7 +324,6 @@ function mayUpload(array $user): bool
     return !emailRequired() || isAdmin($user) || emailBound($user);
 }
 
-/** SMTP 是否已配置完整（启用强制邮箱的前提）。 */
 function smtpConfigured(): bool
 {
     foreach (['smtp_host', 'smtp_port', 'smtp_from'] as $key) {
@@ -271,12 +340,7 @@ function quotaLabel(?int $bytes): string
     return $bytes === null ? '不限容量' : formatBytes($bytes);
 }
 
-/**
- * 统计用户在某个目标账户下已保存的有效副本数量。
- *
- * 用于判断该账户下是否已经存在用户空间页面：已有文件时无需再花一次接口调用去自检页面。
- * $accountId 为 null 表示自有账户。
- */
+/** 统计用户在某个目标账户下已保存的有效副本数量；$accountId 为 null 表示自有账户。 */
 function accountReplicaCount(int $userId, ?int $accountId): int
 {
     $sql = "SELECT COUNT(*) FROM upload_replicas r
@@ -296,7 +360,6 @@ function accountReplicaCount(int $userId, ?int $accountId): int
     return (int) $statement->fetchColumn();
 }
 
-/** 归一化 Notion 页面 ID：去掉非十六进制字符并转小写，便于比较。 */
 function normalizePageId(string $id): string
 {
     return strtolower((string) preg_replace('/[^a-fA-F0-9]/', '', $id));
@@ -315,11 +378,6 @@ function uniqueStorageName(int $userId, string $originalName, string $filePath):
     return $prefix . $trimmedStem . $suffix;
 }
 
-/**
- * 查找同一用户名下已存在的有效文件（用于上传时的重名检测）。
- *
- * @return array<string,mixed>|null
- */
 function findActiveUploadByName(int $userId, string $name): ?array
 {
     $statement = Database::connection()->prepare(
@@ -334,7 +392,7 @@ function findActiveUploadByName(int $userId, string $name): ?array
     return is_array($row) ? $row : null;
 }
 
-/** 重名自动编号：1.txt → 1(1).txt、1(2).txt……（编号始终插在扩展名之前，不占用扩展名）。 */
+/** 重名自动编号：编号始终插在扩展名之前，不占用扩展名。 */
 function nextAvailableFilename(int $userId, string $name): string
 {
     $extension = pathinfo($name, PATHINFO_EXTENSION);
@@ -379,11 +437,7 @@ function clientIp(): string
     return $ip === '' ? '0.0.0.0' : substr($ip, 0, 45);
 }
 
-/**
- * 判断当前请求是否走 HTTPS。
- * Nginx/CDN 等反向代理终止 TLS 时 PHP 侧 $_SERVER['HTTPS'] 为空，此时需要看代理写入的
- * X-Forwarded-Proto，否则 Cookie 的 Secure 标记与会话安全会失效。
- */
+/** 判断当前请求是否走 HTTPS（反向代理终止 TLS 时需看 X-Forwarded-Proto，否则 Cookie 的 Secure 标记会失效）。 */
 function requestIsHttps(): bool
 {
     $https = (string) ($_SERVER['HTTPS'] ?? '');
@@ -396,12 +450,7 @@ function requestIsHttps(): bool
     return strtolower(trim($forwarded)) === 'https';
 }
 
-/**
- * 登录限流状态：15 分钟内同一 IP 失败 20 次即锁定；同一账号失败 3 次后开始要求验证码。
- * 账号维度不直接锁定，否则他人可故意输错密码把某个账号锁死（锁号 DoS）。
- *
- * @return array{locked:bool,failures:int,ip_failures:int,captcha:bool,retry_after:int}
- */
+/** 登录限流状态：15 分钟内同一 IP 失败 20 次即锁定；账号维度不直接锁定，否则可被故意输错密码锁号（DoS）。 */
 function loginThrottle(string $username): array
 {
     $pdo = Database::connection();
@@ -436,7 +485,6 @@ function loginThrottle(string $username): array
     ];
 }
 
-/** 记录一次登录失败，并顺手清理过期记录。 */
 function recordLoginFailure(string $username): void
 {
     $pdo = Database::connection();
@@ -445,7 +493,6 @@ function recordLoginFailure(string $username): void
     $pdo->exec('DELETE FROM login_attempts WHERE attempted_at < NOW() - INTERVAL 1 DAY');
 }
 
-/** 登录成功后清空该账号的失败记录。 */
 function clearLoginFailures(string $username): void
 {
     Database::connection()
@@ -453,7 +500,6 @@ function clearLoginFailures(string $username): void
         ->execute(['username' => mb_strcut($username, 0, 191, 'UTF-8')]);
 }
 
-/** 生成图形验证码并写入 session（由 captcha.php 输出图片）。 */
 function issueCaptcha(): string
 {
     $alphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -487,7 +533,6 @@ function verifyCaptcha(?string $input): bool
     return $input !== '' && strcasecmp($input, $code) === 0;
 }
 
-/** 渲染验证码输入控件（登录、注册表单共用）。 */
 function captchaField(string $label = '验证码'): string
 {
     return '<div class="captcha-field">'
@@ -497,12 +542,7 @@ function captchaField(string $label = '验证码'): string
         . '</div>';
 }
 
-/**
- * 从 Notion 页面链接或 ID 中解析出 32 位页面 ID；无法解析时返回空串。
- *
- * 页面链接形如 https://www.notion.so/Page-Title-{32位十六进制}，而标题本身常含有 a-f 字母，
- * 因此不能整体剥离非十六进制字符，必须从末尾锚定 32 位十六进制串。
- */
+/** 从 Notion 页面链接或 ID 中解析出 32 位页面 ID；标题本身常含 a-f 字母，必须从末尾锚定 32 位十六进制串。 */
 function extractNotionPageId(string $input): string
 {
     $value = trim($input);
@@ -517,7 +557,6 @@ function extractNotionPageId(string $input): string
         return '';
     }
 
-    // 纯 ID（32 位）或带横线的 UUID
     if (preg_match('/^[0-9a-fA-F-]{32,36}$/', $value) === 1) {
         $compact = normalizePageId($value);
         if (strlen($compact) === 32) {
@@ -536,11 +575,7 @@ function extractNotionPageId(string $input): string
     return '';
 }
 
-/**
- * 校验用户自有的 Notion 集成 Token 与父页面是否可用（Token 必须能读到该页面）。
- *
- * @return array{token:string,page_id:string}
- */
+/** 校验用户自有的 Notion 集成 Token 与父页面是否可用（Token 必须能读到该页面）。 */
 function assertNotionBinding(string $token, string $pageInput): array
 {
     $token = trim($token);
@@ -566,7 +601,6 @@ function assertNotionBinding(string $token, string $pageInput): array
     return ['token' => $token, 'page_id' => $pageId];
 }
 
-/** 全部官方账户（优先级高的在前）。 */
 function allOfficialAccounts(): array
 {
     return Database::connection()
@@ -574,7 +608,6 @@ function allOfficialAccounts(): array
         ->fetchAll();
 }
 
-/** 已启用的官方账户。 */
 function activeOfficialAccounts(): array
 {
     return Database::connection()
@@ -582,7 +615,6 @@ function activeOfficialAccounts(): array
         ->fetchAll();
 }
 
-/** 读取单个官方账户；不存在时返回 null。 */
 function findOfficialAccount(int $id): ?array
 {
     $statement = Database::connection()->prepare('SELECT * FROM official_accounts WHERE id = :id LIMIT 1');
@@ -592,7 +624,6 @@ function findOfficialAccount(int $id): ?array
     return is_array($account) ? $account : null;
 }
 
-/** 解密官方账户的 Token；密文为空或无法解密时返回空串。 */
 function officialAccountToken(array $account): string
 {
     $encrypted = (string) ($account['token_encrypted'] ?? '');
@@ -612,7 +643,6 @@ function officialAccountToken(array $account): string
     }
 }
 
-/** 解密用户自有的 Notion Token；未绑定或密文无法解密时返回空串。 */
 function userNotionToken(array $user): string
 {
     $encrypted = (string) ($user['notion_token_encrypted'] ?? '');
@@ -633,24 +663,17 @@ function userNotionToken(array $user): string
     }
 }
 
-/** 用户当前使用的 Notion 账户来源：official（官方账户）或 own（自有账户）。 */
 function userNotionSource(array $user): string
 {
     return ($user['notion_account_source'] ?? '') === 'official' ? 'official' : 'own';
 }
 
-/** 用户是否已绑定可用的自有 Notion 账户（Token 与父页面都齐全）。 */
 function hasOwnNotionAccount(array $user): bool
 {
     return userNotionToken($user) !== '' && (string) ($user['notion_parent_page_id'] ?? '') !== '';
 }
 
-/**
- * 是否允许使用官方账户来源。
- *
- * 官方账户池只对有效期内的高级用户（与管理员）开放；账户池还必须至少有一个已启用账户，
- * 否则切换后照样无法上传，不如直接拒绝。
- */
+/** 是否允许使用官方账户来源（仅对有效期内的高级用户与管理员开放，且账户池必须至少有一个已启用账户）。 */
 function canUseOfficialSource(array $user): bool
 {
     return (isAdmin($user) || isPremiumUser($user)) && activeOfficialAccounts() !== [];
@@ -662,12 +685,7 @@ function notionSourceUsable(array $user): bool
     return uploadTargets($user) !== [];
 }
 
-/**
- * 当前账号是否被禁止上传新文件。
- *
- * 降级为普通用户后，官方账户来源会被硬性禁用（官方账户不限容量，仅靠配额数学拦不住）；
- * 自有账户来源的普通用户仍可在 5 GB 配额内正常上传。返回空串表示允许上传，否则返回提示文案。
- */
+/** 当前账号是否被禁止上传新文件（降级为普通用户后官方账户来源被硬性禁用）；返回空串表示允许，否则返回提示文案。 */
 function uploadBlockedReason(array $user): string
 {
     if (userNotionSource($user) !== 'official' || isPremiumUser($user)) {
@@ -680,13 +698,7 @@ function uploadBlockedReason(array $user): string
         : '官方账户仅对高级用户开放，当前无法用它上传新文件；开通高级套餐后即可使用，也可以切换到自有账户继续上传。';
 }
 
-/**
- * 绑定或更换自有的 Notion 账户（Token + 父页面）。
- *
- * Token 或父页面发生变化时会清除用户空间页缓存，避免沿用旧父页面下创建的页面。
- *
- * @param array<string,mixed> $user 当前用户行（需含 notion_token_encrypted 与 notion_parent_page_id）
- */
+/** 绑定或更换自有的 Notion 账户（Token + 父页面）；Token 或父页面变化时会清除用户空间页缓存，避免沿用旧父页面下的页面。 */
 function bindOwnNotionAccount(int $userId, array $user, string $token, string $parentInput): void
 {
     $binding = assertNotionBinding($token, $parentInput);
@@ -712,12 +724,7 @@ function bindOwnNotionAccount(int $userId, array $user, string $token, string $p
     ]);
 }
 
-/**
- * 切换用户的 Notion 账户来源。
- *
- * 只改变后续上传的目标账户：已上传文件在 upload_replicas 中逐副本记录了所属账户，
- * 因此切换后旧文件仍能从原账户下载，不受影响。
- */
+/** 切换用户的 Notion 账户来源；只改变后续上传目标，旧文件在 upload_replicas 中记录了所属账户，仍能从原账户下载。 */
 function switchNotionSource(int $userId, array $user, string $source): void
 {
     $source = $source === 'official' ? 'official' : 'own';
@@ -734,7 +741,6 @@ function switchNotionSource(int $userId, array $user, string $source): void
         ->prepare('UPDATE users SET notion_account_source = :source WHERE id = :id')
         ->execute(['source' => $source, 'id' => $userId]);
 
-    // 使用官方账户但还没有固定分配时，立即按负载分配主备账户
     if ($source === 'official' && userOfficialAccounts($userId) === []) {
         autoAssignOfficialAccounts($userId);
     }
@@ -745,7 +751,6 @@ function switchNotionSource(int $userId, array $user, string $source): void
     ]);
 }
 
-/** 用户被固定分配的主备官方账户（主账户在前），并带出该账户下的用户空间页面缓存。 */
 function userOfficialAccounts(int $userId): array
 {
     $statement = Database::connection()->prepare(
@@ -760,11 +765,7 @@ function userOfficialAccounts(int $userId): array
     return $statement->fetchAll();
 }
 
-/**
- * 重建用户的官方账户分配：按传入顺序写入主（slot 1）与备（slot 2）。
- *
- * @param list<int|string> $accountIds
- */
+/** 重建用户的官方账户分配：按传入顺序写入主（slot 1）与备（slot 2）。 */
 function assignOfficialAccounts(int $userId, array $accountIds): void
 {
     $pdo = Database::connection();
@@ -776,8 +777,7 @@ function assignOfficialAccounts(int $userId, array $accountIds): void
     }
 
     try {
-        // 锁定该用户行：分配过程是「先删后插」，并发的自动分配/管理员分配会互相覆盖，
-        // 甚至触发 uniq_user_slot 唯一键冲突，串行化到同一用户即可避免
+        // 分配是「先删后插」：并发分配会互相覆盖甚至触发 uniq_user_slot 冲突，故锁定该用户行串行化
         $lock = $pdo->prepare('SELECT id FROM users WHERE id = :id LIMIT 1 FOR UPDATE');
         $lock->execute(['id' => $userId]);
         if ($lock->fetchColumn() === false) {
@@ -827,7 +827,6 @@ function assignOfficialAccounts(int $userId, array $accountIds): void
     }
 }
 
-/** 内置高级用户组 ID；组不存在时返回 0。 */
 function premiumGroupId(): int
 {
     $statement = Database::connection()->prepare('SELECT id FROM `groups` WHERE name = :name LIMIT 1');
@@ -836,17 +835,9 @@ function premiumGroupId(): int
     return (int) $statement->fetchColumn();
 }
 
-/**
- * 写入后台告警（管理员在后台顶部告警条与告警列表中查看）。
- *
- * 相同内容的未读告警只保留一条，避免持续性故障刷屏；写入失败不影响主流程。
- * 除写库外还会写入运行日志，并在产生新告警时向管理员发送提醒邮件。
- *
- * @param array<string,mixed> $context
- */
+/** 写入后台告警（顶部告警条与告警列表可查看）：相同内容的未读告警只保留一条，写入失败不影响主流程。 */
 function raiseAdminAlert(string $level, string $message, array $context = []): void
 {
-    // 运行日志与告警同源，便于在「运行日志」中按通道排查
     if ($level === 'error') {
         Logger::error('alert', $message, $context);
     } else {
@@ -878,7 +869,6 @@ function raiseAdminAlert(string $level, string $message, array $context = []): v
     }
 }
 
-/** 未读后台告警（新的在前），用于后台顶部告警条。 */
 function unreadAdminAlerts(int $limit = 20): array
 {
     $limit = max(1, min($limit, 100));
@@ -888,11 +878,7 @@ function unreadAdminAlerts(int $limit = 20): array
         ->fetchAll();
 }
 
-/**
- * 管理员告警邮件收件人：优先使用后台配置的收件邮箱，未配置时回退到管理员组内已验证的邮箱。
- *
- * @return list<string>
- */
+/** 管理员告警邮件收件人：优先使用后台配置的收件邮箱，未配置时回退到管理员组内已验证的邮箱。 */
 function adminAlertRecipients(): array
 {
     $configured = trim((string) Database::config('alert_email', ''));
@@ -918,13 +904,7 @@ function adminAlertRecipients(): array
     return array_values(array_filter(array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN)), static fn (string $email): bool => $email !== ''));
 }
 
-/**
- * 向管理员发送告警邮件。
- *
- * SMTP 未配置或没有可用收件人时静默跳过；发送失败只记日志，绝不再触发告警（避免告警递归）。
- *
- * @param array<string,mixed> $context
- */
+/** 向管理员发送告警邮件：SMTP 未配置或无收件人时静默跳过；发送失败只记日志，绝不再触发告警（避免告警递归）。 */
 function sendAdminAlertMail(string $level, string $message, array $context = []): void
 {
     static $sent = [];
@@ -962,14 +942,7 @@ function sendAdminAlertMail(string $level, string $message, array $context = [])
     }
 }
 
-/**
- * 用户本次上传的目标账户：自有账户来源只有一个目标，官方账户来源按主备槽位顺序返回。
- *
- * 已停用或 Token / 根页面无效的账户会被跳过；返回空数组表示当前没有任何可用目标。
- *
- * @param array<string,mixed> $user
- * @return list<array{type:string,account_id:?int,token:string,root_page_id:string,label:string,page_id:string}>
- */
+/** 用户本次上传的目标账户（官方账户来源按主备槽位顺序返回）；已停用或 Token/根页面无效的账户会被跳过，空数组表示没有可用目标。 */
 function uploadTargets(array $user): array
 {
     if (userNotionSource($user) === 'own') {
@@ -1017,12 +990,6 @@ function uploadTargets(array $user): array
     return $targets;
 }
 
-/**
- * 取得（必要时创建）用户在某个目标账户下的空间页面，并把页面 ID 缓存到对应记录。
- *
- * @param array<string,mixed> $user
- * @param array<string,mixed> $target uploadTargets() 返回的一项
- */
 function ensureUserSpacePage(array $user, array $target, NotionClient $client): string
 {
     $userId = (int) $user['id'];
@@ -1057,15 +1024,7 @@ function ensureUserSpacePage(array $user, array $target, NotionClient $client): 
     return $pageId;
 }
 
-/**
- * 双写：把临时文件写入用户的全部目标账户，至少一份成功即视为成功。
- *
- * 返回统一的存储名与成功副本列表（role 依次为 1、2）。单份失败只记日志并告警；
- * 全部失败时抛异常，对外只提示「存储服务暂时不可用」，不透露账户信息。
- *
- * @param array<string,mixed> $user
- * @return array{storage_name:string,replicas:list<array<string,mixed>>}
- */
+/** 双写：把临时文件写入用户的全部目标账户，至少一份成功即视为成功；全部失败时对外只提示「存储服务暂时不可用」，不透露账户信息。 */
 function writeNotionReplicas(array $user, string $temporaryPath, string $filename, string $mime, int $size): array
 {
     $targets = uploadTargets($user);
@@ -1115,15 +1074,7 @@ function writeNotionReplicas(array $user, string $temporaryPath, string $filenam
     return ['storage_name' => $storageName, 'replicas' => $replicas];
 }
 
-/**
- * 某个文件的可用下载副本（按 role 升序，主副本在前）。
- *
- * 已停用或 Token 失效的官方账户仍会列出：用户在其中的文件依然可以尝试下载，失败后再回退到下一份。
- *
- * @param array<string,mixed> $upload uploads 记录（需含 id）
- * @param array<string,mixed> $owner  文件所属用户（需含 notion_token_encrypted）
- * @return list<array{replica_id:int,type:string,account_id:?int,label:string,token:string,block_id:string}>
- */
+/** 某个文件的可用下载副本（按 role 升序，主副本在前）；已停用或 Token 失效的账户仍会列出，下载失败后再回退下一份。 */
 function uploadReplicaTargets(array $upload, array $owner): array
 {
     $statement = Database::connection()->prepare(
@@ -1175,14 +1126,7 @@ function uploadReplicaTargets(array $upload, array $owner): array
     return $targets;
 }
 
-/**
- * 归档某个文件在全部账户中的副本，并把副本记录统一标记为已删除。
- *
- * 单份归档失败只记日志并告警，不影响文件记录的删除。
- *
- * @param array<string,mixed> $upload
- * @param array<string,mixed> $owner
- */
+/** 归档文件在全部账户中的副本并统一标记为已删除；单份失败只记日志并告警，不影响文件记录删除。 */
 function archiveUploadReplicas(array $upload, array $owner): void
 {
     foreach (uploadReplicaTargets($upload, $owner) as $target) {
@@ -1206,12 +1150,7 @@ function archiveUploadReplicas(array $upload, array $owner): void
         ->execute(['upload_id' => (int) $upload['id']]);
 }
 
-/**
- * 批量读取文件的副本来源，用于文件列表标记来源与副本数。
- *
- * @param list<int|string> $uploadIds
- * @return array<int,list<array{type:string,label:string,enabled:bool}>>
- */
+/** 批量读取文件的副本来源，用于文件列表标记来源与副本数。 */
 function uploadReplicaSources(array $uploadIds): array
 {
     $ids = [];
@@ -1253,7 +1192,6 @@ function uploadReplicaSources(array $uploadIds): array
 // 付费系统
 // ---------------------------------------------------------------------------
 
-/** 站点根地址：优先取后台配置，留空时按当前请求自动识别（用于拼装支付回调地址）。 */
 function siteUrl(): string
 {
     $configured = trim((string) Database::config('site_url', ''));
@@ -1278,7 +1216,6 @@ function siteUrl(): string
     return $scheme . $host . $scriptDir;
 }
 
-/** 拼装站点内的绝对地址。 */
 function absoluteUrl(string $path): string
 {
     $base = siteUrl();
@@ -1313,7 +1250,6 @@ function premiumPlans(): array
     return $plans;
 }
 
-/** 指定月数的套餐；档位不存在时返回 null。 */
 function premiumPlan(int $months): ?array
 {
     $plans = premiumPlans();
@@ -1324,21 +1260,11 @@ function premiumPlan(int $months): ?array
     return ['months' => $months, 'price' => $plans[$months], 'label' => $months . ' 个月'];
 }
 
-/**
- * 易支付支持的全部支付渠道（type => 中文名）。
- *
- * @return array<string,string>
- */
 function epayPayTypeOptions(): array
 {
     return ['alipay' => '支付宝', 'wxpay' => '微信支付'];
 }
 
-/**
- * 已启用的支付渠道（易支付的 type 参数）。
- *
- * @return array<string,string>
- */
 function epayPayTypes(): array
 {
     $all = epayPayTypeOptions();
@@ -1354,13 +1280,11 @@ function epayPayTypes(): array
     return $types;
 }
 
-/** 支付渠道中文名。 */
 function payTypeLabel(string $type): string
 {
     return ['alipay' => '支付宝', 'wxpay' => '微信支付', 'manual' => '管理员授权'][$type] ?? $type;
 }
 
-/** 订单状态中文名。 */
 function orderStatusLabel(string $status): string
 {
     return match ($status) {
@@ -1377,7 +1301,6 @@ function isManualOrder(array $order): bool
     return str_starts_with((string) ($order['trade_no'] ?? ''), 'MANUAL-');
 }
 
-/** 订单列表的状态文案：人工开通的订单显示为「管理员授权」，便于与线上支付区分。 */
 function orderDisplayLabel(array $order): string
 {
     return isManualOrder($order) && (string) ($order['status'] ?? '') === 'paid'
@@ -1385,7 +1308,6 @@ function orderDisplayLabel(array $order): string
         : orderStatusLabel((string) ($order['status'] ?? ''));
 }
 
-/** 订单列表的徽章样式类：人工授权单独用 granted，与线上支付的成功色区分。 */
 function orderDisplayClass(array $order): string
 {
     return isManualOrder($order) && (string) ($order['status'] ?? '') === 'paid'
@@ -1393,7 +1315,6 @@ function orderDisplayClass(array $order): string
         : (string) ($order['status'] ?? '');
 }
 
-/** 生成唯一订单号：ND + 年月日时分秒 + 4 位随机数。 */
 function generateOrderNo(): string
 {
     $statement = Database::connection()->prepare('SELECT 1 FROM orders WHERE order_no = :order_no LIMIT 1');
@@ -1409,7 +1330,6 @@ function generateOrderNo(): string
     throw new RuntimeException('订单号生成失败，请重试。');
 }
 
-/** 按订单号读取订单；不存在时返回 null。 */
 function findOrderByNo(string $orderNo): ?array
 {
     $statement = Database::connection()->prepare('SELECT * FROM orders WHERE order_no = :order_no LIMIT 1');
@@ -1419,7 +1339,6 @@ function findOrderByNo(string $orderNo): ?array
     return is_array($order) ? $order : null;
 }
 
-/** 按用户名精确查找用户；不存在时返回 null（订单页的人工开通入口用）。 */
 function findUserByUsername(string $username): ?array
 {
     // 一并取出权限组的管理员标记，调用方才能用 isAdmin() 判断
@@ -1433,7 +1352,6 @@ function findUserByUsername(string $username): ?array
     return is_array($user) ? $user : null;
 }
 
-/** 按 ID 精确查找用户；不存在时返回 null（订单页针对单笔订单操作时用）。 */
 function findUserById(int $userId): ?array
 {
     // 与 findUserByUsername 一致：带上权限组的管理员标记，调用方才能用 isAdmin() 判断
@@ -1447,7 +1365,6 @@ function findUserById(int $userId): ?array
     return is_array($user) ? $user : null;
 }
 
-/** 创建待支付订单。 */
 function createOrder(int $userId, int $months, float $amount, string $payType): array
 {
     $pdo = Database::connection();
@@ -1507,7 +1424,6 @@ function premiumExpired(array $user): bool
     return $expiresAt !== null && strtotime($expiresAt) <= time();
 }
 
-/** 用户是否为有效的高级用户（管理员始终有效；到期时间已过视为失效）。 */
 function isPremiumUser(array $user): bool
 {
     if (isAdmin($user)) {
@@ -1533,7 +1449,6 @@ function premiumDaysLeft(array $user): ?int
     return $remaining <= 0 ? 0 : (int) ceil($remaining / 86400);
 }
 
-/** 套餐状态文案（完整版，用于会员套餐面板与套餐页）。 */
 function premiumStatusText(array $user): string
 {
     if (isAdmin($user)) {
@@ -1552,7 +1467,6 @@ function premiumStatusText(array $user): string
     return '普通用户';
 }
 
-/** 套餐状态文案（精简版，用于侧栏套餐卡）。 */
 function premiumShortStatus(array $user): string
 {
     if (isAdmin($user)) {
@@ -1567,11 +1481,7 @@ function premiumShortStatus(array $user): string
     return $expiresAt !== null && premiumExpired($user) ? '已到期' : '普通用户';
 }
 
-/**
- * 站内到期提醒文案：距到期 3 天以内、已到期或刚被降级时返回提示，其余情况返回空字符串。
- *
- * 只提醒曾经开通过套餐的用户（设置了到期时间），普通用户与管理员不提示。
- */
+/** 站内到期提醒文案：距到期 3 天内、已到期或刚被降级时返回提示，其余为空串；只提醒曾开通过套餐的用户。 */
 function premiumNotice(array $user): string
 {
     if (isAdmin($user)) {
@@ -1597,15 +1507,7 @@ function premiumNotice(array $user): string
     return '';
 }
 
-/**
- * 高级套餐到期的懒检查：登录用户访问任意页面时把已到期的付费用户降级回普通用户组。
- *
- * 只降级权限组，保留到期时间（作为「曾开通/已降级」的判定依据）、已上传文件与官方账户绑定，
- * 因此降级后文件仍可查看与下载；能否上传新文件由配额数学天然决定（降级后超出普通组容量即无法上传）。
- *
- * @param array<string,mixed> $user
- * @return array<string,mixed> 降级后的用户数据（未触发降级时原样返回）
- */
+/** 高级套餐到期的懒检查：访问页面时把已到期的付费用户降级回普通组；只降权限组，保留到期时间与文件，降级后仍可查看下载。 */
 function downgradeExpiredPremium(array $user): array
 {
     if (isAdmin($user) || (int) ($user['group_id'] ?? 0) !== premiumGroupId() || !premiumExpired($user)) {
@@ -1644,11 +1546,7 @@ function downgradeExpiredPremium(array $user): array
     return $user;
 }
 
-/**
- * 到期前 3 天的邮件提醒（无定时任务，故在用户访问页面时懒触发）。
- *
- * 同一到期周期只提醒一次：发送成功才写入去重标记；续费或管理员调整到期时间会清空该标记。
- */
+/** 到期前 3 天的邮件提醒（无定时任务，故在访问页面时懒触发）；同一到期周期只提醒一次，发送成功才写去重标记。 */
 function maybeSendPremiumReminder(array $user): void
 {
     if (isAdmin($user) || !isPremiumUser($user) || !emailBound($user) || !smtpConfigured()) {
@@ -1693,7 +1591,6 @@ function maybeSendPremiumReminder(array $user): void
     }
 }
 
-/** 按当前负载自动为用户分配主备官方账户（负载最低者优先）。 */
 function autoAssignOfficialAccounts(int $userId): void
 {
     $accounts = activeOfficialAccounts();
@@ -1717,12 +1614,7 @@ function autoAssignOfficialAccounts(int $userId): void
     assignOfficialAccounts($userId, $accountIds);
 }
 
-/**
- * 在时间戳上增加月数，并按目标月份的实际天数收敛日期。
- *
- * PHP 原生 strtotime('+1 month') 在月末会溢出到下下个月（1 月 31 日 + 1 月 = 3 月 3 日），
- * 让用户平白多拿几天；这里改为「目标月份放不下该日号时取该月最后一天」。
- */
+/** 在时间戳上增加月数并按目标月实际天数收敛：strtotime('+1 month') 在月末会溢出到下下月，这里改为取该月最后一天。 */
 function addMonthsClamped(int $timestamp, int $months): int
 {
     $targetMonth = (int) date('n', $timestamp) - 1 + $months;
@@ -1740,14 +1632,7 @@ function addMonthsClamped(int $timestamp, int $months): int
     );
 }
 
-/**
- * 开通或续费高级用户。
- *
- * 续费顺延：原套餐未到期时从原到期时间起算，已到期或首次开通时从当前时间起算。
- * 已是永久会员（到期时间为 NULL）的续费保持永久，不会反而变成限时。
- *
- * @return array{expires_before:?string,expires_after:?string}
- */
+/** 开通或续费高级用户：原套餐未到期时从原到期时间顺延、已到期或首次开通从当前时间起算；永久会员的续费保持永久。 */
 function grantPremium(int $userId, int $months): array
 {
     $months = max(1, $months);
@@ -1825,14 +1710,7 @@ function grantPremium(int $userId, int $months): array
     return ['expires_before' => $before, 'expires_after' => $after];
 }
 
-/**
- * 管理员人工开通/续费高级用户，并生成一条「管理员授权」订单。
- *
- * 人工开通同样要留下订单凭据：用户能在「会员套餐」页看到这笔授权记录，后台对账时也能区分线上支付与人工处理。
- * 金额记为 0 元，trade_no 用 MANUAL- 前缀（列表据此显示为「管理员授权」）。
- *
- * @return array{order_no:string,expires_before:?string,expires_after:?string}
- */
+/** 管理员人工开通/续费高级用户并生成一条「管理员授权」订单（金额 0 元、trade_no 用 MANUAL- 前缀），作为后台对账凭据。 */
 function grantManualPremiumOrder(int $userId, int $months, int $operatorId): array
 {
     if (!isset(premiumPlans()[$months])) {
@@ -1888,14 +1766,7 @@ function grantManualPremiumOrder(int $userId, int $months, int $operatorId): arr
     return ['order_no' => $orderNo] + $result;
 }
 
-/**
- * 订单当初实际贡献的会员时长（秒）：等于「下单后到期时间 − 起算点」。
- *
- * 起算点必须与 grantPremium 的算法一致，即 max(下单前到期时间, 下单时刻)：
- * 用户在上一次会员已经过期之后重新购买时，下单前到期时间早于下单时刻，
- * 这一笔其实只贡献了「从下单时刻起算的 N 个月」，直接相减会把中间的空档也扣掉。
- * 缺少足够的日期字段时返回 null，调用方退化为按订单月数估算。
- */
+/** 订单当初实际贡献的会员时长（秒）＝下单后到期时间 − max(下单前到期时间, 下单时刻)，与 grantPremium 起算点一致；缺字段时返回 null。 */
 function orderContributedSeconds(array $order): ?int
 {
     $afterAt = strtotime((string) ($order['expires_after'] ?? ''));
@@ -1916,19 +1787,7 @@ function orderContributedSeconds(array $order): ?int
     return $contributed > 0 ? $contributed : null;
 }
 
-/**
- * 作废指定的一笔订单，并把该订单当初贡献的会员时长从用户身上精确回滚。
- *
- * 只改动这一笔订单（标记为「已作废」并记录作废时间），同一用户的其他订单保持原状。
- * 会员时长按「购买可叠加」的规则回退：优先用订单记录的下单前后到期时间
- * （expires_before / expires_after）算出这一笔实际贡献的秒数，再从当前到期时间减去，
- * 这样作废 A 订单不会吃掉 B 订单的时长，也不会因「减 N 个月」在月末产生日期漂移；
- * 订单缺少这两个字段时退化为「当前到期时间减 N 个月」。扣减后仍有剩余则继续保持高级用户，
- * 只有扣完（到期时间不晚于当前时刻）才降回普通用户组；管理员组不受影响；
- * 永久有效（到期时间为 NULL）没有具体时间可扣，保持原状。订单记录全部保留便于追溯。
- *
- * @return array{voided_orders:int, months:int, expires_at:?string, still_premium:bool}
- */
+/** 作废指定的一笔订单并把该订单当初贡献的会员时长精确回滚：只动这一笔，按 expires_before/expires_after 算出的秒数从当前到期时间扣除，扣完才降回普通组；永久有效与管理员组不受影响。 */
 function revokePremium(int $userId, int $orderId): array
 {
     $pdo = Database::connection();
@@ -1960,7 +1819,6 @@ function revokePremium(int $userId, int $orderId): array
         $groupStatement->execute(['id' => (int) $user['group_id']]);
         $isAdminGroup = (int) $groupStatement->fetchColumn() === 1;
 
-        // 会员时长回退：扣掉这一笔订单当初贡献的时长，扣完才失效
         $currentExpiry = ($user['premium_expires_at'] ?? null) !== null && (string) $user['premium_expires_at'] !== ''
             ? (string) $user['premium_expires_at']
             : null;
@@ -2035,15 +1893,7 @@ function revokePremium(int $userId, int $orderId): array
     ];
 }
 
-/**
- * 结算订单并开通/续费高级用户（幂等）。
- *
- * 异步通知与主动查单可能并发到达，这里用行锁保证同一订单只会开通一次。
- *
- * @param array<string,mixed> $order 订单行
- * @param array<string,mixed> $notify 网关原始回调参数（主动查单结算时传空数组）
- * @return bool 本次是否真正完成了开通
- */
+/** 结算订单并开通/续费高级用户（幂等）：异步通知与主动查单可能并发到达，用行锁保证同一订单只开通一次。 */
 function settleOrderPayment(array $order, string $tradeNo, array $notify = []): bool
 {
     $pdo = Database::connection();
@@ -2100,14 +1950,7 @@ function settleOrderPayment(array $order, string $tradeNo, array $notify = []): 
     return true;
 }
 
-/**
- * 主动向网关查单并对账结算（异步通知丢失时的兜底）。
- *
- * 用户从网关收银台回跳、或手动点击「刷新状态」时调用。
- *
- * @param array<string,mixed> $order 订单行
- * @return array{paid:bool,message:string} paid 为 true 表示订单已确认支付并完成开通
- */
+/** 主动向网关查单并对账结算（异步通知丢失时的兜底），用户从收银台回跳或手动刷新状态时调用。 */
 function reconcileOrder(array $order): array
 {
     $epay = Epay::fromConfig();

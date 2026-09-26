@@ -14,7 +14,7 @@ $user = Auth::requireLogin();
 // 到期前 3 天的邮件提醒：无 cron，靠页面访问懒触发，同一到期周期只发一次
 maybeSendPremiumReminder($user);
 
-/** 把上传的图片中心裁剪为 256×256 的方形头像并保存到 storage/avatars，返回相对路径。 */
+/** 把上传的图片中心裁剪为 256×256 的方形头像并保存到 storage/avatars。 */
 function storeAvatar(array $file): string
 {
     $temporaryPath = (string) ($file['tmp_name'] ?? '');
@@ -104,7 +104,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $pdo->prepare('UPDATE users SET password_hash = :hash WHERE id = :id')
                 ->execute(['hash' => password_hash($password, PASSWORD_DEFAULT), 'id' => $userId]);
-            // 改密后更换会话 ID，使此前泄露的会话标识失效（保留登录状态，仅轮换 ID）
+            // 改密后轮换会话 ID，使泄露的会话标识失效（保留登录状态，仅轮换 ID）
             session_regenerate_id(true);
             Logger::info('account', '用户修改了登录密码。', ['user' => $user['username']]);
             flash('success', '登录密码已更新。');
@@ -186,7 +186,7 @@ $assignedOfficialAccounts = $notionSource === 'official' ? userOfficialAccounts(
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>账户管理 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=24"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>账户管理 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=31"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <a class="brand" href="dashboard.php"><span class="brand-mark">N</span><span>Notion Drive</span></a>
@@ -196,6 +196,9 @@ $assignedOfficialAccounts = $notionSource === 'official' ? userOfficialAccounts(
             <a class="active" href="account.php"><span>◍</span>账户管理</a>
             <?php if (!isAdmin($user)): ?><a href="pay.php"><span>★</span>会员套餐</a><?php endif; ?>
         </nav>
+        <?= sidebarStorageHtml($user) ?>
+        <?= sidebarIcpHtml() ?>
+        <?= sidebarPoliceHtml() ?>
         <div class="account-menu">
             <?= avatarHtml($user) ?>
             <div><strong><?= e($user['username']) ?></strong><small><?= isAdmin($user) ? '管理员' : e((string) ($user['group_name'] ?? '用户')) ?></small></div>
@@ -332,8 +335,9 @@ $assignedOfficialAccounts = $notionSource === 'official' ? userOfficialAccounts(
             <?php endif; ?>
         </section>
     </main>
+    <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=14" defer></script>
+    <script src="assets/app.js?v=15" defer></script>
     <script src="assets/admin.js?v=9" defer></script>
     <?php if ($canBindEmail): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>

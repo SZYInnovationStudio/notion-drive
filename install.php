@@ -59,12 +59,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_EMULATE_PREPARES => false,
         ]);
+        // 与 Database::connection() 对齐会话时区，避免 CURRENT_TIMESTAMP 写入的初始记录时间整体偏移
+        $pdo->exec("SET time_zone = '" . date('P') . "'");
+
         $quotedDatabase = '`' . str_replace('`', '``', $values['db_name']) . '`';
         $pdo->exec("CREATE DATABASE IF NOT EXISTS {$quotedDatabase} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
         $pdo->exec("USE {$quotedDatabase}");
 
-        // 目标库已存在用户数据说明不是全新安装：拒绝继续，避免安装锁文件被误删后
-        // 有人重跑安装程序、用 ON DUPLICATE KEY UPDATE 接管管理员账号
+        // 目标库已有用户数据说明不是全新安装，拒绝继续，避免重跑安装程序用 ON DUPLICATE KEY UPDATE 接管管理员账号
         $existingUsers = 0;
         try {
             $existingUsers = (int) $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
@@ -210,7 +212,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>安装 · Notion Drive</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <link rel="stylesheet" href="assets/app.css?v=24">
+    <link rel="stylesheet" href="assets/app.css?v=31">
 </head>
 <body class="install-shell">
     <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
@@ -270,5 +272,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </form>
         </section>
     </main>
+    <?= siteCreditHtml() ?>
 </body>
 </html>

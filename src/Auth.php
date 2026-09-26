@@ -6,7 +6,6 @@ namespace NotionDrive;
 
 final class Auth
 {
-    /** @return array<string,mixed>|null */
     public static function user(): ?array
     {
         if (empty($_SESSION['user_id'])) {

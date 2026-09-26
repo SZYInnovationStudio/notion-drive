@@ -16,7 +16,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 $user = Auth::requireLogin(true);
 
-/** 参考号：便于在「运行日志」中定位本次上传失败记录。 */
+/** 参考号：便于在「运行日志」中定位上传失败记录。 */
 $reference = strtoupper(bin2hex(random_bytes(4)));
 $context = [
     'reference' => $reference,
@@ -25,11 +25,6 @@ $context = [
     'client_ip' => (string) ($_SERVER['REMOTE_ADDR'] ?? ''),
 ];
 
-/**
- * 记录并响应用户可读的具体失败原因。
- *
- * @param array<string,mixed> $extra
- */
 $fail = static function (string $code, string $message, array $extra = [], int $status = 422) use (&$context): never {
     Logger::warning('upload', $message, $extra + $context + ['code' => $code]);
     jsonResponse(['ok' => false, 'code' => $code, 'message' => $message, 'reference' => $context['reference']], $status);
@@ -118,7 +113,6 @@ $supported = [
     'iges','igs','stl','obj','3mf','gltf','glb','dae','usdz',
 ];
 
-/** 校验文件名与大小，返回小写扩展名。 */
 $validateFilename = static function (string $filename, int $size) use ($fail, $supported): string {
     if ($filename === '') {
         $fail('invalid_filename', '文件名为空，请重命名后再上传。');
@@ -145,11 +139,7 @@ $validateFilename = static function (string $filename, int $size) use ($fail, $s
     return $extension;
 };
 
-/**
- * 处理重名：确认覆盖则保留原名并释放旧文件占用，否则自动编号（1.txt → 1(1).txt）。
- *
- * @return array{filename:string,handled:string,freed_bytes:int,renamed_to:string,duplicate:?array}
- */
+/** 处理重名：确认覆盖则保留原名并释放旧文件占用，否则自动编号（1.txt → 1(1).txt）。 */
 $resolveDuplicate = static function (string $filename, string $duplicateAction) use ($user): array {
     $duplicate = findActiveUploadByName((int) $user['id'], $filename);
     if ($duplicate === null) {
@@ -199,11 +189,7 @@ $assertCapacity = static function (string $filename, int $size, int $freedBytes)
     }
 };
 
-/**
- * 上传可行性前置检查：套餐状态与可用账户。
- *
- * 在 start 阶段就拦下不可能成功的上传，避免用户把整个大文件传完才收到失败提示。
- */
+/** 上传可行性前置检查：在 start 阶段就拦下不可能成功的上传，避免传完整个大文件才失败。 */
 $assertUploadAllowed = static function () use ($fail, $user): void {
     $blocked = uploadBlockedReason($user);
     if ($blocked !== '') {
@@ -451,6 +437,9 @@ try {
             ]);
         }
 
+        // 分块已齐全且字节数完全一致，此后失败无法续传：统一登记 token，确保后续校验失败也不会残留 .part（可达 5 GB）
+        $cleanupChunkTokens[$token] = true;
+
         // 重新校验：分块期间文件名与配额可能已被并发上传改变
         $extension = $validateFilename($filename, $size);
         $resolved = $resolveDuplicate($filename, (string) ($meta['duplicate_action'] ?? ''));
@@ -466,7 +455,6 @@ try {
         $assertCapacity($filename, $size, $resolved['freed_bytes']);
 
         if (uploadTargets($user) === []) {
-            $cleanupChunkTokens[$token] = true;
             $assertUploadAllowed();
         }
 

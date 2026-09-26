@@ -57,24 +57,19 @@ $result = $selected === ''
     ? ['lines' => [], 'total' => 0, 'matched' => 0, 'truncated' => false]
     : Logger::read($selected, $lineLimit, $level, $keyword);
 
-$currentFile = null;
-foreach ($files as $file) {
-    if ($file['name'] === $selected) {
-        $currentFile = $file;
-        break;
-    }
-}
-
 $flash = pullFlash();
 $levelLabels = ['ALL' => '全部级别', 'ERROR' => '仅 ERROR', 'WARNING' => '仅 WARNING', 'INFO' => '仅 INFO'];
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>运行日志 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=24"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>运行日志 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=31"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <a class="brand" href="dashboard.php"><span class="brand-mark">N</span><span>Notion Drive</span></a>
         <nav class="drive-nav"><a href="dashboard.php"><span>▣</span>我的文件</a><a href="admin.php"><span>⚙</span>管理后台</a><a href="admin_orders.php"><span>¥</span>订单管理</a><a class="active" href="logs.php"><span>☰</span>运行日志</a><a href="account.php"><span>◍</span>账户管理</a></nav>
+        <?= sidebarStorageHtml($currentUser) ?>
+        <?= sidebarIcpHtml() ?>
+        <?= sidebarPoliceHtml() ?>
         <div class="account-menu"><?= avatarHtml($currentUser) ?><div><strong><?= e($currentUser['username']) ?></strong><small>管理员</small></div><form method="post" action="logout.php"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><button>退出</button></form></div>
     </aside>
     <main class="drive-main admin-main">
@@ -125,5 +120,6 @@ $levelLabels = ['ALL' => '全部级别', 'ERROR' => '仅 ERROR', 'WARNING' => '�
         </section>
         <?php endif; ?>
     </main>
-    <div id="toast" class="toast"></div><script src="assets/app.js?v=14" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <?= siteCreditHtml() ?>
+    <div id="toast" class="toast"></div><script src="assets/app.js?v=15" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body></html>

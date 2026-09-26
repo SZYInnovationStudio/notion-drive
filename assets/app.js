@@ -19,7 +19,8 @@
         window.setTimeout(() => toast.classList.remove('visible'), 2600);
     };
 
-    // 自定义确认弹窗：替代浏览器原生 confirm，样式与后台一致；返回 Promise<boolean>
+    // 用栈记录已打开的弹窗：只有最上层响应 Esc / Tab，避免一次 Esc 关掉全部弹窗
+    const overlayStack = [];
     const askConfirm = message => new Promise(resolve => {
         const overlay = document.createElement('div');
         overlay.className = 'confirm-overlay';
@@ -38,23 +39,46 @@
             if (settled) return;
             settled = true;
             document.removeEventListener('keydown', onKeydown);
+            const position = overlayStack.indexOf(overlay);
+            if (position !== -1) overlayStack.splice(position, 1);
+            // 最后一个弹窗关闭后才解除背景滚动锁定
+            if (overlayStack.length === 0) document.body.classList.remove('has-overlay');
             overlay.remove();
             // 关闭后把焦点还给触发按钮，键盘操作不丢失位置
             if (previousFocus instanceof HTMLElement) previousFocus.focus();
             resolve(result);
         };
         const onKeydown = event => {
-            if (event.key === 'Escape') close(false);
+            // 只处理最上层弹窗，防止被下层弹窗抢先响应
+            if (overlayStack[overlayStack.length - 1] !== overlay) return;
+            if (event.key === 'Escape') {
+                close(false);
+                return;
+            }
+            // Tab 焦点锁在弹窗内，键盘用户不会跑到遮罩后面的页面
+            if (event.key !== 'Tab') return;
+            const focusables = overlay.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+            if (focusables.length === 0) return;
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
         };
 
         overlay.querySelector('[data-confirm-ok]').addEventListener('click', () => close(true));
         overlay.querySelector('[data-confirm-cancel]').addEventListener('click', () => close(false));
-        // 点击遮罩空白处视为取消
         overlay.addEventListener('click', event => {
             if (event.target === overlay) close(false);
         });
         document.addEventListener('keydown', onKeydown);
 
+        overlayStack.push(overlay);
+        document.body.classList.add('has-overlay');
         document.body.append(overlay);
         overlay.querySelector('[data-confirm-ok]').focus();
     });
@@ -87,6 +111,7 @@
     document.addEventListener('click', async event => {
         const button = event.target.closest('[data-action]');
         if (!button) return;
+        if (button.disabled) return;
         const row = button.closest('[data-file-id]');
         if (!row) return;
         const id = row.dataset.fileId;
@@ -99,6 +124,8 @@
             if (name === null || name.trim() === '' || name.trim() === current) return;
             body.set('name', name.trim());
         } else if (action === 'delete') {
+            // 已有确认弹窗时直接忽略，避免快速双击叠出两个弹窗
+            if (document.querySelector('.confirm-overlay')) return;
             if (!(await askConfirm('确认删除这个文件？删除后将从 Notion 页面归档。'))) return;
         }
 
@@ -112,7 +139,8 @@
             const data = await response.json();
             if (!response.ok || !data.ok) throw new Error(data.message || '操作失败');
             if (action === 'rename') {
-                row.querySelector('.display-name').textContent = data.name;
+                const nameEl = row.querySelector('.display-name');
+                if (nameEl) nameEl.textContent = data.name;
             } else {
                 row.remove();
             }
@@ -132,7 +160,6 @@
         if (image) image.src = `captcha.php?t=${Date.now()}`;
     });
 
-    // 带 data-confirm 的按钮：先弹自定义确认框，确认后再提交所属表单
     document.addEventListener('click', async event => {
         const trigger = event.target.closest('[data-confirm]');
         if (!trigger) return;
@@ -143,7 +170,8 @@
         const form = trigger.form;
         if (!form) return;
         if (typeof form.requestSubmit === 'function') {
-            // requestSubmit 会保留触发按钮的 name/value（如 action=grant_premium）
+            // 关闭浏览器校验：表单常混有无关的 required 字段，会静默拦下提交，确认弹窗已承担确认职责
+            form.noValidate = true;
             form.requestSubmit(trigger);
             return;
         }
@@ -164,8 +192,8 @@
     const queue = document.getElementById('queue');
     if (!dropZone || !input || !browse || !queue) return;
 
-    const limit = Number(document.body.dataset.limit || 0);            // 单个文件上限
-    const remainingRaw = document.body.dataset.remaining ?? '';        // 剩余容量，'' 表示不限总容量
+    const limit = Number(document.body.dataset.limit || 0);
+    const remainingRaw = document.body.dataset.remaining ?? '';
     const remaining = remainingRaw === '' ? null : Number(remainingRaw);
     let busy = false;
     let uploaded = 0;
@@ -184,10 +212,7 @@
         return '';
     };
 
-    /**
-     * 与服务端 nextAvailableFilename 一致的编号预览：1.txt → 1(1).txt（编号插在扩展名之前）。
-     * 依据当前列表里已存在的文件名计算第一个空闲编号，而不是固定显示 (1)。
-     */
+    // 与服务端 nextAvailableFilename 一致的编号预览：编号插在扩展名之前，取第一个空闲编号
     const previewRename = name => {
         const index = name.lastIndexOf('.');
         const stem = index > 0 ? name.slice(0, index) : name;
@@ -327,18 +352,41 @@
         xhr.send(form);
     });
 
-    /**
-     * 分块上传：start 建立会话 → 逐块 chunk（进度条按已发送字节推进）→ finish 由服务端拼接并双写 Notion。
-     * 服务端严格按顺序接收，顺序不符时用返回的 received 自同步后继续，不必重传整个文件。
-     */
-    const upload = ({ file, item, duplicateAction }) => new Promise(async resolve => {
+    const addRetry = entry => {
+        const { item } = entry;
+        if (item.querySelector('[data-retry]')) return;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'queue-retry';
+        button.dataset.retry = '';
+        button.textContent = '重试';
+        button.addEventListener('click', () => {
+            button.remove();
+            item.classList.remove('failed');
+            const status = item.querySelector('.queue-status');
+            if (status) {
+                status.textContent = '等待重试';
+                status.title = '';
+            }
+            const bar = item.querySelector('.progress-track');
+            if (bar) bar.value = 0;
+            pending.push(entry);
+            runQueue();
+        });
+        item.append(button);
+    };
+
+    // 分块上传：start → 逐块 chunk → finish；服务端按序接收，409 时用 received 自同步续传
+    const CHUNK_ATTEMPTS = 3;
+    const upload = async ({ file, item, duplicateAction }) => {
         const status = item.querySelector('.queue-status');
         const bar = item.querySelector('.progress-track');
         const fail = detail => {
             status.textContent = detail;
             status.title = detail;
             item.classList.add('failed');
-            resolve(false);
+            addRetry({ file, item, duplicateAction });
+            return false;
         };
         const setProgress = percent => {
             const value = Math.min(98, Math.max(0, percent));
@@ -369,7 +417,15 @@
         while (index < total) {
             const begin = index * chunkSize;
             const blob = file.slice(begin, Math.min(begin + chunkSize, file.size));
-            const result = await sendChunk(token, index, blob, loaded => setProgress((begin + loaded) / file.size * 98));
+            let result;
+            for (let attempt = 1; ; attempt += 1) {
+                result = await sendChunk(token, index, blob, loaded => setProgress((begin + loaded) / file.size * 98));
+                // 仅网络中断（status 0）与服务端 5xx 值得重试；其余（如 4xx）重试也不会成功
+                const retryable = result.status === 0 || result.status >= 500;
+                if (!retryable || attempt >= CHUNK_ATTEMPTS) break;
+                status.textContent = `分块上传失败，正在重试（${attempt}/${CHUNK_ATTEMPTS - 1}）`;
+                await new Promise(resolve => window.setTimeout(resolve, 500 * attempt));
+            }
             if (result.status === 409 && result.data.code === 'chunk_out_of_order') {
                 // 服务端已收到的分块数与本地不一致：按服务端进度继续发送剩余分块
                 index = Number(result.data.received) || 0;
@@ -394,16 +450,28 @@
         status.textContent = '上传完成';
         item.classList.add('complete');
         uploaded += 1;
-        resolve(true);
-    });
+        return true;
+    };
 
     async function runQueue() {
         if (busy) return;
         busy = true;
-        let completed = false;
-        while (pending.length) completed = (await upload(pending.shift())) || completed;
+        const uploadedBefore = uploaded;
+        while (pending.length) await upload(pending.shift());
         busy = false;
-        if (completed) {
+
+        // 仍有可重试的失败条目：保留错误文案与「重试」按钮，不刷新页面（刷新会把失败原因冲掉）
+        const failedNow = queue.querySelectorAll('[data-retry]').length;
+        if (failedNow > 0) {
+            const parts = [];
+            const okCount = uploaded - uploadedBefore;
+            if (okCount > 0) parts.push(`成功 ${okCount} 个`);
+            parts.push(`失败 ${failedNow} 个`);
+            notify(`上传结束：${parts.join('，')}，可点击失败条目的「重试」重新上传`, 'error');
+            return;
+        }
+
+        if (uploaded > 0) {
             const extras = [];
             if (overwritten) extras.push(`覆盖 ${overwritten} 个同名文件`);
             if (renamed) extras.push(`自动编号 ${renamed} 个同名文件`);

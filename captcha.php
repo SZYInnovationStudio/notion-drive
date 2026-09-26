@@ -4,15 +4,16 @@ declare(strict_types=1);
 
 require __DIR__ . '/src/bootstrap.php';
 
-$code = issueCaptcha();
-
-// 图片输出前释放会话锁，避免同一浏览器的其它请求被阻塞
-session_write_close();
-
+// GD 检查必须放在 issueCaptcha() 之前：否则验证码已写入会话，用户却因 500 看不到答案
 if (!function_exists('imagecreatetruecolor')) {
     http_response_code(500);
     exit('服务器未启用 GD 扩展，无法生成验证码。');
 }
+
+$code = issueCaptcha();
+
+// 图片输出前释放会话锁，避免同一浏览器的其它请求被阻塞
+session_write_close();
 
 $width = 120;
 $height = 40;

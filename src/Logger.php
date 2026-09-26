@@ -29,25 +29,21 @@ final class Logger
         return (bool) preg_match('/^app-\d{4}-\d{2}-\d{2}\.log$/', $name);
     }
 
-    /** @param array<string,mixed> $context */
     public static function error(string $channel, string $message, array $context = []): void
     {
         self::write('ERROR', $channel, $message, $context);
     }
 
-    /** @param array<string,mixed> $context */
     public static function warning(string $channel, string $message, array $context = []): void
     {
         self::write('WARNING', $channel, $message, $context);
     }
 
-    /** @param array<string,mixed> $context */
     public static function info(string $channel, string $message, array $context = []): void
     {
         self::write('INFO', $channel, $message, $context);
     }
 
-    /** @param array<string,mixed> $context */
     private static function write(string $level, string $channel, string $message, array $context = []): void
     {
         $directory = self::directory();
@@ -81,13 +77,9 @@ final class Logger
         return $message;
     }
 
-    /**
-     * 上下文脱敏：键名（按非字母数字切词后）命中敏感词时用占位符替换，
-     * 并递归处理嵌套数组，避免子数组里的凭据被原样写进日志。
-     */
+    /** 上下文脱敏：键名命中敏感词时用占位符替换，并递归处理嵌套数组，避免凭据原样写进日志。 */
     private const MASK_WORDS = ['token', 'password', 'passwd', 'secret', 'key', 'sign', 'signature', 'authorization'];
 
-    /** @param array<string,mixed> $context */
     private static function encodeContext(array $context): string
     {
         $encoded = json_encode(self::mask($context), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -95,10 +87,6 @@ final class Logger
         return $encoded === false ? '{}' : $encoded;
     }
 
-    /**
-     * @param array<array-key,mixed> $data
-     * @return array<array-key,mixed>
-     */
     private static function mask(array $data): array
     {
         $safe = [];

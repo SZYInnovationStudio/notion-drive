@@ -23,7 +23,6 @@ final class NotionClient
         }
     }
 
-    /** @return array<string,mixed> */
     public function uploadAndAttach(string $path, string $filename, string $mime, int $size, string $pageId): array
     {
         $multiPart = $size > 20 * 1024 * 1024;
@@ -145,9 +144,6 @@ final class NotionClient
             && \normalizePageId((string) ($parent['page_id'] ?? '')) === \normalizePageId($parentPageId);
     }
 
-    /** @param array<string,mixed>|null $payload
-     *  @return array<string,mixed>
-     */
     private function jsonRequest(string $method, string $url, ?array $payload): array
     {
         $handle = curl_init($url);
@@ -234,7 +230,6 @@ final class NotionClient
         }
     }
 
-    /** @return array<string,mixed> */
     private function execute($handle, bool $idempotent): array
     {
         $attempt = 0;
@@ -268,8 +263,7 @@ final class NotionClient
             $retryable = $body === false
                 ? in_array($errorNumber, $transientErrors, true)
                 : ($status === 429 || $status >= 500);
-            // 429 表示请求在执行前就被限流拒绝，重试不会产生重复数据；5xx 与网络中断无法确定
-            // 请求是否已被处理，只有幂等请求才允许重试，否则会在 Notion 中留下重复的页面或文件块
+            // 429 在执行前就被拒绝，重试安全；5xx 与网络中断无法确定是否已处理，只有幂等请求才可重试，否则会在 Notion 留下重复页面/文件块
             $safeToRetry = $status === 429 || $idempotent;
             if (!$retryable || !$safeToRetry || $attempt >= 2) {
                 break;

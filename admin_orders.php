@@ -149,6 +149,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($action === 'mark_paid') {
             if ((string) $order['status'] === 'paid') {
                 flash('success', '该订单已完成支付，无需重复开通。');
+            } elseif ((string) $order['status'] === 'void') {
+                // 作废订单会被 settleOrderPayment 拒绝，需给出准确引导，避免误以为「已经开通过」
+                flash('error', '该订单已作废，无法标记为已支付。如需为用户开通，请到「用户管理」使用「手动开通高级套餐」。');
             } else {
                 // 人工开通时用 MANUAL-管理员ID 作为交易号，便于事后区分「线上支付」与「人工处理」
                 $settled = settleOrderPayment($order, 'MANUAL-' . (int) $currentUser['id'], [
@@ -162,7 +165,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
                 flash($settled ? 'success' : 'error', $settled
                     ? '已标记为已支付，并开通/顺延该用户的高级套餐。'
-                    : '该订单已完成支付，无需重复开通。');
+                    : '该订单当前状态无法标记为已支付，请刷新页面后重试。');
             }
         } elseif ($action === 'close_order') {
             if ((string) $order['status'] !== 'pending') {
@@ -211,9 +214,11 @@ if ($status !== '') {
     $params['status'] = $status;
 }
 if ($keyword !== '') {
+    // LIKE 里 % 与 _ 是通配符，需转义匹配副本（$keyword 原样保留用于回显与分页链接）
+    $keywordLike = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $keyword);
     // 原生预处理不允许同名占位符复用，关键字匹配拆成三个不同的参数
     $where[] = '(o.order_no LIKE :kw_order_no OR o.trade_no LIKE :kw_trade_no OR u.username LIKE :kw_username)';
-    $like = '%' . $keyword . '%';
+    $like = '%' . $keywordLike . '%';
     $params['kw_order_no'] = $like;
     $params['kw_trade_no'] = $like;
     $params['kw_username'] = $like;
@@ -233,7 +238,6 @@ $page = min(max(1, (int) ($_GET['page'] ?? 1)), $totalPages);
 $offset = ($page - 1) * $perPage;
 
 // LIMIT/OFFSET 用内联整数：原生预处理把占位符当字符串绑定，会触发 SQL 语法错误
-// 一并取出下单用户名与管理员标记，行内「作废订阅」按钮据此显示
 $sql = 'SELECT o.*, u.username, g.is_admin AS group_is_admin'
     . ' FROM orders o LEFT JOIN users u ON u.id = o.user_id LEFT JOIN `groups` g ON g.id = u.group_id'
     . $whereSql . ' ORDER BY o.id DESC LIMIT ' . $perPage . ' OFFSET ' . $offset;
@@ -242,7 +246,6 @@ $statement = Database::connection()->prepare($sql);
 $statement->execute($params);
 $orders = $statement->fetchAll();
 
-// 分页链接需保留筛选条件
 $filterQuery = array_filter(['status' => $status, 'q' => $keyword], static fn ($value): bool => $value !== '');
 $pageUrl = static function (int $target) use ($filterQuery): string {
     return 'admin_orders.php?' . http_build_query($filterQuery + ['page' => $target]);
@@ -258,11 +261,14 @@ $statusLabels = ['' => '全部状态', 'pending' => '待支付', 'paid' => '已�
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>订单管理 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=24"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>订单管理 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=31"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <a class="brand" href="dashboard.php"><span class="brand-mark">N</span><span>Notion Drive</span></a>
         <nav class="drive-nav"><a href="dashboard.php"><span>▣</span>我的文件</a><a href="admin.php"><span>⚙</span>管理后台</a><a class="active" href="admin_orders.php"><span>¥</span>订单管理</a><a href="logs.php"><span>☰</span>运行日志</a><a href="account.php"><span>◍</span>账户管理</a></nav>
+        <?= sidebarStorageHtml($currentUser) ?>
+        <?= sidebarIcpHtml() ?>
+        <?= sidebarPoliceHtml() ?>
         <div class="account-menu"><?= avatarHtml($currentUser) ?><div><strong><?= e($currentUser['username']) ?></strong><small>管理员</small></div><form method="post" action="logout.php"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><button>退出</button></form></div>
     </aside>
     <main class="drive-main admin-main">
@@ -342,7 +348,8 @@ $statusLabels = ['' => '全部状态', 'pending' => '待支付', 'paid' => '已�
             <?php endif; ?>
         </section>
     </main>
+    <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=14" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <script src="assets/app.js?v=15" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body>
 </html>

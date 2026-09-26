@@ -44,8 +44,14 @@ try {
         }
 
         $filename = (string) ($file['display_name'] ?: $file['filename']);
+        // ASCII 兜底文件名：老浏览器与下载工具不认 filename*=，需剔除非 ASCII 字符并保证保留扩展名
+        $asciiName = trim(preg_replace('/[^\x20-\x7E]+/', '', str_replace(['\\', '/', '"'], '', $filename)) ?? '');
+        if ($asciiName === '' || $asciiName === '.') {
+            $extension = preg_replace('/[^A-Za-z0-9]/', '', pathinfo($filename, PATHINFO_EXTENSION)) ?? '';
+            $asciiName = 'download' . ($extension !== '' ? '.' . $extension : '');
+        }
         header('Content-Type: ' . (string) $file['mime_type']);
-        header('Content-Disposition: attachment; filename="download"; filename*=UTF-8\'\'' . rawurlencode($filename));
+        header('Content-Disposition: attachment; filename="' . $asciiName . '"; filename*=UTF-8\'\'' . rawurlencode($filename));
         header('Accept-Ranges: bytes');
         header('X-Accel-Buffering: no');
 
@@ -82,7 +88,7 @@ try {
                 // 仅允许跟随 https 跳转，避免被重定向到 http 或内网地址
                 CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
                 CURLOPT_RETURNTRANSFER => false,
-                // 不设总时长上限（大文件下载可能很久），改为「长时间无数据即断开」，避免连接挂死
+                // 不设总时长上限（大文件可能很久），仅以「长时间无数据」判定断开，避免连接挂死
                 CURLOPT_LOW_SPEED_LIMIT => 1,
                 CURLOPT_LOW_SPEED_TIME => 120,
                 CURLOPT_CONNECTTIMEOUT => 20,
@@ -132,8 +138,7 @@ try {
                 if ($truncated) {
                     // 用户主动取消下载不属于账户故障，不告警
                     if (!connection_aborted()) {
-                        // 响应已经开始输出，既无法回退到下一份副本也无法改写状态码，只能记录并告警。
-                        // 已声明 Content-Length，客户端会据此判定下载失败，不会把截断文件当成完整的。
+                        // 响应已开始输出，无法回退也无法改写状态码，只能记录并告警；已声明 Content-Length，客户端会判定下载失败
                         $reason = $ok === false
                             ? $error
                             : sprintf('已接收 %d 字节，远端声明 %d 字节', $written, (int) $expectedLength);
@@ -167,7 +172,6 @@ try {
                 exit;
             }
 
-            // 到这里说明本次尝试没有输出任何字节，可以安全地换下一份副本
             $fellBack = true;
             $lastError = $ok === false ? $error : sprintf('远端返回 HTTP %d', $status);
             Logger::warning('download', '副本下载失败，尝试下一份副本。', [

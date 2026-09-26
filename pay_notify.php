@@ -7,11 +7,7 @@ require __DIR__ . '/src/bootstrap.php';
 use NotionDrive\Epay;
 use NotionDrive\Logger;
 
-/**
- * 输出纯文本结果并结束请求。
- *
- * 易支付要求异步通知的响应体为纯文本 success，否则会按策略反复重推。
- */
+// 易支付要求异步通知响应体为纯文本 success，否则会按策略反复重推
 function notifyRespond(string $text): never
 {
     header('Content-Type: text/plain; charset=utf-8');
@@ -54,8 +50,7 @@ if ($order === null) {
     notifyRespond('fail');
 }
 
-// 金额核对：回调必须带金额且与订单金额一致，缺失或不等都绝不开通
-// （缺失时不能当成 0 元直接判定「金额不符」，但也不能放行，一并写告警供人工核对）
+// 金额核对：回调必须带金额且与订单金额一致，缺失或不等都绝不开通，并写告警供人工核对
 $receivedMoney = $params['money'] ?? null;
 if ($receivedMoney === null || $receivedMoney === '' || abs((float) $receivedMoney - (float) $order['amount']) >= 0.01) {
     Logger::error('payment', '支付回调金额缺失或与订单金额不一致，已拒绝开通。', [

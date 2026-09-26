@@ -7,16 +7,11 @@ namespace NotionDrive;
 use RuntimeException;
 
 /**
- * 易支付（Epay）客户端。
+ * 易支付（Epay）客户端：采用「页面跳转收款」，服务端按易支付协议计算 MD5 签名并拼装提单 URL。
  *
- * 采用「页面跳转收款」方式：服务端按易支付协议计算 MD5 签名并拼装提单 URL。
- *
- * 注意跳转方式的选择：本站 CSP 的 form-action 限定为 'self'，因此
- * ① 表单不能直接 POST 到外部网关；
- * ② 下单请求也不能直接 302 到外部网关——Chrome / Safari 会把「表单 POST → 跨站重定向」
- * 一并按 form-action 拦截（点击后页面毫无反应，服务端却已下单成功）。
- * 所以下单后先同源 302 回本站的收银台过渡页，再由该页面的脚本导航打开本 URL：
- * 脚本 / 链接导航不属于表单提交，不受 form-action 约束。
+ * 本站 CSP 的 form-action 限定为 'self'：表单不能直接 POST 到外部网关，下单也不能直接 302 过去
+ * （Chrome / Safari 会把「表单 POST → 跨站重定向」按 form-action 拦截）。因此下单后先同源 302 回
+ * 本站收银台过渡页，再由该页脚本导航打开提单 URL（脚本导航不属于表单提交，不受 form-action 约束）。
  *
  * 配置项（存于 config 表）：epay_gateway / epay_pid / epay_key（密文）。
  */
@@ -53,7 +48,6 @@ final class Epay
         return new self($gateway, $pid, $key);
     }
 
-    /** 支付配置是否已就绪。 */
     public static function configured(): bool
     {
         return self::fromConfig() instanceof self;

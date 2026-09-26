@@ -1,6 +1,3 @@
-// 带 data-confirm 的按钮统一由 app.js 的自定义确认弹窗接管，这里不再拦截
-
-// 用户管理页的搜索框：按行上的 data-user-search（用户名 + 邮箱）即时过滤
 const userSearch = document.getElementById('user-search');
 if (userSearch) {
     const rows = Array.from(document.querySelectorAll('[data-user-search]'));
@@ -21,7 +18,6 @@ if (userSearch) {
     applyUserSearch();
 }
 
-// 用户管理页的「开通订阅」：与「编辑」并列，点击后在该行展开时长选择，再点「确认开通」提交
 document.querySelectorAll('[data-grant-toggle]').forEach(toggle => {
     const row = toggle.closest('.admin-user-row');
     const panel = row ? row.querySelector('.user-row-grant') : null;
