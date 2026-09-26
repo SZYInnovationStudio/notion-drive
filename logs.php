@@ -70,7 +70,7 @@ $levelLabels = ['ALL' => '全部级别', 'ERROR' => '仅 ERROR', 'WARNING' => '�
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>运行日志 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=20"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>运行日志 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=23"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <a class="brand" href="dashboard.php"><span class="brand-mark">N</span><span>Notion Drive</span></a>
@@ -125,5 +125,5 @@ $levelLabels = ['ALL' => '全部级别', 'ERROR' => '仅 ERROR', 'WARNING' => '�
         </section>
         <?php endif; ?>
     </main>
-    <div id="toast" class="toast"></div><script src="assets/app.js?v=13" defer></script><script src="assets/admin.js?v=5" defer></script>
+    <div id="toast" class="toast"></div><script src="assets/app.js?v=14" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body></html>

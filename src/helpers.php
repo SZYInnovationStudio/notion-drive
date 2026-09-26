@@ -1357,7 +1357,7 @@ function epayPayTypes(): array
 /** 支付渠道中文名。 */
 function payTypeLabel(string $type): string
 {
-    return ['alipay' => '支付宝', 'wxpay' => '微信支付'][$type] ?? $type;
+    return ['alipay' => '支付宝', 'wxpay' => '微信支付', 'manual' => '管理员授权'][$type] ?? $type;
 }
 
 /** 订单状态中文名。 */
@@ -1366,8 +1366,31 @@ function orderStatusLabel(string $status): string
     return match ($status) {
         'paid' => '已支付',
         'closed' => '已关闭',
+        'void' => '已作废',
         default => '待支付',
     };
+}
+
+/** 是否为管理员人工开通的订单：trade_no 统一带 MANUAL- 前缀，与网关流水号区分。 */
+function isManualOrder(array $order): bool
+{
+    return str_starts_with((string) ($order['trade_no'] ?? ''), 'MANUAL-');
+}
+
+/** 订单列表的状态文案：人工开通的订单显示为「管理员授权」，便于与线上支付区分。 */
+function orderDisplayLabel(array $order): string
+{
+    return isManualOrder($order) && (string) ($order['status'] ?? '') === 'paid'
+        ? '管理员授权'
+        : orderStatusLabel((string) ($order['status'] ?? ''));
+}
+
+/** 订单列表的徽章样式类：人工授权单独用 granted，与线上支付的成功色区分。 */
+function orderDisplayClass(array $order): string
+{
+    return isManualOrder($order) && (string) ($order['status'] ?? '') === 'paid'
+        ? 'granted'
+        : (string) ($order['status'] ?? '');
 }
 
 /** 生成唯一订单号：ND + 年月日时分秒 + 4 位随机数。 */
@@ -1394,6 +1417,34 @@ function findOrderByNo(string $orderNo): ?array
     $order = $statement->fetch();
 
     return is_array($order) ? $order : null;
+}
+
+/** 按用户名精确查找用户；不存在时返回 null（订单页的人工开通入口用）。 */
+function findUserByUsername(string $username): ?array
+{
+    // 一并取出权限组的管理员标记，调用方才能用 isAdmin() 判断
+    $statement = Database::connection()->prepare(
+        'SELECT u.*, g.is_admin AS group_is_admin FROM users u
+         LEFT JOIN `groups` g ON g.id = u.group_id WHERE u.username = :username LIMIT 1'
+    );
+    $statement->execute(['username' => $username]);
+    $user = $statement->fetch();
+
+    return is_array($user) ? $user : null;
+}
+
+/** 按 ID 精确查找用户；不存在时返回 null（订单页针对单笔订单操作时用）。 */
+function findUserById(int $userId): ?array
+{
+    // 与 findUserByUsername 一致：带上权限组的管理员标记，调用方才能用 isAdmin() 判断
+    $statement = Database::connection()->prepare(
+        'SELECT u.*, g.is_admin AS group_is_admin FROM users u
+         LEFT JOIN `groups` g ON g.id = u.group_id WHERE u.id = :id LIMIT 1'
+    );
+    $statement->execute(['id' => $userId]);
+    $user = $statement->fetch();
+
+    return is_array($user) ? $user : null;
 }
 
 /** 创建待支付订单。 */
@@ -1667,11 +1718,35 @@ function autoAssignOfficialAccounts(int $userId): void
 }
 
 /**
+ * 在时间戳上增加月数，并按目标月份的实际天数收敛日期。
+ *
+ * PHP 原生 strtotime('+1 month') 在月末会溢出到下下个月（1 月 31 日 + 1 月 = 3 月 3 日），
+ * 让用户平白多拿几天；这里改为「目标月份放不下该日号时取该月最后一天」。
+ */
+function addMonthsClamped(int $timestamp, int $months): int
+{
+    $targetMonth = (int) date('n', $timestamp) - 1 + $months;
+    $year = (int) date('Y', $timestamp) + intdiv($targetMonth, 12);
+    $month = $targetMonth % 12 + 1;
+    $day = min((int) date('j', $timestamp), (int) date('t', mktime(0, 0, 0, $month, 1, $year)));
+
+    return (int) mktime(
+        (int) date('G', $timestamp),
+        (int) date('i', $timestamp),
+        (int) date('s', $timestamp),
+        $month,
+        $day,
+        $year
+    );
+}
+
+/**
  * 开通或续费高级用户。
  *
  * 续费顺延：原套餐未到期时从原到期时间起算，已到期或首次开通时从当前时间起算。
+ * 已是永久会员（到期时间为 NULL）的续费保持永久，不会反而变成限时。
  *
- * @return array{expires_before:?string,expires_after:string}
+ * @return array{expires_before:?string,expires_after:?string}
  */
 function grantPremium(int $userId, int $months): array
 {
@@ -1701,12 +1776,21 @@ function grantPremium(int $userId, int $months): array
         $isAdminGroup = (int) $groupStatement->fetchColumn() === 1;
 
         $before = $user['premium_expires_at'] !== null ? (string) $user['premium_expires_at'] : null;
-        $base = $before !== null && strtotime($before) > time() ? (int) strtotime($before) : time();
-        $after = date('Y-m-d H:i:s', (int) strtotime('+' . $months . ' month', $base));
 
-        // 同时清空到期提醒标记，让新的到期周期可以重新提醒
-        $pdo->prepare('UPDATE users SET premium_expires_at = :expires_at, premium_reminder_sent_at = NULL WHERE id = :id')
-            ->execute(['expires_at' => $after, 'id' => $userId]);
+        // 到期时间为 NULL 且当前已在高级组，说明是永久会员（管理员手工授予）：
+        // 一次续费不能把永久权益反而缩成限时，这里保持永久有效、不写到期时间
+        $keepPermanent = $before === null && !$isAdminGroup && (int) ($user['group_id'] ?? 0) === premiumGroupId();
+
+        if ($keepPermanent) {
+            $after = null;
+        } else {
+            $base = $before !== null && strtotime($before) > time() ? (int) strtotime($before) : time();
+            $after = date('Y-m-d H:i:s', addMonthsClamped($base, $months));
+
+            // 同时清空到期提醒标记，让新的到期周期可以重新提醒
+            $pdo->prepare('UPDATE users SET premium_expires_at = :expires_at, premium_reminder_sent_at = NULL WHERE id = :id')
+                ->execute(['expires_at' => $after, 'id' => $userId]);
+        }
 
         // 管理员不随付费调整权限组，避免把管理员降级出管理组
         if (!$isAdminGroup) {
@@ -1742,6 +1826,216 @@ function grantPremium(int $userId, int $months): array
 }
 
 /**
+ * 管理员人工开通/续费高级用户，并生成一条「管理员授权」订单。
+ *
+ * 人工开通同样要留下订单凭据：用户能在「会员套餐」页看到这笔授权记录，后台对账时也能区分线上支付与人工处理。
+ * 金额记为 0 元，trade_no 用 MANUAL- 前缀（列表据此显示为「管理员授权」）。
+ *
+ * @return array{order_no:string,expires_before:?string,expires_after:?string}
+ */
+function grantManualPremiumOrder(int $userId, int $months, int $operatorId): array
+{
+    if (!isset(premiumPlans()[$months])) {
+        throw new RuntimeException('请选择有效的开通时长。');
+    }
+
+    $pdo = Database::connection();
+    $orderNo = generateOrderNo();
+
+    // 订单落库与顺延套餐必须同一个事务：任一步失败都不能留下「有订单没开通」或反之的脏数据
+    $ownsTransaction = !$pdo->inTransaction();
+    if ($ownsTransaction) {
+        $pdo->beginTransaction();
+    }
+    try {
+        // 锁定用户行，确认用户仍在（后台页面可能停留在已删除用户的旧渲染上）
+        $lock = $pdo->prepare('SELECT id FROM users WHERE id = :id LIMIT 1 FOR UPDATE');
+        $lock->execute(['id' => $userId]);
+        if ($lock->fetchColumn() === false) {
+            throw new RuntimeException('该用户不存在或已被删除。');
+        }
+
+        $pdo->prepare(
+            "INSERT INTO orders (order_no, user_id, months, amount, pay_type, status, trade_no, paid_at)
+             VALUES (:order_no, :user_id, :months, 0.00, 'manual', 'paid', :trade_no, NOW())"
+        )->execute([
+            'order_no' => $orderNo,
+            'user_id' => $userId,
+            'months' => $months,
+            'trade_no' => 'MANUAL-' . $operatorId,
+        ]);
+
+        $result = grantPremium($userId, $months);
+
+        // 回填本次开通前后的到期时间，订单列表与用户端可据此看到顺延结果
+        $pdo->prepare('UPDATE orders SET expires_before = :before, expires_after = :after WHERE order_no = :order_no')
+            ->execute([
+                'before' => $result['expires_before'],
+                'after' => $result['expires_after'],
+                'order_no' => $orderNo,
+            ]);
+
+        if ($ownsTransaction) {
+            $pdo->commit();
+        }
+    } catch (Throwable $exception) {
+        if ($ownsTransaction) {
+            $pdo->rollBack();
+        }
+        throw $exception;
+    }
+
+    return ['order_no' => $orderNo] + $result;
+}
+
+/**
+ * 订单当初实际贡献的会员时长（秒）：等于「下单后到期时间 − 起算点」。
+ *
+ * 起算点必须与 grantPremium 的算法一致，即 max(下单前到期时间, 下单时刻)：
+ * 用户在上一次会员已经过期之后重新购买时，下单前到期时间早于下单时刻，
+ * 这一笔其实只贡献了「从下单时刻起算的 N 个月」，直接相减会把中间的空档也扣掉。
+ * 缺少足够的日期字段时返回 null，调用方退化为按订单月数估算。
+ */
+function orderContributedSeconds(array $order): ?int
+{
+    $afterAt = strtotime((string) ($order['expires_after'] ?? ''));
+    if ($afterAt === false) {
+        return null;
+    }
+
+    $beforeAt = (int) strtotime((string) ($order['expires_before'] ?? ''));
+    $paidAt = (string) ($order['paid_at'] ?? '');
+    $orderedAt = (int) strtotime($paidAt !== '' ? $paidAt : (string) ($order['created_at'] ?? ''));
+    $base = max($beforeAt, $orderedAt);
+    if ($base <= 0) {
+        return null;
+    }
+
+    $contributed = $afterAt - $base;
+
+    return $contributed > 0 ? $contributed : null;
+}
+
+/**
+ * 作废指定的一笔订单，并把该订单当初贡献的会员时长从用户身上精确回滚。
+ *
+ * 只改动这一笔订单（标记为「已作废」并记录作废时间），同一用户的其他订单保持原状。
+ * 会员时长按「购买可叠加」的规则回退：优先用订单记录的下单前后到期时间
+ * （expires_before / expires_after）算出这一笔实际贡献的秒数，再从当前到期时间减去，
+ * 这样作废 A 订单不会吃掉 B 订单的时长，也不会因「减 N 个月」在月末产生日期漂移；
+ * 订单缺少这两个字段时退化为「当前到期时间减 N 个月」。扣减后仍有剩余则继续保持高级用户，
+ * 只有扣完（到期时间不晚于当前时刻）才降回普通用户组；管理员组不受影响；
+ * 永久有效（到期时间为 NULL）没有具体时间可扣，保持原状。订单记录全部保留便于追溯。
+ *
+ * @return array{voided_orders:int, months:int, expires_at:?string, still_premium:bool}
+ */
+function revokePremium(int $userId, int $orderId): array
+{
+    $pdo = Database::connection();
+
+    $ownsTransaction = !$pdo->inTransaction();
+    if ($ownsTransaction) {
+        $pdo->beginTransaction();
+    }
+    try {
+        $statement = $pdo->prepare('SELECT group_id, premium_expires_at FROM users WHERE id = :id LIMIT 1 FOR UPDATE');
+        $statement->execute(['id' => $userId]);
+        $user = $statement->fetch();
+        if (!is_array($user)) {
+            throw new RuntimeException('该用户不存在或已被删除。');
+        }
+
+        // 先锁定这一笔待作废的订单并取出月数与下单前后的到期时间：
+        // 取不到说明已被作废或状态已变更，直接报错
+        $orderStatement = $pdo->prepare("SELECT months, expires_before, expires_after, paid_at, created_at FROM orders WHERE id = :id AND user_id = :user_id AND status = 'paid' LIMIT 1 FOR UPDATE");
+        $orderStatement->execute(['id' => $orderId, 'user_id' => $userId]);
+        $lockedOrder = $orderStatement->fetch();
+        if (!is_array($lockedOrder)) {
+            throw new RuntimeException('该订单已作废，无需重复操作。');
+        }
+        $months = (int) $lockedOrder['months'];
+
+        // 权限组单独读取，避免 FOR UPDATE 顺带锁住 groups 行而阻塞其他用户的结算
+        $groupStatement = $pdo->prepare('SELECT is_admin FROM `groups` WHERE id = :id LIMIT 1');
+        $groupStatement->execute(['id' => (int) $user['group_id']]);
+        $isAdminGroup = (int) $groupStatement->fetchColumn() === 1;
+
+        // 会员时长回退：扣掉这一笔订单当初贡献的时长，扣完才失效
+        $currentExpiry = ($user['premium_expires_at'] ?? null) !== null && (string) $user['premium_expires_at'] !== ''
+            ? (string) $user['premium_expires_at']
+            : null;
+        $stillPremium = false;
+        $expiresAt = $currentExpiry;
+        if ($currentExpiry === null) {
+            // 永久有效：没有具体到期时间可扣，保持高级用户不变
+            $stillPremium = true;
+        } else {
+            $contributed = orderContributedSeconds($lockedOrder);
+            if ($contributed !== null) {
+                // 用订单自己贡献的秒数精确回滚：作废这一笔不会吃掉同一用户其它订单的时长
+                $remaining = (int) strtotime($currentExpiry) - $contributed;
+            } else {
+                // 缺少下单前后的到期时间（首次开通等）：退化为按订单月数回退
+                $remaining = strtotime('-' . $months . ' month', (int) strtotime($currentExpiry));
+            }
+            if ($remaining !== false && $remaining > time()) {
+                // 扣减后仍有剩余有效期：保持高级用户，仅缩短到期时间
+                $expiresAt = date('Y-m-d H:i:s', $remaining);
+                $stillPremium = true;
+            } else {
+                // 扣完即失效：到期时间落在当前时刻，留下「何时失效」的时间点
+                $expiresAt = date('Y-m-d H:i:s');
+            }
+            $pdo->prepare('UPDATE users SET premium_expires_at = :expires_at, premium_reminder_sent_at = NULL WHERE id = :id')
+                ->execute(['expires_at' => $expiresAt, 'id' => $userId]);
+        }
+
+        // 只有扣完会员时长才降回普通用户组；管理员组不调整，避免把管理员降级出管理组
+        if (!$stillPremium && !$isAdminGroup) {
+            $defaultGroup = defaultGroupId();
+            if ($defaultGroup > 0) {
+                $pdo->prepare('UPDATE users SET group_id = :group_id WHERE id = :id')
+                    ->execute(['group_id' => $defaultGroup, 'id' => $userId]);
+            }
+        }
+
+        // 只作废这一笔订单：同一用户的其他已支付订单保持原状，避免「作废一笔连作废全部」
+        $void = $pdo->prepare("UPDATE orders SET status = 'void', voided_at = NOW() WHERE id = :id AND user_id = :user_id AND status = 'paid'");
+        $void->execute(['id' => $orderId, 'user_id' => $userId]);
+        $voidedOrders = $void->rowCount();
+        if ($voidedOrders === 0) {
+            // 并发下订单已被作废：回滚上面的套餐调整，提示无需重复操作
+            throw new RuntimeException('该订单已作废，无需重复操作。');
+        }
+
+        if ($ownsTransaction) {
+            $pdo->commit();
+        }
+    } catch (Throwable $exception) {
+        if ($ownsTransaction) {
+            $pdo->rollBack();
+        }
+        throw $exception;
+    }
+
+    Logger::info('payment', '作废单笔订单并扣减对应会员时长。', [
+        'user_id' => $userId,
+        'order_id' => $orderId,
+        'months' => $months,
+        'voided_orders' => $voidedOrders,
+        'still_premium' => $stillPremium,
+        'expires_at' => $expiresAt,
+    ]);
+
+    return [
+        'voided_orders' => $voidedOrders,
+        'months' => $months,
+        'expires_at' => $expiresAt,
+        'still_premium' => $stillPremium,
+    ];
+}
+
+/**
  * 结算订单并开通/续费高级用户（幂等）。
  *
  * 异步通知与主动查单可能并发到达，这里用行锁保证同一订单只会开通一次。
@@ -1756,12 +2050,23 @@ function settleOrderPayment(array $order, string $tradeNo, array $notify = []): 
 
     $pdo->beginTransaction();
     try {
+        // 加锁顺序统一为「users → orders」：createOrder / revokePremium 都是先锁 users 行再动 orders 行，
+        // 结算若反过来先锁 orders 行再等 users 行，会与「下单时关闭旧待支付单」反向等待而死锁
+        $userId = (int) ($order['user_id'] ?? 0);
+        if ($userId > 0) {
+            $pdo->prepare('SELECT id FROM users WHERE id = :id LIMIT 1 FOR UPDATE')->execute(['id' => $userId]);
+        }
+
         $statement = $pdo->prepare('SELECT * FROM orders WHERE id = :id FOR UPDATE');
         $statement->execute(['id' => (int) $order['id']]);
         $locked = $statement->fetch();
 
-        // 已支付过的订单直接跳过，避免重复叠加套餐时长
-        if (!is_array($locked) || (string) $locked['status'] === 'paid') {
+        // 允许进入结算的只有「待支付」与「已关闭」两种状态：
+        //  - 已支付：直接跳过（幂等），避免重复开通
+        //  - 已作废：管理员已明确撤销并精确回滚过时长，绝不能被重放的回调复活
+        //  - 已关闭：多是反复下单时被新单顶掉的旧单，若这笔其实已在网关付款成功，
+        //    回调必须能把它开通回来，否则用户的钱会白付（关闭只代表本站放弃该单，不代表没付款）
+        if (!is_array($locked) || !in_array((string) $locked['status'], ['pending', 'closed'], true)) {
             $pdo->commit();
             return false;
         }

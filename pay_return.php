@@ -41,7 +41,8 @@ if ((string) $target['status'] === 'pending') {
 } elseif ((string) $target['status'] === 'paid') {
     flash('success', '该订单已完成支付。');
 } else {
-    flash('error', '该订单已关闭，如已完成支付请联系管理员核对。');
+    // 已关闭与已作废的文案不同，用统一的状态文案拼装，避免都提示「已关闭」造成误解
+    flash('error', sprintf('该订单%s，如已完成支付请联系管理员核对。', orderStatusLabel((string) $target['status'])));
 }
 
 header('Location: pay.php?order=' . rawurlencode((string) $target['order_no']));

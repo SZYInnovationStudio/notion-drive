@@ -138,7 +138,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>注册 · Notion Drive</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <link rel="stylesheet" href="assets/app.css?v=20">
+    <link rel="stylesheet" href="assets/app.css?v=23">
 </head>
 <body class="login-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <main class="login-layout">
@@ -181,7 +181,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <p class="login-note"><span>◆</span> 已有账号？<a href="index.php">返回登录</a></p>
         </section>
     </main>
-    <script src="assets/app.js?v=13" defer></script>
+    <script src="assets/app.js?v=14" defer></script>
     <?php if ($emailRequired): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>
 </html>

@@ -45,10 +45,10 @@ Notion Drive 是一个使用 PHP 与 MySQL 构建的团队文件上传入口。�
 4. 在 Notion 中创建内部集成，赋予读取、插入及更新内容权限，并将目标页面共享给该集成。
 5. 浏览器访问 `install.php`，填写数据库、Notion Token、默认页面 ID、套餐和管理员账号。
 6. 安装成功会生成 `config/database.php` 与 `storage/installed.lock`。两者都已被 Git 忽略；请妥善备份，尤其是配置文件中的应用密钥。
-7. 安装完成后，将 `config/` 与 `storage/` 设置为仅 Web 服务用户可读写。Apache 会通过 `.htaccess` 禁止外部访问；Nginx 请添加等效规则：
+7. 安装完成后，将 `config/` 与 `storage/` 设置为仅 Web 服务用户可读写。Apache 会通过 `.htaccess` 禁止外部访问；Nginx 请添加等效规则（注意别漏掉 `scripts/`，它同样不该被外部访问）：
 
    ```nginx
-   location ~ ^/(config|src|storage)/ { deny all; }
+   location ~ ^/(config|src|storage|scripts)/ { deny all; }
    location ~ /\. { deny all; }
    ```
 

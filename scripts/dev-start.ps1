@@ -41,11 +41,18 @@ if (-not (Test-ManagedProcess $phpPidFile)) {
         throw '找不到 PHP 8.4 可执行文件。'
     }
     $phpProcess = Start-Process -FilePath $phpExecutable `
-        -ArgumentList @('-S', '127.0.0.1:8088', '-t', '.') `
+        -ArgumentList @('-S', '0.0.0.0:8088', '-t', '.') `
         -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru
     $phpProcess.Id | Set-Content -LiteralPath $phpPidFile -NoNewline
 }
 
+$lanAddress = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and $_.IPAddress -notlike '172.1*' } |
+    Select-Object -First 1 -ExpandProperty IPAddress)
+
 Write-Host 'Notion Drive 开发环境已启动：' -ForegroundColor Green
-Write-Host '  http://127.0.0.1:8088/'
+Write-Host '  本机：http://127.0.0.1:8088/'
+if ($lanAddress) {
+    Write-Host "  局域网（手机同一 WiFi 可访问）：http://${lanAddress}:8088/"
+}
 Write-Host '  凭据：.dev/credentials.txt'

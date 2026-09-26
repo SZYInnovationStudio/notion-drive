@@ -54,7 +54,7 @@ $captchaRequired = $throttle['captcha'];
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>登录 · Notion Drive</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <link rel="stylesheet" href="assets/app.css?v=20">
+    <link rel="stylesheet" href="assets/app.css?v=23">
 </head>
 <body class="login-shell">
     <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
@@ -79,6 +79,6 @@ $captchaRequired = $throttle['captcha'];
             <?php if (registrationEnabled()): ?><p class="login-note"><span>◆</span> 还没有账号？<a href="register.php">注册新账号</a></p><?php endif; ?>
         </section>
     </main>
-    <script src="assets/app.js?v=13" defer></script>
+    <script src="assets/app.js?v=14" defer></script>
 </body>
 </html>

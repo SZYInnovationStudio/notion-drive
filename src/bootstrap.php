@@ -7,6 +7,10 @@ if (PHP_SAPI !== 'cli') {
     ini_set('display_errors', '0');
 }
 
+// 全站时间统一使用东八区（UTC+8，北京/上海）：PHP 时区与 MySQL 会话时区（见 Database::connection()）
+// 都以此为准，避免订单创建时间、日志时间等按服务器默认的 UTC 显示成少 8 小时
+date_default_timezone_set('Asia/Shanghai');
+
 if (!is_file(dirname(__DIR__) . '/storage/installed.lock')) {
     $script = basename((string) ($_SERVER['SCRIPT_NAME'] ?? ''));
     if ($script !== 'install.php') {

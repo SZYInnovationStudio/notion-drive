@@ -8,7 +8,7 @@ use PDO;
 
 final class Schema
 {
-    public const CURRENT_VERSION = 9;
+    public const CURRENT_VERSION = 10;
 
     /** 内置权限组：名称、组容量、单文件上限、是否管理员、等级。首个必须保持为管理员组。 */
     public const BUILTIN_GROUPS = [
@@ -139,6 +139,11 @@ final class Schema
         if ($version < 9) {
             // notion_self_declared_paid 从未被写入也从未被读取：付费判定完全以 premium_expires_at 为准，删除这个无用字段
             self::dropColumn($pdo, 'users', 'notion_self_declared_paid');
+        }
+
+        if ($version < 10) {
+            // 作废订阅时把对应用户的已支付订单状态改为 void，并记录作废时间供列表展示与追溯
+            self::addColumn($pdo, 'orders', 'voided_at', 'DATETIME NULL DEFAULT NULL AFTER paid_at');
         }
 
         Database::setConfig('schema_version', (string) self::CURRENT_VERSION);
@@ -289,6 +294,7 @@ final class Schema
                 expires_after DATETIME NULL DEFAULT NULL,
                 notify_raw MEDIUMTEXT NULL,
                 paid_at DATETIME NULL DEFAULT NULL,
+                voided_at DATETIME NULL DEFAULT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY uniq_order_no (order_no),

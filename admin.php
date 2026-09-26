@@ -24,8 +24,7 @@ function adminTabs(): array
 {
     return [
         'users' => ['group' => '管理后台', 'label' => '用户管理', 'desc' => '用户账号、容量与权限组'],
-        'content' => ['group' => '管理后台', 'label' => '内容与账户', 'desc' => '用户文件、官方账户分配与账户池'],
-        'premium' => ['group' => '管理后台', 'label' => '套餐与订单', 'desc' => '会员套餐、到期时间与历史订单'],
+        'content' => ['group' => '管理后台', 'label' => '账户池管理', 'desc' => '用户文件、官方账户分配与账户池'],
         'system' => ['group' => '管理后台', 'label' => '系统设置', 'desc' => '注册与邮箱、Notion 连接、上传与支付'],
     ];
 }
@@ -38,7 +37,7 @@ function normalizeAdminTab(mixed $value): string
 
 $adminTabs = adminTabs();
 $selectedUserId = (int) ($_GET['user_id'] ?? 0);
-// 当前分区：优先取 ?tab=；未指定时，带 user_id 进入（订单页点「用户」、用户行点「管理文件」）默认展示内容与账户
+// 当前分区：优先取 ?tab=；未指定时，带 user_id 进入（订单页点「用户」、用户行点「管理文件」）默认展示账户池管理
 $requestedTab = normalizeAdminTab($_GET['tab'] ?? null);
 $activeTab = $requestedTab !== '' ? $requestedTab : ($selectedUserId > 0 ? 'content' : 'users');
 // 表单保存后仍回到当前分区，避免管理员被弹回默认页签
@@ -66,36 +65,6 @@ function parseMegabytes(string $value): ?int
         throw new RuntimeException('单文件上限必须是大于等于 0 的数字（MB）；留空或 -1 表示不限。');
     }
     return (int) round((float) $value * 1024 * 1024);
-}
-
-/** 解析后台提交的套餐到期日期（date 输入）；留空表示永久有效。 */
-function parsePremiumExpiry(string $value): ?string
-{
-    $value = trim($value);
-    if ($value === '') {
-        return null;
-    }
-    $date = DateTimeImmutable::createFromFormat('!Y-m-d', $value);
-    // createFromFormat 会容忍 "2026-1-1" 这类宽松写法，用回格式化后的字符串严格比对
-    if ($date === false || $date->format('Y-m-d') !== $value) {
-        throw new RuntimeException('到期日期格式无效，请使用日期选择器。');
-    }
-
-    // 管理员按天设置，当天仍然有效
-    return $date->format('Y-m-d') . ' 23:59:59';
-}
-
-/** 校验用户存在并返回用户名；不存在时抛错（会员相关操作都以用户为前置条件）。 */
-function findUsernameOrFail(PDO $pdo, int $userId): string
-{
-    $statement = $pdo->prepare('SELECT username FROM users WHERE id = :id');
-    $statement->execute(['id' => $userId]);
-    $username = $statement->fetchColumn();
-    if ($username === false) {
-        throw new RuntimeException('该用户不存在或已被删除。');
-    }
-
-    return (string) $username;
 }
 
 /** 保存 SMTP 表单字段；密码留空表示沿用旧值。 */
@@ -656,73 +625,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!isset(premiumPlans()[$months])) {
                 throw new RuntimeException('请选择有效的开通时长。');
             }
-            $username = findUsernameOrFail($pdo, $userId);
-            $result = grantPremium($userId, $months);
+            $targetUser = findUserById($userId);
+            if ($targetUser === null) {
+                throw new RuntimeException('该用户不存在或已被删除。');
+            }
+            if (isAdmin($targetUser)) {
+                throw new RuntimeException('管理员账号无需开通高级套餐。');
+            }
+            // 人工开通同时生成一条「管理员授权」订单，用户端能看到凭据，后台对账也能区分线上支付
+            $result = grantManualPremiumOrder($userId, $months, (int) $currentUser['id']);
             Logger::info('payment', '管理员手动开通/续费高级用户。', [
                 'user_id' => $userId,
                 'months' => $months,
                 'operator' => $currentUser['username'],
+                'order_no' => $result['order_no'],
                 'expires_after' => $result['expires_after'],
             ]);
             flash('success', sprintf(
-                '已为 %s 开通 %d 个月高级套餐，有效期至 %s。',
-                (string) $username,
+                '已为 %s 开通 %d 个月高级套餐，有效期至 %s（授权订单 %s）。',
+                (string) $targetUser['username'],
                 $months,
-                date('Y-m-d H:i', (int) strtotime($result['expires_after']))
+                date('Y-m-d H:i', (int) strtotime($result['expires_after'])),
+                $result['order_no']
             ));
-            header('Location: admin.php?tab=' . $activeTab . '&user_id=' . $userId);
-            exit;
-        } elseif ($action === 'set_premium_expiry') {
-            $userId = (int) ($_POST['user_id'] ?? 0);
-            $username = findUsernameOrFail($pdo, $userId);
-            $expiresAt = parsePremiumExpiry((string) ($_POST['premium_expires_at'] ?? ''));
-
-            // 到期时间与权限组必须同步：只改到期时间会让「设为未来时间」的用户仍留在普通组，
-            // 侧栏据此显示成「已到期」，与后台的到期时间自相矛盾
-            $state = $pdo->prepare(
-                'SELECT g.is_admin, u.notion_account_source FROM users u
-                 LEFT JOIN `groups` g ON g.id = u.group_id WHERE u.id = :id LIMIT 1'
-            );
-            $state->execute(['id' => $userId]);
-            $stateRow = $state->fetch() ?: [];
-            $isAdminGroup = (int) ($stateRow['is_admin'] ?? 0) === 1;
-
-            // 留空代表永久有效；已过期则与访问时的懒检查保持一致，改为普通组。管理员不调整，避免被降出管理组
-            $groupId = 0;
-            $grantsPremium = $expiresAt === null || strtotime($expiresAt) > time();
-            if (!$isAdminGroup) {
-                $groupId = $grantsPremium ? premiumGroupId() : defaultGroupId();
-            }
-
-            $pdo->beginTransaction();
-            try {
-                // 同时清空到期提醒标记，让新设定的到期周期可以重新提醒
-                $pdo->prepare('UPDATE users SET premium_expires_at = :expires_at, premium_reminder_sent_at = NULL WHERE id = :id')
-                    ->execute(['expires_at' => $expiresAt, 'id' => $userId]);
-                if ($groupId > 0) {
-                    $pdo->prepare('UPDATE users SET group_id = :group_id WHERE id = :id')
-                        ->execute(['group_id' => $groupId, 'id' => $userId]);
-                }
-                $pdo->commit();
-            } catch (Throwable $exception) {
-                $pdo->rollBack();
-                throw $exception;
-            }
-
-            // 与 grantPremium 一致：改为使用官方账户的高级用户必须具备可用的官方账户
-            if ($grantsPremium && userNotionSource(['notion_account_source' => $stateRow['notion_account_source'] ?? '']) === 'official'
-                && userOfficialAccounts($userId) === []) {
-                autoAssignOfficialAccounts($userId);
-            }
-
-            Logger::info('payment', '管理员调整用户高级套餐到期时间。', [
-                'user_id' => $userId,
-                'operator' => $currentUser['username'],
-                'expires_at' => $expiresAt,
-            ]);
-            flash('success', $expiresAt === null
-                ? sprintf('%s 的套餐已设为永久有效。', (string) $username)
-                : sprintf('%s 的套餐到期时间已更新为 %s。', (string) $username, date('Y-m-d H:i', (int) strtotime($expiresAt))));
             header('Location: admin.php?tab=' . $activeTab . '&user_id=' . $userId);
             exit;
         } elseif ($action === 'read_alerts') {
@@ -875,10 +800,26 @@ $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
 
     return strtotime($expiresAt) > time() ? '高级用户 · 至 ' . $date : '高级已到期 · ' . $date;
 };
+/** 用户列表中的「到期时长」文案：管理员与永久会员显示「永久」，未开通显示「未开通」。 */
+$premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
+    if (isAdmin($managedUser)) {
+        return '永久';
+    }
+    if ((int) $managedUser['group_id'] !== $premiumGroupId) {
+        return '未开通';
+    }
+    $expiresAt = premiumExpiresAt($managedUser);
+    if ($expiresAt === null) {
+        return '永久';
+    }
+    $daysLeft = premiumDaysLeft($managedUser);
+
+    return $daysLeft > 0 ? '剩余 ' . $daysLeft . ' 天' : '已到期';
+};
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>管理后台 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=20"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>管理后台 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=23"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <a class="brand" href="dashboard.php"><span class="brand-mark">N</span><span>Notion Drive</span></a>
@@ -906,21 +847,49 @@ $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
 
         <?php if ($activeTab === 'users'): ?>
         <section class="admin-panel">
-            <div class="panel-title"><div><h2>用户与容量</h2><p>容量由权限组决定；单独填写容量会覆盖组容量，留空或 -1 表示继承组容量。</p></div><span><?= count($users) ?> 位用户</span></div>
+            <div class="panel-title"><div><h2>用户与容量</h2><p>容量由权限组决定；单独填写容量会覆盖组容量，留空或 -1 表示继承组容量。每位用户默认只显示概览，展开「编辑」后才能修改密码、权限组与容量。</p></div><span><?= count($users) ?> 位用户</span></div>
             <form method="post" class="create-user-row">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="create_user">
                 <label><span>用户名</span><input name="username" minlength="3" required></label><label><span>初始密码</span><input type="password" name="password" minlength="10" required></label><label><span>权限组</span><select name="group_id"><?= $groupSelectOptions(defaultGroupId()) ?></select></label><label><span>单独容量（GB）</span><input name="quota_gb" inputmode="decimal" placeholder="-1"></label><label><span>Notion 来源</span><select name="notion_source"><option value="own">自有账户</option><option value="official">官方账户池</option></select></label><button class="primary-button compact">添加用户</button>
             </form>
+            <div class="log-filters user-search"><label><span>搜索用户</span><input id="user-search" type="search" placeholder="输入用户名或邮箱即时筛选"></label></div>
             <div class="admin-user-list">
                 <?php foreach ($users as $managedUser): $quotaGb = bytesToInputValue($managedUser['quota_bytes'] === null ? null : (int) $managedUser['quota_bytes'], 1073741824); ?>
-                <form method="post" class="admin-user-row">
+                <form method="post" class="admin-user-row user-row-fold" data-user-search="<?= e(mb_strtolower((string) $managedUser['username'] . ' ' . (string) ($managedUser['email'] ?? ''))) ?>">
                     <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="user_id" value="<?= (int) $managedUser['id'] ?>">
-                    <div class="user-identity"><?= avatarHtml($managedUser) ?><input name="username" value="<?= e($managedUser['username']) ?>" required></div>
-                    <small class="user-meta"><?= (int) $managedUser['file_count'] ?> 个文件 · <?= e(formatBytes((int) $managedUser['used_bytes'])) ?><?= emailBound($managedUser) ? ' · ' . e((string) $managedUser['email']) : ' · 未绑定邮箱' ?> · <?= e($premiumLabel($managedUser)) ?> · Notion <?= userNotionSource($managedUser) === 'own' ? (hasOwnNotionAccount($managedUser) ? '自有账户' : '自有账户（未绑定）') : '官方账户' ?></small>
-                    <label><span>新密码</span><input type="password" name="password" placeholder="留空不修改"></label><label><span>权限组</span><select name="group_id"><?= $groupSelectOptions((int) $managedUser['group_id']) ?></select></label><label><span>单独容量 GB</span><input name="quota_gb" value="<?= e($quotaGb) ?>"></label>
-                    <a class="text-action" href="admin.php?tab=content&user_id=<?= (int) $managedUser['id'] ?>#user-files">管理文件</a><button class="save-action" name="action" value="update_user">保存</button><?php if ((int) $managedUser['id'] !== (int) $currentUser['id']): ?><button class="delete-action" name="action" value="delete_user" data-confirm="确认删除用户及其全部文件？">删除</button><?php endif; ?>
+                    <details>
+                        <summary>
+                            <span class="user-row-summary">
+                                <span class="user-identity"><?= avatarHtml($managedUser) ?><strong><?= e((string) $managedUser['username']) ?></strong></span>
+                                <small class="user-meta"><?= (int) $managedUser['file_count'] ?> 个文件 · <?= e(formatBytes((int) $managedUser['used_bytes'])) ?><?= emailBound($managedUser) ? ' · ' . e((string) $managedUser['email']) : ' · 未绑定邮箱' ?> · <?= e($premiumLabel($managedUser)) ?> · Notion <?= userNotionSource($managedUser) === 'own' ? (hasOwnNotionAccount($managedUser) ? '自有账户' : '自有账户（未绑定）') : '官方账户' ?> · 到期时长 <?= e($premiumDuration($managedUser)) ?></small>
+                            </span>
+                            <span class="user-row-actions">
+                                <?php if (!isAdmin($managedUser)): ?><button type="button" class="text-action" data-grant-toggle><?= isPremiumUser($managedUser) ? '续费订阅' : '开通订阅' ?></button><?php endif; ?>
+                                <span class="text-action user-row-toggle"><span class="fold-open">编辑</span><span class="fold-close">收起</span></span>
+                            </span>
+                        </summary>
+                        <div class="user-row-editor-body">
+                            <label><span>用户名</span><input name="username" value="<?= e($managedUser['username']) ?>" required></label>
+                            <label><span>新密码</span><input type="password" name="password" placeholder="留空不修改"></label>
+                            <label><span>权限组</span><select name="group_id"><?= $groupSelectOptions((int) $managedUser['group_id']) ?></select></label>
+                            <label><span>单独容量 GB</span><input name="quota_gb" value="<?= e($quotaGb) ?>"></label>
+                            <div class="row-actions">
+                                <a class="text-action" href="admin.php?tab=content&user_id=<?= (int) $managedUser['id'] ?>#user-files">管理文件</a>
+                                <button class="save-action" name="action" value="update_user">保存</button>
+                                <?php if ((int) $managedUser['id'] !== (int) $currentUser['id']): ?><button class="delete-action" name="action" value="delete_user" data-confirm="确认删除用户及其全部文件？">删除</button><?php endif; ?>
+                            </div>
+                        </div>
+                    </details>
+                    <?php if (!isAdmin($managedUser)): ?>
+                    <div class="user-row-grant" hidden>
+                        <label><span>开通时长</span><select name="grant_months"><?php foreach ($plans as $months => $price): ?><option value="<?= (int) $months ?>"><?= (int) $months ?> 个月 · ¥<?= e(number_format((float) $price, 2)) ?></option><?php endforeach; ?></select></label>
+                        <button class="primary-button compact" name="action" value="grant_premium" data-confirm="确认为该用户开通高级套餐？将生成一条「管理员授权」订单。">确认开通</button>
+                        <button type="button" class="text-action" data-grant-cancel>取消</button>
+                    </div>
+                    <?php endif; ?>
                 </form>
                 <?php endforeach; ?>
+                <p class="compact-empty" id="user-search-empty" hidden>没有匹配的用户。</p>
             </div>
         </section>
 
@@ -938,6 +907,19 @@ $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
                     <label><span>组名称</span><input name="group_name" value="<?= e($group['name']) ?>" maxlength="64" required></label><label><span>组容量 GB</span><input name="group_quota_gb" value="<?= e($groupQuotaGb) ?>"></label><label><span>单文件 MB</span><input name="group_single_mb" value="<?= e($groupSingleMb) ?>"></label><label><span>等级</span><input name="group_level" value="<?= (int) $group['level'] ?>"></label><label class="checkbox"><input type="checkbox" name="group_is_admin" <?= (int) $group['is_admin'] === 1 ? 'checked' : '' ?>>管理员组</label>
                     <button class="save-action" name="action" value="save_group">保存</button><?php if ((int) $group['is_builtin'] !== 1): ?><button class="delete-action" name="action" value="delete_group" data-confirm="确认删除该权限组？">删除</button><?php endif; ?>
                 </form>
+                <?php $groupMembers = array_values(array_filter($users, static fn (array $member): bool => (int) $member['group_id'] === (int) $group['id'])); ?>
+                <details class="group-members">
+                    <summary><span class="text-action">查看该组用户（<?= count($groupMembers) ?>）</span></summary>
+                    <?php if (!$groupMembers): ?>
+                    <p class="log-meta">该权限组下暂无用户。</p>
+                    <?php else: ?>
+                    <ul class="group-member-list">
+                        <?php foreach ($groupMembers as $member): ?>
+                        <li><a href="admin.php?tab=content&user_id=<?= (int) $member['id'] ?>#user-files"><?= avatarHtml($member) ?><strong><?= e((string) $member['username']) ?></strong></a><small><?= (int) $member['file_count'] ?> 个文件 · <?= e($premiumLabel($member)) ?></small></li>
+                        <?php endforeach; ?>
+                    </ul>
+                    <?php endif; ?>
+                </details>
                 <?php endforeach; ?>
             </div>
         </section>
@@ -988,35 +970,6 @@ $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
             <?php if (!$officialAccounts): ?><div class="empty-state compact-empty">官方账户池为空，请先在上方添加账户。</div><?php endif; ?>
         </section>
         <?php endif; ?>
-        <?php endif; ?>
-
-        <?php if ($activeTab === 'premium' && !$selectedUser): ?>
-        <section class="admin-panel"><div class="empty-state compact-empty">请先在「用户管理」中选择一位用户，再设置其会员与到期时间。</div></section>
-        <?php endif; ?>
-
-        <?php if ($activeTab === 'premium' && $selectedUser): $selectedExpires = premiumExpiresAt($selectedUser); $selectedDays = premiumDaysLeft($selectedUser); ?>
-        <section class="admin-panel">
-            <div class="panel-title"><div><h2><?= e($selectedUser['username']) ?> 的会员与到期</h2><p>手动开通或续费高级套餐；也可直接指定到期时间，留空表示永久有效。保存到期时间会同步调整权限组：留空或未来时间加入高级用户组，已过去的时间恢复普通用户组。</p></div><span class="status-badge"><?= e($premiumLabel($selectedUser)) ?></span></div>
-            <div class="plan-summary">
-                <div><span>当前权限组</span><strong><?= isAdmin($selectedUser) ? '管理员' : e((string) ($selectedUser['group_name'] ?? '用户')) ?></strong></div>
-                <div><span>套餐到期</span><strong><?= $selectedExpires === null ? '永久有效' : e(date('Y-m-d H:i', (int) strtotime($selectedExpires))) ?></strong></div>
-                <div><span>剩余天数</span><strong><?= $selectedDays === null ? '—' : (int) $selectedDays . ' 天' ?></strong></div>
-                <div><span>账户来源</span><strong><?= userNotionSource($selectedUser) === 'own' ? '自有账户' : '官方账户池' ?></strong></div>
-            </div>
-            <div class="subscribe-form">
-                <form method="post" class="create-user-row slim">
-                    <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="user_id" value="<?= (int) $selectedUser['id'] ?>">
-                    <label><span>开通 / 续费时长</span><select name="grant_months"><?php foreach ($plans as $months => $price): ?><option value="<?= (int) $months ?>"><?= (int) $months ?> 个月 · ¥<?= e(number_format((float) $price, 2)) ?></option><?php endforeach; ?></select></label>
-                    <button class="primary-button compact" name="action" value="grant_premium">开通 / 续费</button>
-                </form>
-                <form method="post" class="create-user-row slim">
-                    <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="user_id" value="<?= (int) $selectedUser['id'] ?>">
-                    <label><span>到期日期</span><input type="date" name="premium_expires_at" value="<?= $selectedExpires === null ? '' : e(date('Y-m-d', (int) strtotime($selectedExpires))) ?>"></label>
-                    <button class="primary-button compact" name="action" value="set_premium_expiry">保存到期时间</button>
-                </form>
-                <p class="log-meta">到期后该用户恢复普通用户权限，已有文件仍可查看与下载，但不能上传新文件；把到期日期设为已过去的时间即可取消高级权限。</p>
-            </div>
-        </section>
         <?php endif; ?>
 
         <?php if ($activeTab === 'system'): ?>
@@ -1079,5 +1032,5 @@ $premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
         </section>
         <?php endif; ?>
     </main>
-    <div id="toast" class="toast"></div><script src="assets/app.js?v=13" defer></script><script src="assets/admin.js?v=5" defer></script>
+    <div id="toast" class="toast"></div><script src="assets/app.js?v=14" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body></html>

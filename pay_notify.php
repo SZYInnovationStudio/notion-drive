@@ -54,14 +54,16 @@ if ($order === null) {
     notifyRespond('fail');
 }
 
-// 金额核对：与订单金额不符时绝不开通，同时写入日志与后台告警供人工核对
-if (abs((float) ($params['money'] ?? '0') - (float) $order['amount']) >= 0.01) {
-    Logger::error('payment', '支付回调金额与订单金额不一致，已拒绝开通。', [
+// 金额核对：回调必须带金额且与订单金额一致，缺失或不等都绝不开通
+// （缺失时不能当成 0 元直接判定「金额不符」，但也不能放行，一并写告警供人工核对）
+$receivedMoney = $params['money'] ?? null;
+if ($receivedMoney === null || $receivedMoney === '' || abs((float) $receivedMoney - (float) $order['amount']) >= 0.01) {
+    Logger::error('payment', '支付回调金额缺失或与订单金额不一致，已拒绝开通。', [
         'order_no' => $orderNo,
         'expected' => (string) $order['amount'],
-        'received' => (string) ($params['money'] ?? ''),
+        'received' => $receivedMoney === null ? '(缺失)' : (string) $receivedMoney,
     ]);
-    raiseAdminAlert('error', '支付回调金额不一致，请人工核对：' . $orderNo);
+    raiseAdminAlert('error', '支付回调金额缺失或不一致，请人工核对：' . $orderNo);
     notifyRespond('fail');
 }
 

@@ -19,6 +19,47 @@
         window.setTimeout(() => toast.classList.remove('visible'), 2600);
     };
 
+    // 自定义确认弹窗：替代浏览器原生 confirm，样式与后台一致；返回 Promise<boolean>
+    const askConfirm = message => new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'confirm-overlay';
+        overlay.innerHTML = '<div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">'
+            + '<h2 id="confirm-title">请确认操作</h2>'
+            + '<p class="confirm-message"></p>'
+            + '<div class="confirm-actions">'
+            + '<button type="button" class="secondary-button" data-confirm-cancel>取消</button>'
+            + '<button type="button" class="confirm-danger" data-confirm-ok>确认</button>'
+            + '</div></div>';
+        overlay.querySelector('.confirm-message').textContent = message;
+
+        const previousFocus = document.activeElement;
+        let settled = false;
+        const close = result => {
+            if (settled) return;
+            settled = true;
+            document.removeEventListener('keydown', onKeydown);
+            overlay.remove();
+            // 关闭后把焦点还给触发按钮，键盘操作不丢失位置
+            if (previousFocus instanceof HTMLElement) previousFocus.focus();
+            resolve(result);
+        };
+        const onKeydown = event => {
+            if (event.key === 'Escape') close(false);
+        };
+
+        overlay.querySelector('[data-confirm-ok]').addEventListener('click', () => close(true));
+        overlay.querySelector('[data-confirm-cancel]').addEventListener('click', () => close(false));
+        // 点击遮罩空白处视为取消
+        overlay.addEventListener('click', event => {
+            if (event.target === overlay) close(false);
+        });
+        document.addEventListener('keydown', onKeydown);
+
+        document.body.append(overlay);
+        overlay.querySelector('[data-confirm-ok]').focus();
+    });
+    window.askConfirm = askConfirm;
+
     // 上传成功后会刷新文件列表，提示语留到刷新之后再弹出
     const uploadNotice = window.sessionStorage.getItem('uploadNotice');
     if (uploadNotice) {
@@ -58,7 +99,7 @@
             if (name === null || name.trim() === '' || name.trim() === current) return;
             body.set('name', name.trim());
         } else if (action === 'delete') {
-            if (!window.confirm('确认删除这个文件？删除后将从 Notion 页面归档。')) return;
+            if (!(await askConfirm('确认删除这个文件？删除后将从 Notion 页面归档。'))) return;
         }
 
         button.disabled = true;
@@ -89,6 +130,32 @@
         if (!button) return;
         const image = document.getElementById(button.dataset.captchaRefresh);
         if (image) image.src = `captcha.php?t=${Date.now()}`;
+    });
+
+    // 带 data-confirm 的按钮：先弹自定义确认框，确认后再提交所属表单
+    document.addEventListener('click', async event => {
+        const trigger = event.target.closest('[data-confirm]');
+        if (!trigger) return;
+        event.preventDefault();
+        if (document.querySelector('.confirm-overlay')) return;
+        if (!(await askConfirm(trigger.dataset.confirm))) return;
+
+        const form = trigger.form;
+        if (!form) return;
+        if (typeof form.requestSubmit === 'function') {
+            // requestSubmit 会保留触发按钮的 name/value（如 action=grant_premium）
+            form.requestSubmit(trigger);
+            return;
+        }
+        // 旧浏览器兜底：把按钮的 name/value 复制成隐藏域再提交
+        if (trigger.name) {
+            const hidden = document.createElement('input');
+            hidden.type = 'hidden';
+            hidden.name = trigger.name;
+            hidden.value = trigger.value;
+            form.append(hidden);
+        }
+        form.submit();
     });
 
     const dropZone = document.getElementById('dropZone');

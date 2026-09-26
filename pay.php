@@ -137,7 +137,7 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>会员套餐 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=20"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>会员套餐 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=23"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>"<?= $checkoutUrl !== '' ? ' data-checkout-url="' . e($checkoutUrl) . '"' : '' ?>>
     <aside class="drive-sidebar">
         <a class="brand" href="dashboard.php"><span class="brand-mark">N</span><span>Notion Drive</span></a>
@@ -223,7 +223,7 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
         </section>
 
         <section class="admin-panel">
-            <div class="panel-title"><div><h2>订单记录</h2><p>最近 20 笔订单。不支持退款，如需帮助请联系管理员。</p></div></div>
+            <div class="panel-title"><div><h2>订单记录</h2><p>最近 20 笔订单。不支持退款，如需帮助请联系管理员。管理员人工开通的订单显示为「管理员授权」，被作废的订单显示为「已作废」。</p></div></div>
             <?php if ($orders === []): ?>
                 <p class="compact-empty">还没有订单记录。</p>
             <?php else: ?>
@@ -236,7 +236,7 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
                         <small><?= e(date('Y-m-d H:i', (int) strtotime((string) $order['created_at']))) ?> · <?= (int) $order['months'] ?> 个月 · <?= e(payTypeLabel((string) $order['pay_type'])) ?></small>
                     </div>
                     <div class="order-amount">¥<?= e(number_format((float) $order['amount'], 2)) ?></div>
-                    <span class="status-badge <?= e($status) ?>"><?= e(orderStatusLabel($status)) ?></span>
+                    <span class="status-badge <?= e(orderDisplayClass($order)) ?>"><?= e(orderDisplayLabel($order)) ?></span>
                     <div class="order-actions">
                         <?php if ($status === 'pending'): ?>
                         <form method="post" class="inline-form">
@@ -254,6 +254,6 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
         </section>
     </main>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=13" defer></script>
+    <script src="assets/app.js?v=14" defer></script>
 </body>
 </html>
