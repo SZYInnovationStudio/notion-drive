@@ -1,0 +1,482 @@
+:root {
+    --bg: #f4f5f7;
+    --surface: #ffffff;
+    --surface-soft: #f8f9fa;
+    --text: #1f2328;
+    --muted: #6b7280;
+    --line: #e4e7eb;
+    --line-strong: #d3d7dd;
+    --primary: #1769e0;
+    --primary-hover: #1258bd;
+    --primary-soft: #edf4ff;
+    --danger: #cf3c3c;
+    --danger-soft: #fff1f1;
+    --success: #197647;
+    --radius: 12px;
+    /* 表单控件统一高度与圆角：输入框、下拉框、按钮全部对齐，避免同行高低不齐 */
+    --control-h: 44px;
+    --control-radius: 9px;
+    --shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px rgba(16,24,40,.06);
+}
+
+* { box-sizing: border-box; }
+html { color-scheme: light; }
+body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font: 16px/1.5 Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+button, input, select { font: inherit; }
+button, a { -webkit-tap-highlight-color: transparent; }
+a { color: inherit; text-decoration: none; }
+button { cursor: pointer; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+.brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 720; letter-spacing: -.02em; }
+.brand-mark { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: #fff; background: #22262b; font: 750 16px/1 Georgia, serif; }
+.avatar { flex: 0 0 auto; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; background: #e9edf2; color: #394150; font-size: .85rem; font-weight: 700; }
+
+/* Login and installer */
+.login-shell, .install-shell { background: #eef1f4; }
+.ambient, .orbital-art { display: none; }
+.login-layout, .install-layout { width: min(1120px, calc(100% - 40px)); min-height: 100vh; margin: auto; display: grid; grid-template-columns: .9fr 1.1fr; align-items: center; gap: 80px; padding: clamp(20px, 4vh, 48px) 0; }
+.login-copy, .install-intro { min-height: min(560px, calc(100vh - 96px)); display: flex; flex-direction: column; justify-content: space-between; }
+/* 登录页左侧文案整体垂直居中（品牌与标题成组居中，不再一上一下） */
+.login-copy { justify-content: center; gap: clamp(32px, 7vh, 84px); }
+.login-copy h1, .install-intro h1 { margin: 20px 0 16px; font-size: clamp(2.8rem, 4.9vw, 4.6rem); line-height: 1.06; letter-spacing: -.06em; font-weight: 650; }
+.login-copy h1 em, .install-intro h1 em { color: var(--primary); font-style: normal; }
+.login-copy p, .install-intro p { color: var(--muted); }
+.eyebrow { color: var(--primary); font-size: .75rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.glass-card, .login-card, .install-card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
+.login-card { width: 100%; max-width: 480px; justify-self: end; padding: 44px; }
+.install-layout { grid-template-columns: .68fr 1.32fr; gap: 60px; }
+.install-card { padding: 36px; }
+.install-intro { min-height: 680px; }
+.card-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; }
+.card-heading h2 { margin: 14px 0 4px; font-size: 1.8rem; }
+.card-heading p { color: var(--muted); margin: 0; }
+.status-pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 9px; border-radius: 999px; background: #edf8f1; color: var(--success); font-size: .75rem; }
+.status-pill i { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+.step-count { color: var(--muted); font-size: .75rem; }
+.login-form, .install-form, .settings-form { display: grid; gap: 18px; }
+label { display: grid; gap: 7px; }
+label > span, fieldset legend { color: #4c5562; font-size: .8rem; font-weight: 650; }
+label small { color: var(--muted); font-size: .72rem; }
+input, select { width: 100%; min-width: 0; height: var(--control-h); padding: 0 12px; color: var(--text); background: #fff; border: 1px solid var(--line-strong); border-radius: var(--control-radius); outline: none; transition: border-color .15s, box-shadow .15s; }
+input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(23,105,224,.11); }
+input::placeholder { color: #a2a8b0; }
+/* 勾选框与单选钮不参与控件高度，单独固定尺寸；文件选择框内的原生按钮也统一高度 */
+input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; min-width: 0; padding: 0; border: 0; border-radius: 4px; accent-color: var(--primary); }
+input[type="file"] { height: var(--control-h); padding: 5px 10px; font-size: .8rem; }
+input[type="file"]::file-selector-button { height: 32px; margin-right: 10px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-soft); color: #404854; font: inherit; font-size: .8rem; cursor: pointer; }
+input[type="file"]::file-selector-button:hover { background: #eef1f4; }
+.primary-button { min-height: var(--control-h); display: inline-flex; align-items: center; justify-content: center; gap: 12px; padding: 0 17px; border: 1px solid var(--primary); border-radius: var(--control-radius); background: var(--primary); color: #fff; font-weight: 650; }
+.primary-button:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+.primary-button b { font-size: 1.1rem; }
+.primary-button.compact { white-space: nowrap; }
+.primary-button:disabled { opacity: .6; cursor: not-allowed; }
+.login-note { color: var(--muted); text-align: center; font-size: .78rem; margin: 20px 0 0; }
+.alert { border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px; margin-bottom: 18px; font-size: .85rem; }
+.alert.error { color: #9f2929; background: var(--danger-soft); border-color: #f0caca; }
+.alert.success { color: var(--success); background: #edf8f1; border-color: #cce7d6; }
+.alert.warning { color: #8a5a08; background: #fff8ec; border-color: #f0dcb4; }
+.alert-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.alert-head strong { font-size: .88rem; }
+.alert-list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.alert-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 7px 0; border-top: 1px dashed #f0dcb4; }
+.alert-list li:first-child { border-top: 0; }
+.alert-list small { display: block; margin-top: 2px; color: var(--muted); font-size: .72rem; }
+.alert-level { display: inline-block; padding: 1px 7px; border: 1px solid #e6d0a4; border-radius: 999px; background: #fff; font-size: .7rem; font-weight: 700; }
+.alert-level.error { color: #9f2929; border-color: #f0caca; }
+.alert-head button, .alert-list button { height: auto; padding: 0; border: 0; background: none; color: var(--primary); font-size: .78rem; }
+.alert-head button:hover, .alert-list button:hover { text-decoration: underline; }
+.setup-steps { display: flex; gap: 24px; padding: 0; margin: 0; list-style: none; color: var(--muted); font-size: .78rem; }
+.setup-steps span { display: block; color: var(--primary); font-size: .7rem; }
+fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 13px; }
+fieldset legend { margin-bottom: 10px; }
+.field-grid { display: grid; gap: 12px; }
+.field-grid.two { grid-template-columns: 1fr 1fr; }
+.field-grid.three { grid-template-columns: 1.3fr .65fr 1.25fr; }
+
+/* Main drive shell */
+.drive-shell { padding-left: 228px; background: var(--bg); }
+.drive-sidebar { position: fixed; z-index: 20; inset: 0 auto 0 0; width: 228px; padding: 24px 16px 18px; display: flex; flex-direction: column; background: #fff; border-right: 1px solid var(--line); }
+.drive-sidebar .brand { padding: 0 8px; }
+.drive-nav { display: grid; gap: 4px; margin-top: 42px; }
+.drive-nav a { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: 8px; color: #596170; font-size: .9rem; }
+.drive-nav a:hover { background: #f4f6f8; color: var(--text); }
+.drive-nav a.active { background: var(--primary-soft); color: #1255b8; font-weight: 650; }
+.drive-nav a span { width: 20px; text-align: center; }
+.sidebar-storage { margin-top: auto; padding: 16px 10px; border-top: 1px solid var(--line); }
+.sidebar-storage > div { display: flex; justify-content: space-between; align-items: center; font-size: .75rem; color: var(--muted); }
+.sidebar-storage strong { color: var(--text); }
+.sidebar-storage progress { width: 100%; height: 5px; margin: 10px 0 5px; appearance: none; border: 0; }
+.sidebar-storage progress::-webkit-progress-bar { background: #e9edf2; border-radius: 9px; }
+.sidebar-storage progress::-webkit-progress-value { background: var(--primary); border-radius: 9px; }
+.sidebar-storage small { color: var(--muted); font-size: .7rem; }
+.sidebar-storage > div + div { margin-top: 12px; }
+.sidebar-storage a { color: var(--primary); }
+.account-menu { display: flex; align-items: center; gap: 9px; padding: 14px 8px 0; border-top: 1px solid var(--line); }
+.account-menu > div { min-width: 0; flex: 1; display: grid; }
+.account-menu strong { font-size: .8rem; overflow: hidden; text-overflow: ellipsis; }
+.account-menu small { color: var(--muted); font-size: .68rem; }
+.account-menu button { border: 0; background: transparent; color: var(--muted); font-size: .72rem; padding: 5px; }
+/* 侧栏没有空间用量区块时（如管理后台、运行日志），把账号信息固定在底部 */
+.drive-nav + .account-menu { margin-top: auto; }
+.drive-main { width: min(1240px, calc(100% - 64px)); margin: 0 auto; padding: 34px 0 64px; }
+.drive-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 26px; }
+.drive-header p { margin: 0 0 3px; color: var(--muted); font-size: .77rem; }
+.drive-header h1 { margin: 0; font-size: 1.8rem; letter-spacing: -.03em; }
+.search-box { width: min(360px, 40vw); height: var(--control-h); display: flex; align-items: center; gap: 8px; padding-left: 11px; background: #fff; border: 1px solid var(--line); border-radius: var(--control-radius); }
+.search-box span { color: var(--muted); }
+.search-box input { height: 100%; border: 0; box-shadow: none; padding-left: 0; }
+.search-box input:focus { box-shadow: none; }
+.secondary-button { display: inline-flex; align-items: center; justify-content: center; min-height: var(--control-h); padding: 0 15px; border: 1px solid var(--line-strong); border-radius: var(--control-radius); background: #fff; color: #404854; font-size: .82rem; white-space: nowrap; transition: background .15s, border-color .15s; }
+.secondary-button:hover { background: var(--surface-soft); }
+.secondary-button:disabled { color: #a2a8b0; background: var(--surface-soft); cursor: not-allowed; }
+
+.upload-card { display: grid; grid-template-columns: minmax(250px, .8fr) minmax(340px, 1.2fr); gap: 24px; padding: 24px; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 1px 2px rgba(16,24,40,.03); }
+.upload-copy h2 { margin: 0 0 5px; font-size: 1.1rem; }
+.upload-copy > p { color: var(--muted); margin: 0 0 15px; font-size: .82rem; }
+.upload-copy ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 5px; color: #596170; font-size: .76rem; }
+.upload-copy li:before { content: "·"; margin-right: 7px; color: var(--primary); }
+.type-details { margin-top: 13px; color: var(--muted); font-size: .74rem; }
+.type-details summary { color: var(--primary); cursor: pointer; }
+.type-details p { margin: 7px 0 0; }
+.drop-zone { min-height: 190px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; text-align: center; background: #fafbfd; border: 1px dashed #bfc6d0; border-radius: 10px; outline: none; }
+.drop-zone:hover, .drop-zone:focus-visible, .drop-zone.dragging { border-color: var(--primary); background: var(--primary-soft); }
+.upload-icon { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; background: #e9eef5; color: #475467; font-size: 1.2rem; }
+.drop-zone strong { margin-top: 9px; font-size: .88rem; }
+.drop-zone small { color: var(--muted); font-size: .72rem; }
+.drop-zone button { margin-top: 12px; padding: 7px 12px; border: 1px solid var(--line-strong); border-radius: 7px; background: #fff; color: #3c4654; font-size: .78rem; }
+.upload-queue { grid-column: 1 / -1; display: grid; gap: 7px; }
+.queue-item { display: flex; align-items: center; gap: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.queue-meta { min-width: 0; flex: 1; display: grid; }
+.queue-meta b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; }
+.queue-meta small, .queue-status { color: var(--muted); font-size: .7rem; }
+.queue-status { max-width: 300px; text-align: right; }
+.queue-item.failed .queue-status { color: var(--danger); white-space: normal; word-break: break-word; line-height: 1.45; }
+.queue-item.complete .queue-status { color: var(--success); }
+.progress-track { width: 100%; height: 3px; margin-top: 6px; appearance: none; border: 0; }
+.progress-track::-webkit-progress-bar { background: #edf0f3; }
+.progress-track::-webkit-progress-value { background: var(--primary); }
+
+.file-section { margin-top: 28px; }
+.file-section-head, .panel-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.file-section-head > div { display: flex; align-items: baseline; gap: 10px; }
+.file-section-head h2, .panel-title h2 { margin: 0; font-size: 1rem; }
+.file-section-head span, .panel-title > span, .sync-state { color: var(--muted); font-size: .73rem; }
+.file-table-wrap { overflow-x: auto; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); }
+.file-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.file-table th { padding: 11px 14px; color: var(--muted); background: #fafbfc; border-bottom: 1px solid var(--line); text-align: left; font-size: .7rem; font-weight: 650; white-space: nowrap; }
+.file-table td { padding: 11px 14px; border-bottom: 1px solid #edf0f2; color: #596170; white-space: nowrap; }
+.file-table tbody tr:last-child td { border-bottom: 0; }
+.file-table tbody tr:hover { background: #fafbfd; }
+.file-table th:last-child, .file-table td:last-child { text-align: right; }
+.file-name { display: flex; align-items: center; gap: 11px; min-width: 240px; }
+.file-name > div { min-width: 0; display: grid; }
+.file-name strong { max-width: 420px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.file-name small { color: var(--muted); font-size: .68rem; }
+.file-kind { width: 38px; height: 38px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 8px; background: #eef1f5; color: #586273; font-size: .55rem; font-weight: 750; overflow: hidden; }
+.file-actions { display: inline-flex; align-items: center; gap: 4px; }
+.file-actions a, .file-actions button { padding: 5px 8px; border: 0; border-radius: 6px; background: transparent; color: #475467; font-size: .72rem; }
+.file-actions a:hover, .file-actions button:hover { background: #edf1f5; }
+.file-actions .danger { color: var(--danger); }
+.empty-state { padding: 60px 20px; text-align: center; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); }
+.empty-state > span { color: #a7adb6; font-size: 1.6rem; }
+.empty-state h3 { margin: 8px 0 2px; font-size: .9rem; }
+.empty-state p { margin: 0; color: var(--muted); font-size: .75rem; }
+
+/* Admin */
+.admin-main { max-width: 1320px; }
+.admin-panel { margin-bottom: 22px; padding: 22px; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); }
+.panel-title p { margin: 3px 0 0; color: var(--muted); font-size: .74rem; }
+.panel-title > a { color: var(--primary); font-size: .75rem; }
+.create-user-row { display: grid; grid-template-columns: 1.1fr 1.1fr .7fr .8fr auto auto; gap: 10px; align-items: end; padding: 17px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 9px; }
+/* 只有一两个字段的行（如手动开通会员、设置到期时间）不再套用六列模板，避免控件被拉得过宽 */
+.create-user-row.slim { grid-template-columns: minmax(0, 300px) auto; justify-content: start; }
+/* 表单末尾的操作按钮独占一行并右对齐，与上方控件同高 */
+.form-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 2px; }
+/* 多个复选框单独占一行，避免与输入框挤在同一行时高低不齐 */
+.checkbox-row { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 26px; }
+.checkbox { display: flex; align-items: center; gap: 7px; min-height: var(--control-h); color: #4c5562; font-size: .76rem; white-space: nowrap; }
+.checkbox input { flex: 0 0 auto; }
+.admin-user-list { display: grid; margin-top: 12px; }
+.admin-user-row { display: grid; grid-template-columns: minmax(190px,1.3fr) minmax(125px,.9fr) 100px auto auto auto auto; gap: 9px; align-items: end; padding: 12px 2px; border-bottom: 1px solid var(--line); }
+.admin-user-row:last-child { border-bottom: 0; }
+/* 分配主/备用账户的行只有两个下拉框与两个按钮，单独指定列数 */
+.admin-user-row.assign-row { grid-template-columns: minmax(0, 300px) minmax(0, 300px) auto auto; justify-content: start; }
+.user-identity { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.user-identity > div { min-width: 0; flex: 1; display: grid; }
+.user-identity > input { flex: 1; }
+.user-identity input:not([type="checkbox"]) { padding: 0 10px; font-weight: 650; }
+.user-identity small { margin-top: 3px; color: var(--muted); font-size: .67rem; }
+/* 用户行的说明文字独占一行铺满整行，让用户名输入框能与同排其他控件底边对齐 */
+.user-meta { grid-column: 1 / -1; margin-top: -3px; color: var(--muted); font-size: .67rem; }
+.admin-user-row label > span { font-size: .68rem; }
+.admin-user-row input:not([type="checkbox"]) { padding: 0 10px; }
+.text-action, .save-action, .delete-action { height: var(--control-h); display: inline-grid; place-items: center; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--control-radius); background: #fff; font-size: .7rem; white-space: nowrap; }
+.text-action:hover, .save-action:hover, .delete-action:hover { background: var(--surface-soft); }
+.save-action { color: var(--primary); border-color: #c8dcf8; }
+.delete-action { color: var(--danger); border-color: #f0caca; }
+/* 行内多个操作按钮（如官方账户的保存 / 测试连接）成组排列，与同排按钮同高 */
+.row-actions { display: inline-flex; align-items: center; gap: 6px; justify-self: start; }
+.connection-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px 14px; align-items: end; }
+.status-badge { padding: 4px 8px; border-radius: 999px; color: var(--success) !important; background: #edf8f1; }
+.compact-empty { padding: 30px; color: var(--muted); font-size: .78rem; }
+/* 权限组行比用户行多一个「单文件上限」与「等级」，单独指定列数 */
+.create-user-row.create-group-row { grid-template-columns: 1fr .8fr .8fr .6fr auto auto; }
+.admin-user-row.group-row { grid-template-columns: minmax(190px,1.3fr) minmax(125px,.9fr) .8fr .8fr .6fr auto auto auto; }
+
+/* Account */
+.avatar img { display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+.avatar.large { width: 88px; height: 88px; font-size: 2rem; }
+.avatar-editor { display: flex; align-items: flex-start; gap: 20px; }
+.avatar-editor-body { min-width: 0; flex: 1; display: grid; gap: 10px; }
+.account-form { display: grid; grid-template-columns: minmax(0, 320px) auto; gap: 12px; align-items: end; }
+.account-form.password { grid-template-columns: repeat(3, minmax(0, 1fr)) auto; }
+.account-form.email { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+.inline-form { display: flex; }
+.field-hint { margin: 0; color: var(--muted); font-size: .74rem; }
+.code-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.code-hint { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: .76rem; }
+.code-hint.error { color: var(--danger); }
+.code-hint.success { color: var(--success); }
+.captcha-field { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.captcha-field img { display: block; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; }
+.captcha-refresh { min-height: var(--control-h); padding: 0 14px; color: var(--primary); background: #fff; border: 1px solid var(--line-strong); border-radius: var(--control-radius); font-size: .76rem; white-space: nowrap; }
+.captcha-refresh:hover { background: var(--surface-soft); }
+.login-note a { color: var(--primary); font-weight: 650; }
+
+/* Logs */
+.log-file-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.log-file-chip { display: inline-flex; align-items: baseline; gap: 8px; padding: 9px 12px; color: #404854; background: #fff; border: 1px solid var(--line); border-radius: 9px; font-size: .78rem; }
+.log-file-chip:hover { background: var(--surface-soft); border-color: var(--line-strong); }
+.log-file-chip.active { color: #1255b8; background: var(--primary-soft); border-color: var(--primary); font-weight: 650; }
+.log-file-chip small { color: var(--muted); font-size: .68rem; }
+.log-file-chip.active small { color: #4b76b8; }
+.log-quick { display: inline-flex; gap: 8px; }
+.log-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-bottom: 12px; }
+.log-filters label { gap: 5px; }
+.log-filters label > span { font-size: .7rem; }
+.log-filters input, .log-filters select { width: auto; min-width: 150px; padding: 0 10px; font-size: .78rem; }
+.log-meta { margin: 0 0 10px; color: var(--muted); font-size: .74rem; }
+.log-view { margin: 0; padding: 14px 16px; max-height: 620px; overflow: auto; list-style: none; color: #d9dee5; background: #1f2328; border-radius: 10px; font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.log-line { padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,.05); white-space: pre-wrap; word-break: break-word; }
+.log-line:last-child { border-bottom: 0; }
+.log-error { color: #ffb4b4; }
+.log-warning { color: #ffd79a; }
+.log-info { color: #a8d5ff; }
+
+.toast { position: fixed; z-index: 100; right: 24px; bottom: 24px; max-width: 360px; padding: 11px 14px; border-radius: 9px; background: #24292f; color: #fff; box-shadow: var(--shadow); font-size: .8rem; opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity .18s, transform .18s; }
+.toast.visible { opacity: 1; transform: translateY(0); }
+.toast.error { background: #a83232; }
+
+/* 上传重名确认弹窗 */
+.duplicate-dialog { width: min(460px, calc(100% - 32px)); padding: 22px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
+.duplicate-dialog::backdrop { background: rgba(17, 22, 29, .42); }
+.duplicate-dialog h2 { margin: 0 0 6px; font-size: 1.05rem; letter-spacing: -.01em; }
+.duplicate-dialog p { margin: 0; color: var(--muted); font-size: .82rem; }
+.duplicate-name { margin: 15px 0 12px; padding: 11px 12px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 9px; font-size: .8rem; }
+.duplicate-name strong { display: block; margin-top: 3px; color: var(--text); word-break: break-all; }
+.duplicate-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+
+/* Payment */
+.plan-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.plan-summary > div { display: grid; gap: 4px; padding: 12px 14px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 10px; }
+.plan-summary span { color: var(--muted); font-size: .72rem; }
+.plan-summary strong { font-size: .9rem; font-weight: 650; }
+.subscribe-form { display: grid; gap: 16px; margin-top: 14px; }
+.plan-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.plan-option { position: relative; display: grid; gap: 4px; padding: 16px 14px; background: #fff; border: 1px solid var(--line-strong); border-radius: 11px; cursor: pointer; transition: border-color .15s, background .15s, box-shadow .15s; }
+.plan-option:hover { border-color: var(--primary); }
+.plan-option:has(input:checked) { background: var(--primary-soft); border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.plan-option input { position: absolute; opacity: 0; pointer-events: none; }
+.plan-name { font-size: .84rem; font-weight: 650; }
+.plan-price { color: var(--primary); font-size: 1.32rem; font-weight: 700; letter-spacing: -.02em; }
+.plan-option:has(input:checked) .plan-price { color: var(--primary-hover); }
+.plan-unit { color: var(--muted); font-size: .72rem; }
+.pay-type-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.pay-type-option { display: inline-flex; align-items: center; gap: 8px; min-height: var(--control-h); padding: 0 15px; background: #fff; border: 1px solid var(--line-strong); border-radius: var(--control-radius); font-size: .82rem; cursor: pointer; }
+.pay-type-option:has(input:checked) { color: #1255b8; background: var(--primary-soft); border-color: var(--primary); font-weight: 650; }
+.pay-type-option input { accent-color: var(--primary); }
+.subscribe-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+.subscribe-actions .field-hint { flex: 1; min-width: 220px; }
+.order-list { display: grid; gap: 8px; margin-top: 14px; }
+.order-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 12px; align-items: center; padding: 12px 14px; background: #fff; border: 1px solid var(--line); border-radius: 10px; }
+.order-row.focused { background: var(--primary-soft); border-color: var(--primary); }
+.order-main { display: grid; gap: 3px; min-width: 0; }
+.order-no { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
+.order-main small, .order-paid-at { color: var(--muted); font-size: .72rem; }
+.order-amount { font-size: .88rem; font-weight: 650; white-space: nowrap; }
+.order-actions { display: flex; justify-content: flex-end; }
+.status-badge.pending { color: #8a6100 !important; background: #fdf4e3; }
+.status-badge.closed { color: var(--muted) !important; background: var(--surface-soft); }
+
+/* Notion 账户来源 */
+.source-fieldset { margin: 0; padding: 0; border: 0; display: grid; gap: 10px; }
+.source-choice { display: flex; flex-wrap: wrap; gap: 10px; }
+.source-option { display: inline-flex; align-items: center; gap: 8px; min-height: var(--control-h); padding: 0 14px; background: #fff; border: 1px solid var(--line-strong); border-radius: var(--control-radius); font-size: .8rem; cursor: pointer; }
+.source-option:has(input:checked) { color: #1255b8; background: var(--primary-soft); border-color: var(--primary); font-weight: 650; }
+.source-option input { flex: 0 0 auto; accent-color: var(--primary); }
+.source-own, .source-official { display: grid; gap: 18px; }
+/* 按所选来源隐藏另一半表单；不支持 :has() 的浏览器两者都显示，不影响提交 */
+.login-form:has(.source-choice input[value="own"]:checked) .source-official { display: none; }
+.login-form:has(.source-choice input[value="official"]:checked) .source-own { display: none; }
+.account-form.notion { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+.source-toggle { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; padding: 12px 14px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 10px; }
+.source-status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.source-status > span { color: var(--muted); font-size: .72rem; }
+.source-status > strong { font-size: .9rem; font-weight: 650; }
+.source-note { flex: 1 1 100%; margin: 0; color: var(--muted); font-size: .74rem; }
+.source-block { display: grid; gap: 12px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+
+@media (max-width: 1050px) {
+    .plan-summary, .plan-grid { grid-template-columns: 1fr 1fr; }
+    .upload-card { grid-template-columns: 1fr; }
+    .upload-queue { grid-column: 1; }
+    .create-user-row { grid-template-columns: 1fr 1fr; }
+    .create-user-row.slim { grid-template-columns: minmax(0, 300px) auto; }
+    .admin-user-row { grid-template-columns: 1.2fr 1fr 90px auto; }
+    .admin-user-row.assign-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto; }
+    .admin-user-row .checkbox, .admin-user-row .row-actions, .admin-user-row .text-action, .admin-user-row .save-action, .admin-user-row .delete-action { align-self: end; }
+    .create-user-row.create-group-row { grid-template-columns: 1fr 1fr 1fr; }
+    .admin-user-row.group-row { grid-template-columns: 1.2fr 1fr 90px auto; }
+    .account-form.password { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 760px) {
+    /* 移动端基础：避免横屏文字被系统放大；表格行被 JS 隐藏时确保生效 */
+    body { -webkit-text-size-adjust: 100%; }
+    [hidden] { display: none !important; }
+
+    /* 输入框统一 16px，否则 iOS 聚焦时会自动放大整个页面 */
+    input, select, textarea,
+    .log-filters input, .log-filters select,
+    input[type="file"] { font-size: 16px; }
+    input[type="file"] { height: auto; padding: 6px 10px; }
+    input[type="file"]::file-selector-button { height: 40px; }
+
+    /* 登录 / 安装页 */
+    .login-layout, .install-layout { width: min(100% - 24px, 540px); grid-template-columns: 1fr; gap: 26px; padding: 24px 0; }
+    .login-copy, .install-intro { min-height: 0; gap: 30px; }
+    .login-copy h1, .install-intro h1 { font-size: 2.4rem; }
+    .login-copy p, .setup-steps { display: none; }
+    .login-card { justify-self: stretch; max-width: none; padding: 22px 18px; }
+    .install-card { padding: 20px 16px; }
+    .card-heading { margin-bottom: 20px; }
+    .card-heading h2 { font-size: 1.45rem; }
+    .field-grid.two, .field-grid.three { grid-template-columns: 1fr; }
+    .captcha-field { grid-template-columns: minmax(0, 1fr) auto; }
+    /* 验证码图片独占一行，避免与输入框、换一张按钮挤在一起 */
+    .captcha-field img { grid-column: 1 / -1; justify-self: start; }
+
+    /* 底部导航：安全区内边距 + 横向可滚动，导航项过多时不再被挤出屏幕 */
+    .drive-shell { padding-left: 0; padding-bottom: calc(84px + env(safe-area-inset-bottom)); }
+    .drive-sidebar { inset: auto 8px calc(8px + env(safe-area-inset-bottom)) 8px; width: auto; height: 60px; padding: 8px; flex-direction: row; align-items: center; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
+    .drive-sidebar .brand, .sidebar-storage { display: none; }
+    .drive-nav { display: flex; flex: 1; min-width: 0; gap: 4px; margin: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; -ms-overflow-style: none; }
+    .drive-nav::-webkit-scrollbar { display: none; }
+    .drive-nav a { flex: 0 0 auto; align-items: center; min-height: 44px; padding: 0 12px; gap: 7px; border-radius: 9px; font-size: .84rem; white-space: nowrap; }
+    /* 窄屏下图标会挤掉「退出」按钮，移动端只保留文字导航 */
+    .drive-nav a span { display: none; }
+    .account-menu { flex: none; margin-top: 0; margin-left: 8px; padding: 0 0 0 8px; border-top: 0; border-left: 1px solid var(--line); }
+    /* 移动端隐藏用户名与头像，保留可点击的「退出」按钮 */
+    .account-menu > div, .account-menu .avatar { display: none; }
+    .account-menu button { flex: none; min-height: 44px; white-space: nowrap; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 9px; color: #4c5562; font-size: .78rem; }
+
+    /* 主内容区 */
+    .drive-main { width: min(100% - 24px, 680px); padding: 20px 0 24px; }
+    .drive-header { flex-direction: column; align-items: stretch; gap: 14px; margin-bottom: 20px; }
+    .drive-header h1 { font-size: 1.5rem; }
+    .search-box { width: 100%; }
+    .admin-panel { padding: 16px; margin-bottom: 16px; }
+    .file-section-head, .panel-title { flex-direction: column; align-items: flex-start; gap: 8px; }
+    .file-section-head > div { flex-wrap: wrap; }
+    .panel-title > a, .panel-title > span { align-self: flex-start; }
+
+    /* 上传卡片 */
+    .upload-card { padding: 16px; gap: 16px; }
+    .drop-zone { min-height: 160px; }
+    .drop-zone button { min-height: 44px; padding: 0 18px; }
+    .sync-state { display: none; }
+    .queue-item { flex-wrap: wrap; row-gap: 6px; }
+    .queue-status { flex: 1 1 100%; max-width: none; text-align: left; }
+
+    /* 表格改卡片式：隐藏表头，每行成为一张卡片，单元格用 data-label 显示字段名 */
+    .file-table-wrap { overflow: visible; background: transparent; border: 0; border-radius: 0; }
+    .file-table { display: block; width: 100%; font-size: .82rem; }
+    .file-table thead { display: none; }
+    .file-table tbody { display: grid; gap: 10px; }
+    .file-table tbody tr { display: block; padding: 13px 14px; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); }
+    .file-table tbody tr:hover { background: #fff; }
+    .file-table td { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 0; border-bottom: 1px dashed #edf0f2; color: #596170; white-space: normal; text-align: right; word-break: break-word; }
+    .file-table td::before { content: attr(data-label); flex: 0 0 auto; color: var(--muted); font-size: .72rem; font-weight: 650; text-align: left; }
+    /* 首列作为卡片标题独占整行，操作列铺满整行，均不显示字段名 */
+    .file-table td:first-child { display: block; padding: 0 0 10px; margin-bottom: 2px; border-bottom: 1px solid var(--line); text-align: left; }
+    .file-table td:first-child::before, .file-table td:last-child::before { display: none; }
+    .file-table td:last-child { display: block; padding: 11px 0 0; border-bottom: 0; }
+    .file-name { min-width: 0; }
+    .file-name strong { max-width: none; white-space: normal; word-break: break-word; }
+    /* 操作按钮等宽平分整行，触摸目标不小于 44px */
+    .file-actions { flex-direction: row; flex-wrap: wrap; align-items: stretch; width: 100%; gap: 8px; }
+    .file-actions a, .file-actions button { flex: 1 1 0; min-width: 0; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--control-radius); font-size: .78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-actions .inline-form { flex: 1 1 0; min-width: 0; }
+    /* 订单表操作项较多（含表单按钮），小屏按两列排布 */
+    .file-actions:has(.inline-form) a, .file-actions:has(.inline-form) .inline-form { flex: 1 1 calc(50% - 4px); }
+    .empty-state { padding: 40px 16px; }
+
+    /* 管理后台表单：小屏一律单列，按钮独占整行便于点按 */
+    .create-user-row, .connection-form { grid-template-columns: 1fr; }
+    .create-user-row { padding: 14px; }
+    .create-user-row.slim { grid-template-columns: 1fr; }
+    .create-user-row.create-group-row { grid-template-columns: 1fr; }
+    .form-actions { justify-content: stretch; }
+    .form-actions > * { flex: 1 1 auto; }
+    .checkbox-row { gap: 6px; flex-direction: column; align-items: flex-start; }
+    .admin-user-row, .admin-user-row.assign-row, .admin-user-row.group-row { grid-template-columns: 1fr; gap: 10px; padding: 16px 0; }
+    .admin-user-row .user-identity { grid-column: 1 / -1; }
+    .admin-user-row .user-meta { grid-column: 1 / -1; }
+    .admin-user-row .checkbox { min-height: 32px; }
+    .admin-user-row .row-actions { justify-self: stretch; }
+    .admin-user-row .row-actions > * { flex: 1; }
+    .admin-user-row > .text-action, .admin-user-row > .save-action, .admin-user-row > .delete-action { width: 100%; }
+
+    /* 账户页 */
+    .account-form, .account-form.password, .account-form.email, .account-form.notion { grid-template-columns: 1fr; }
+    .avatar-editor { flex-direction: column; gap: 16px; }
+    .avatar-editor > .avatar { align-self: center; }
+    .source-toggle { flex-direction: column; align-items: stretch; }
+    .source-toggle .inline-form { display: flex; }
+    .source-toggle .inline-form button { flex: 1; }
+    .subscribe-actions { flex-direction: column; align-items: stretch; gap: 10px; }
+    .subscribe-actions .field-hint { flex: 1 1 auto; min-width: 0; }
+    .subscribe-actions > a, .subscribe-actions > button { width: 100%; }
+
+    /* 订单列表 */
+    .order-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 8px; }
+    .order-main { grid-column: 1 / -1; }
+    .order-actions { grid-column: 1 / -1; justify-content: flex-start; }
+    .order-actions .secondary-button { width: 100%; }
+
+    /* 运行日志 */
+    .log-file-list { gap: 6px; }
+    .log-file-chip { min-height: 44px; align-items: center; }
+    .log-quick { flex-wrap: wrap; align-items: center; gap: 8px; }
+    .log-filters { gap: 8px; }
+    .log-filters > * { flex: 1 1 100%; }
+    .log-filters input, .log-filters select { width: 100%; min-width: 0; }
+    .log-view { max-height: 60vh; padding: 12px; font-size: 11.5px; }
+
+    /* 提示条与公告 */
+    .alert-head, .alert-list li { flex-wrap: wrap; }
+    .alert-head button, .alert-list button { min-height: 44px; padding: 0 4px; }
+
+    /* 横幅提示改为贴底并抬到底部导航之上，避免被导航遮挡 */
+    .toast { left: 12px; right: 12px; bottom: calc(84px + env(safe-area-inset-bottom)); max-width: none; }
+
+    /* 上传重名确认弹窗 */
+    .duplicate-dialog { padding: 18px; max-height: 86vh; overflow: auto; }
+    .duplicate-actions { flex-direction: column; gap: 8px; }
+    .duplicate-actions > * { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}

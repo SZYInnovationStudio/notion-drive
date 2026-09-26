@@ -1,0 +1,15 @@
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^(?:config|src|storage|scripts|\.dev|\.git)(?:/|$) - [F,L]
+</IfModule>
+
+<FilesMatch "^(?:\.env|composer\.(?:json|lock)|README\.md)$">
+    Require all denied
+</FilesMatch>
+
+# 兜底：任何点开头的文件（.git/config、.env.local 等）一律不可访问
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
