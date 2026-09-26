@@ -54,7 +54,7 @@ $captchaRequired = $throttle['captcha'];
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>登录 · Notion Drive</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <link rel="stylesheet" href="assets/app.css?v=23">
+    <link rel="stylesheet" href="assets/app.css?v=24">
 </head>
 <body class="login-shell">
     <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>

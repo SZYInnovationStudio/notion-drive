@@ -33,6 +33,20 @@
 
 ---
 
+### [2026-09-26 21:30:07] 权限组「查看该组用户」入口改为右对齐页脚，消除「位置不对」的观感
+
+- 修改人：[Beibing]
+- 目的：用户反馈管理后台权限组区块里「查看该组用户（1）」位置不对（截图红框标出它孤零零贴在左栏头像下方）。
+  1. **先做实机复现，排除「重复渲染」**：用临时 CLI 脚本伪造 `$_SESSION['user_id']` 后 `include admin.php`（`?tab=users`）统计渲染结果，`查看该组用户` 出现 3 次、`class="group-members"` 3 次、DOM 顺序为「组行 form → 该组 details」交替出现。数据库里确有 3 个权限组（管理员 / 高级用户 / 普通用户），前两个各 1 位成员，因此页面上**本来就会有两处「查看该组用户（1）」**，分属不同组，并非模板重复或 CSS 伪元素复制（全项目 Grep 该文案仅 `admin.php` L912 一处，`assets/` 下无相关 JS 克隆）。
+  2. **真正的问题是位置**：`.group-members` 是 `.admin-user-list` 网格里的独立一行，铺满整行却只把文字留在左栏，右侧空出大片，视觉上像不属于上面那个组；而「用户管理」里用户行的操作按钮（开通订阅 / 编辑）都在右侧，此处应与组行的「保存」同侧保持一致。改为页脚右对齐。
+- 验证：`php -l` 未涉 PHP 逻辑改动；临时脚本跑完已删除（`storage/_dump_admin.php`）。实机 dump 确认 `查看该组用户` 仍为 3 次、无新增重复；对齐改动为纯 CSS，需人工硬刷新（`app.css?v=24`）后目视确认。
+- 改动明细：
+  - `assets/app.css` L255-L258 — `.group-members` 的 `margin: -4px 2px 12px` 改为 `2px 2px 12px`（不再负边距上顶，避免按钮压在组行下边框上），`.group-members > summary` 新增 `justify-content: flex-end`（页脚靠右，与「保存」同侧），并补注释说明原因。
+  - `admin.php` L822、`admin_orders.php` L261、`account.php` L189、`logs.php` L73、`pay.php` L140、`index.php` L57、`dashboard.php` L50、`install.php` L213、`register.php` L141 — 仅同步缓存版本 `assets/app.css?v=23` → `v=24`，无逻辑改动。
+- 备注：未改任何 PHP 模板结构（`admin.php` L902-L924 保持原样），未改表结构；若后续想让入口与「保存」严格同一行，需要把 `<details>` 移进组行表单并让展开的成员清单跨列，本次未做（会牵动 8 列网格与移动端断点）。
+
+---
+
 ### [2026-09-26 21:18:54] 结算白名单修正为「待支付 + 已关闭」并统一加锁顺序，补记 README 的 Nginx 规则
 
 - 修改人：[Beibing]

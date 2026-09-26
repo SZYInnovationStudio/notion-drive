@@ -252,9 +252,10 @@ fieldset legend { margin-bottom: 10px; }
 .log-filters.user-search input { min-width: 240px; }
 /* 搜索过滤时隐藏不匹配的用户行（用类而不是 hidden，避免被行内的 display 覆盖） */
 .admin-user-row.is-filtered-out { display: none !important; }
-/* 权限组下的成员清单折叠：默认收起，展开后列出组内用户 */
-.group-members { margin: -4px 2px 12px; }
-.group-members > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
+/* 权限组下的成员清单折叠：默认收起，展开后列出组内用户。
+   该行是组行的页脚，靠右对齐与「保存」同侧，避免文字孤零零贴在左栏（头像下方）显得不属于本组 */
+.group-members { margin: 2px 2px 12px; }
+.group-members > summary { display: flex; align-items: center; justify-content: flex-end; gap: 8px; cursor: pointer; list-style: none; }
 .group-members > summary::-webkit-details-marker { display: none; }
 .group-member-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px 16px; margin: 10px 0 0; padding: 13px 15px; list-style: none; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 9px; }
 .group-member-list li { display: grid; gap: 2px; min-width: 0; }
