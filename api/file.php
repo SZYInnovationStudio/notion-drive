@@ -236,6 +236,10 @@ try {
                 exit;
             }
 
+            // 取地址成功但实际拉取流返回 404（极少见：拿到签名 URL 后对象已被删）同样计为块丢失
+            if ($status === 404) {
+                $missingBlocks++;
+            }
             $fellBack = true;
             $lastError = $ok === false ? $error : sprintf('远端返回 HTTP %d', $status);
             Logger::warning('download', '副本下载失败，尝试下一份副本。', [
