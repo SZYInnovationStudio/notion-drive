@@ -119,6 +119,12 @@ final class NotionClient
         $this->jsonRequest('PATCH', self::API_BASE . '/pages/' . rawurlencode($pageId), ['in_trash' => true]);
     }
 
+    /** 把误入回收站的页面移出回收站，用于空间页面被归档后的自愈。 */
+    public function restorePage(string $pageId): void
+    {
+        $this->jsonRequest('PATCH', self::API_BASE . '/pages/' . rawurlencode($pageId), ['in_trash' => false]);
+    }
+
     /**
      * 读取页面对象，用于校验 Token 是否有权访问该页面；不可读时抛 NotionApiException。
      *

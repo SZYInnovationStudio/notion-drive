@@ -7,14 +7,20 @@ require dirname(__DIR__) . '/src/bootstrap.php';
 use NotionDrive\Auth;
 use NotionDrive\Database;
 use NotionDrive\Logger;
+use NotionDrive\Moderation\ModerationService;
+use NotionDrive\Moderation\Verdict;
 use NotionDrive\NotionApiException;
 use NotionDrive\Security;
+use NotionDrive\Tickets\TicketService;
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     jsonResponse(['ok' => false, 'code' => 'method_not_allowed', 'message' => '请求方法不受支持。'], 405);
 }
 
 $user = Auth::requireLogin(true);
+
+// 被管理员豁免的用户跳过关键词与 AI 识别
+$moderationExempt = userModerationExempt($user);
 
 /** 参考号：便于在「运行日志」中定位上传失败记录。 */
 $reference = strtoupper(bin2hex(random_bytes(4)));
@@ -28,6 +34,14 @@ $context = [
 $fail = static function (string $code, string $message, array $extra = [], int $status = 422) use (&$context): never {
     Logger::warning('upload', $message, $extra + $context + ['code' => $code]);
     jsonResponse(['ok' => false, 'code' => $code, 'message' => $message, 'reference' => $context['reference']], $status);
+};
+
+// 封禁期间禁止上传个人文件；工单附件是申诉通道（封禁提示本身引导用户走工单申诉），不受封禁影响
+$ban = userActiveBan($user);
+$assertNotBanned = static function (string $scope) use ($ban, $fail): void {
+    if ($scope === 'drive' && $ban !== null) {
+        $fail('account_banned', '账号已被封禁，暂时无法上传文件。如有疑问请通过工单提交申诉。', ['ban_id' => (int) $ban['id']], 403);
+    }
 };
 
 /** 分块暂存目录：只存放拼接中的分块，与最终数据完全隔离。 */
@@ -267,8 +281,31 @@ try {
 
     $action = is_string($_POST['action'] ?? null) ? $_POST['action'] : '';
 
+    // 工单附件复用同一套分块协议：scope=ticket 的文件归属该工单，不进「我的文件」、
+    // 不计入个人配额、不走内容风控，工单关闭时从 Notion 删除；
+    // start 阶段校验归属与状态，chunk 通过分块元数据透传，finish 阶段再复核一次
+    $resolveTicketScope = static function (int $ticketId) use ($fail, $user): void {
+        $statement = Database::connection()->prepare('SELECT id, user_id, status FROM tickets WHERE id = :id LIMIT 1');
+        $statement->execute(['id' => $ticketId]);
+        $ticket = $statement->fetch();
+        if (!is_array($ticket) || ((int) $ticket['user_id'] !== (int) $user['id'] && !isAdmin($user))) {
+            $fail('ticket_not_found', '工单不存在或无权访问。', [], 404);
+        }
+        if (TicketService::isEnded((string) $ticket['status'])) {
+            $fail('ticket_closed', '工单已结束，无法继续上传附件。', [], 409);
+        }
+    };
+
     // 1) start：校验文件信息并建立分块会话，返回后续分块所需的大小与总数
     if ($action === 'start') {
+        $scope = (($_POST['scope'] ?? '') === 'ticket') ? 'ticket' : 'drive';
+        $assertNotBanned($scope);
+        $ticketId = 0;
+        if ($scope === 'ticket') {
+            $ticketId = is_numeric($_POST['ticket_id'] ?? null) ? (int) $_POST['ticket_id'] : 0;
+            $resolveTicketScope($ticketId);
+        }
+
         $filename = basename(trim(is_string($_POST['filename'] ?? null) ? $_POST['filename'] : ''));
         $size = is_numeric($_POST['size'] ?? null) ? (int) $_POST['size'] : 0;
         $context['file'] = ['name' => $filename, 'size' => $size];
@@ -276,18 +313,72 @@ try {
         $extension = $validateFilename($filename, $size);
         $context['file']['extension'] = $extension;
 
-        $duplicateAction = is_string($_POST['duplicate_action'] ?? null) ? $_POST['duplicate_action'] : '';
-        $resolved = $resolveDuplicate($filename, $duplicateAction);
-        $filename = $resolved['filename'];
-        if ($resolved['handled'] !== '') {
-            $context['duplicate'] = $resolved['handled'];
+        // 上传前关键词拦截：命中即拒绝（不建立分块会话），并分配唯一申诉号供用户申诉；工单附件不走风控
+        try {
+            $moderationService = ModerationService::create();
+            $blocked = ($scope === 'drive' && !$moderationExempt && $moderationService->enabled()) ? $moderationService->guardFilename($filename) : null;
+            if ($blocked !== null && !$moderationService->hasResubmitPass((int) $user['id'], $filename)) {
+                $appealNo = $moderationService->record(
+                    (int) $user['id'],
+                    null,
+                    $filename,
+                    ModerationService::STAGE_START,
+                    $blocked
+                );
+                Logger::warning('upload', '关键词审核拦截，已拒绝上传', ['appeal_no' => $appealNo, 'matched' => $blocked->matched] + $context);
+                raiseAdminAlert('warning', sprintf(
+                    '内容风控拦截：用户 %s 上传《%s》被拒绝（申诉号 %s）',
+                    (string) $user['username'],
+                    $filename,
+                    $appealNo
+                ), [
+                    'appeal_no' => $appealNo,
+                    'user_id' => (int) $user['id'],
+                    'filename' => $filename,
+                    'matched' => $blocked->matched,
+                ]);
+                jsonResponse([
+                    'ok' => false,
+                    'code' => 'moderation_rejected',
+                    'message' => sprintf(
+                        '该文件命中违禁关键词，已拒绝上传。申诉号：%s，如认为误判，可凭此号联系管理员申诉。',
+                        $appealNo
+                    ),
+                    'appeal_no' => $appealNo,
+                    'reference' => $context['reference'],
+                ], 422);
+            }
+        } catch (Throwable $exception) {
+            // 风控不可用时不阻断正常上传，但记录错误便于管理员排查
+            Logger::error('upload', '关键词审核执行失败，已按正常流程放行', ['error' => $exception->getMessage()] + $context);
         }
-        if ($resolved['renamed_to'] !== '') {
-            $context['renamed_to'] = $resolved['renamed_to'];
-        }
-        $context['file']['name'] = $filename;
 
-        $assertCapacity($filename, $size, $resolved['freed_bytes']);
+        // 上传目标文件夹：0 或无此字段表示根目录；越权或已被删除的文件夹一律按根目录处理；工单附件固定在根目录
+        $folderId = 0;
+        if ($scope === 'drive') {
+            $folderId = max(0, (int) ($_POST['folder_id'] ?? 0));
+            if ($folderId > 0 && folderRow((int) $user['id'], $folderId) === null) {
+                $folderId = 0;
+            }
+        }
+
+        // 工单附件不做重名处理与容量校验（不计入个人配额）
+        $duplicateAction = is_string($_POST['duplicate_action'] ?? null) ? $_POST['duplicate_action'] : '';
+        if ($scope === 'ticket') {
+            $resolved = ['filename' => $filename, 'handled' => '', 'freed_bytes' => 0, 'renamed_to' => '', 'duplicate' => null];
+        } else {
+            $resolved = $resolveDuplicate($filename, $duplicateAction);
+            $filename = $resolved['filename'];
+            if ($resolved['handled'] !== '') {
+                $context['duplicate'] = $resolved['handled'];
+            }
+            if ($resolved['renamed_to'] !== '') {
+                $context['renamed_to'] = $resolved['renamed_to'];
+            }
+            $context['file']['name'] = $filename;
+
+            $assertCapacity($filename, $size, $resolved['freed_bytes']);
+        }
 
         // 大文件分块上传前先确认真的能写，避免传完才发现目标账户不可用
         $assertUploadAllowed();
@@ -313,6 +404,9 @@ try {
             'total' => $total,
             'received' => 0,
             'duplicate_action' => $duplicateAction,
+            'folder_id' => $folderId,
+            'scope' => $scope,
+            'ticket_id' => $ticketId,
             'created_at' => time(),
         ]);
 
@@ -417,6 +511,14 @@ try {
         $token = $assertChunkToken(is_string($_POST['upload_token'] ?? null) ? $_POST['upload_token'] : '');
         $meta = $requireChunkMeta($token);
 
+        $scope = ((string) ($meta['scope'] ?? 'drive') === 'ticket') ? 'ticket' : 'drive';
+        $assertNotBanned($scope);
+        $ticketId = 0;
+        if ($scope === 'ticket') {
+            $ticketId = (int) ($meta['ticket_id'] ?? 0);
+            $resolveTicketScope($ticketId);
+        }
+
         $total = (int) $meta['total'];
         $received = (int) $meta['received'];
         if ($received !== $total) {
@@ -442,17 +544,31 @@ try {
 
         // 重新校验：分块期间文件名与配额可能已被并发上传改变
         $extension = $validateFilename($filename, $size);
-        $resolved = $resolveDuplicate($filename, (string) ($meta['duplicate_action'] ?? ''));
-        $filename = $resolved['filename'];
-        if ($resolved['handled'] !== '') {
-            $context['duplicate'] = $resolved['handled'];
-        }
-        if ($resolved['renamed_to'] !== '') {
-            $context['renamed_to'] = $resolved['renamed_to'];
-        }
-        $context['file']['name'] = $filename;
+        if ($scope === 'ticket') {
+            // 工单附件不做重名处理与容量校验（finish 前已复核工单状态）
+            $resolved = ['filename' => $filename, 'handled' => '', 'freed_bytes' => 0, 'renamed_to' => '', 'duplicate' => null];
+        } else {
+            $resolved = $resolveDuplicate($filename, (string) ($meta['duplicate_action'] ?? ''));
+            $filename = $resolved['filename'];
+            if ($resolved['handled'] !== '') {
+                $context['duplicate'] = $resolved['handled'];
+            }
+            if ($resolved['renamed_to'] !== '') {
+                $context['renamed_to'] = $resolved['renamed_to'];
+            }
+            $context['file']['name'] = $filename;
 
-        $assertCapacity($filename, $size, $resolved['freed_bytes']);
+            $assertCapacity($filename, $size, $resolved['freed_bytes']);
+        }
+
+        // 分块期间目标文件夹可能已被删除，落库前再确认一次，失效则落到根目录而不是让整条 INSERT 失败；工单附件固定在根目录
+        $folderId = 0;
+        if ($scope === 'drive') {
+            $folderId = max(0, (int) ($meta['folder_id'] ?? 0));
+            if ($folderId > 0 && folderRow((int) $user['id'], $folderId) === null) {
+                $folderId = 0;
+            }
+        }
 
         if (uploadTargets($user) === []) {
             $assertUploadAllowed();
@@ -468,10 +584,13 @@ try {
         $pdo->beginTransaction();
         try {
             $pdo->prepare(
-                'INSERT INTO uploads (user_id, filename, display_name, storage_name, file_size, mime_type, notion_file_upload_id, notion_block_id)
-                 VALUES (:user_id, :filename, :display_name, :storage_name, :file_size, :mime_type, :notion_file_upload_id, :notion_block_id)'
+                'INSERT INTO uploads (user_id, scope, folder_id, ticket_id, filename, display_name, storage_name, file_size, mime_type, notion_file_upload_id, notion_block_id)
+                 VALUES (:user_id, :scope, :folder_id, :ticket_id, :filename, :display_name, :storage_name, :file_size, :mime_type, :notion_file_upload_id, :notion_block_id)'
             )->execute([
                 'user_id' => $user['id'],
+                'scope' => $scope,
+                'folder_id' => $folderId > 0 ? $folderId : null,
+                'ticket_id' => $scope === 'ticket' ? $ticketId : null,
                 'filename' => $filename,
                 'display_name' => $filename,
                 'storage_name' => $stored['storage_name'],
@@ -529,12 +648,105 @@ try {
             default => sprintf('已上传「%s」并附加到 Notion。', $filename),
         };
 
+        // 上传后内容识别：先按全站内容指纹（SHA-256）比对——命中白名单免重复审核，
+        // 命中黑名单直接拦截；未收录才调用 AI 审核，并把结论登记进指纹库；工单附件不走风控
+        $moderationPayload = null;
+        try {
+            $moderationService = ModerationService::create();
+            if ($scope === 'drive' && $moderationService->enabled() && !$moderationExempt) {
+                $contentHash = is_file($partPath) ? (string) (hash_file('sha256', $partPath) ?: '') : '';
+                if ($contentHash !== '') {
+                    $context['file']['sha256'] = $contentHash;
+                }
+
+                $known = $contentHash !== '' ? $moderationService->lookupHash($contentHash) : null;
+                if ($known === Verdict::APPROVED) {
+                    Logger::info('upload', '内容指纹命中白名单，本次免重复审核', [
+                        'upload_id' => $uploadId,
+                        'sha256' => $contentHash,
+                    ] + $context);
+                } else {
+                    // 全站已有同内容被判定违规：不再重复调用 AI，直接按违规处理
+                    $verdict = $known === Verdict::FLAGGED
+                        ? Verdict::flagged('该内容此前已被判定违规（SHA-256 命中），无需重复审核。', '', 'hash', 'sha256', $contentHash)
+                        : $moderationService->inspect($filename, $mime, $partPath, $size);
+
+                    if ($verdict->isFlagged()) {
+                        $appealNo = $moderationService->record(
+                            (int) $user['id'],
+                            $uploadId,
+                            $filename,
+                            ModerationService::STAGE_FINISH,
+                            $verdict,
+                            $contentHash
+                        );
+                        $moderationService->rememberHash($contentHash, Verdict::FLAGGED);
+                        $moderationService->quarantine($uploadId);
+                        Logger::warning('upload', '内容审核命中，文件已暂停使用', [
+                            'appeal_no' => $appealNo,
+                            'upload_id' => $uploadId,
+                            'provider' => $verdict->provider,
+                            'matched' => $verdict->matched,
+                        ] + $context);
+                        raiseAdminAlert('warning', sprintf(
+                            '内容风控拦截：用户 %s 上传《%s》已被暂停使用（申诉号 %s）',
+                            (string) $user['username'],
+                            $filename,
+                            $appealNo
+                        ), [
+                            'appeal_no' => $appealNo,
+                            'upload_id' => $uploadId,
+                            'user_id' => (int) $user['id'],
+                            'filename' => $filename,
+                            'reason' => $verdict->reason,
+                        ]);
+                        $moderationPayload = [
+                            'decision' => $verdict->decision,
+                            'appeal_no' => $appealNo,
+                            'message' => sprintf(
+                                '文件《%s》未通过内容审核，已暂停使用并暂时保留。申诉号：%s，如认为误判，可凭此号联系管理员申诉。',
+                                $filename,
+                                $appealNo
+                            ),
+                        ];
+                    } elseif ($verdict->isPending()) {
+                        // AI 不可用或超时：不阻断、不隔离，仅登记为待人工复核并提醒管理员；
+                        // 结论未定，不登记内容指纹
+                        $moderationService->record(
+                            (int) $user['id'],
+                            $uploadId,
+                            $filename,
+                            ModerationService::STAGE_FINISH,
+                            $verdict,
+                            $contentHash
+                        );
+                        Logger::warning('upload', '内容审核降级为人工复核', ['upload_id' => $uploadId, 'reason' => $verdict->reason] + $context);
+                        raiseAdminAlert('warning', '内容审核降级：AI 接口不可用，已有文件转为人工复核，请检查风控配置。', [
+                            'upload_id' => $uploadId,
+                            'reason' => $verdict->reason,
+                        ]);
+                    } else {
+                        // 审核通过：登记内容指纹，全站再次上传同哈希内容时免重复审核
+                        $moderationService->rememberHash($contentHash, Verdict::APPROVED);
+                    }
+                }
+            }
+        } catch (Throwable $exception) {
+            Logger::error('upload', '内容审核执行失败，文件已按正常流程放行', ['error' => $exception->getMessage(), 'upload_id' => $uploadId] + $context);
+        }
+
         Logger::info('upload', sprintf('上传成功：%s（%s，%d 份副本）', $filename, formatBytes($size), count($stored['replicas'])), $context + [
             'code' => 'uploaded',
             'upload_id' => $uploadId,
             'replica_count' => count($stored['replicas']),
         ]);
-        jsonResponse(['ok' => true, 'message' => $message, 'name' => $filename, 'duplicate' => $resolved['handled']]);
+        jsonResponse([
+            'ok' => true,
+            'message' => $message,
+            'name' => $filename,
+            'duplicate' => $resolved['handled'],
+            'moderation' => $moderationPayload,
+        ]);
     }
 
     $fail('invalid_action', '上传请求缺少有效的 action 参数，请刷新页面后重试。', [], 400);

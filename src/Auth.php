@@ -16,7 +16,7 @@ final class Auth
             'SELECT u.id, u.username, u.quota_bytes, u.notion_page_id, u.group_id,
                     u.notion_token_encrypted, u.notion_parent_page_id, u.notion_account_source,
                     u.premium_expires_at, u.premium_reminder_sent_at,
-                    u.email, u.email_verified_at, u.avatar_path,
+                    u.email, u.email_verified_at, u.avatar_path, u.moderation_exempt,
                     g.name AS group_name, g.quota_bytes AS group_quota_bytes,
                     g.single_file_limit_bytes AS group_single_file_limit_bytes, g.is_admin AS group_is_admin
              FROM users u LEFT JOIN `groups` g ON g.id = u.group_id

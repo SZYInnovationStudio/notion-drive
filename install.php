@@ -89,9 +89,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 premium_expires_at DATETIME NULL DEFAULT NULL,
                 premium_reminder_sent_at DATETIME NULL DEFAULT NULL,
                 group_id BIGINT UNSIGNED NULL DEFAULT NULL,
+                violation_points TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                violation_cycle_start DATETIME NULL DEFAULT NULL,
+                violation_ban_until DATETIME NULL DEFAULT NULL,
                 email VARCHAR(191) NULL DEFAULT NULL,
                 email_verified_at TIMESTAMP NULL DEFAULT NULL,
                 avatar_path VARCHAR(191) NULL DEFAULT NULL,
+                moderation_exempt TINYINT(1) NOT NULL DEFAULT 0,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE KEY uniq_users_email (email),
                 INDEX idx_premium_expires (premium_expires_at)
@@ -108,6 +112,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'CREATE TABLE IF NOT EXISTS uploads (
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 user_id BIGINT UNSIGNED NOT NULL,
+                folder_id BIGINT UNSIGNED NULL DEFAULT NULL,
+                scope VARCHAR(20) NOT NULL DEFAULT \'drive\',
+                ticket_id BIGINT UNSIGNED NULL DEFAULT NULL,
                 filename VARCHAR(900) NOT NULL,
                 display_name VARCHAR(900) NULL,
                 storage_name VARCHAR(900) NULL,
@@ -119,10 +126,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_uploads_user_created (user_id, created_at),
+                INDEX idx_uploads_folder (folder_id),
+                INDEX idx_uploads_scope (scope),
+                INDEX idx_uploads_ticket (ticket_id, status),
                 CONSTRAINT fk_uploads_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
         );
 
+        Schema::createFoldersTable($pdo);
         Schema::createGroupsTable($pdo);
         Schema::createVerificationTable($pdo);
         Schema::createLoginAttemptsTable($pdo);
@@ -131,6 +142,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         Schema::createUploadReplicasTable($pdo);
         Schema::createOrdersTable($pdo);
         Schema::createAdminAlertsTable($pdo);
+        Schema::createModerationRecordsTable($pdo);
+        Schema::createModerationHashesTable($pdo);
+        Schema::createTicketsTable($pdo);
+        Schema::createTicketMessagesTable($pdo);
+        Schema::createUserBansTable($pdo);
+        Schema::createTicketArchivesTable($pdo);
+        Schema::createTicketReviewsTable($pdo);
+        Schema::createUserTicketBansTable($pdo);
+        Schema::createAnnouncementsTable($pdo);
+        Schema::createUserViolationsTable($pdo);
 
         $appKey = bin2hex(random_bytes(32));
         $statement = $pdo->prepare(
@@ -142,6 +163,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'default_page_id' => (string) $pageId,
             'notion_plan' => $values['plan'],
             'schema_version' => (string) Schema::CURRENT_VERSION,
+            'moderation_enabled' => '0',
+            'moderation_keywords' => '',
+            'moderation_scope' => 'filename,text,image',
+            'moderation_endpoint' => '',
+            'moderation_model' => 'gpt-4o-mini',
+            'moderation_timeout' => '8',
+            'ban_threshold' => '5',
+            'ban_notice_mode' => 'link',
         ] as $key => $value) {
             $statement->execute(['config_key' => $key, 'config_value' => $value]);
         }
@@ -212,7 +241,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>安装 · Notion Drive</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <link rel="stylesheet" href="assets/app.css?v=31">
+    <link rel="stylesheet" href="assets/app.css?v=50">
 </head>
 <body class="install-shell">
     <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>

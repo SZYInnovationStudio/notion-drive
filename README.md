@@ -82,7 +82,7 @@ api/          已鉴权的上传接口
 config/       安装后生成的数据库与应用密钥配置
 src/          数据库、认证、安全与 Notion API 客户端
 storage/      安装锁与运行日志目录
-admin.php     用户与 Notion 连接管理
+admin.php     用户、账户池与系统设置管理
 dashboard.php 文件工作台
 install.php   首次安装向导
 ```
