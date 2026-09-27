@@ -310,6 +310,7 @@
         if (!previewModal || !previewBody) return;
         const id = row.dataset.fileId;
         const kind = button.dataset.previewKind || '';
+        const mime = (button.dataset.previewMime || '').toLowerCase();
         const size = parseInt(button.dataset.previewSize || '0', 10) || 0;
         const name = button.dataset.previewName || '文件';
 
@@ -352,6 +353,12 @@
             node = document.createElement('img');
             node.alt = name;
             node.className = 'preview-media';
+            node.addEventListener('error', onPreviewError, { once: true });
+        } else if (kind === 'av' && mime.startsWith('audio/')) {
+            node = document.createElement('audio');
+            node.controls = true;
+            node.autoplay = true;
+            node.className = 'preview-audio';
             node.addEventListener('error', onPreviewError, { once: true });
         } else if (kind === 'av') {
             node = document.createElement('video');

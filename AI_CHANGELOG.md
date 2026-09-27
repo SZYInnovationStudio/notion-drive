@@ -8,23 +8,18 @@
 1. 每完成一次改动（一个任务 / 一个 Bug / 一次重构）就追加一条记录，**最新记录写在最上面**。
    - 条目标题里的时间必须**精确到时分秒**，统一格式 `[YYYY-MM-DD HH:MM:SS]`，**时区固定 UTC+8（北京 / 上海）**，例如 `### [2026-09-26 19:00:53] 标题`。
    - 取时间的可靠来源：改动已提交时用该提交的时间（`git log --date=format:"%Y-%m-%d %H:%M:%S"`，本机即 UTC+8）；未提交时用写日志当下时间；两者都必须按 UTC+8 记录，不要写带时区猜测或只有日期的值。24 小时制。
-2. **每条记录必须写「修改人」，用于区分谁改了什么。**
-   - 人名统一用方括号包裹，如 `[ShiZhongyan]`；**当前默认/第一位修改人为 `[ShiZhongyan]`（Github: ShiZhongyanGH）**。
-   - 若改动由 AI 代理执行但由某人决策，写成 `[ShiZhongyan]`（不在括号里塞 "AI" 之类的词）。
-   - 多人协作时各自具名，例如 `[ShiZhongyan]`、`[张三]`；不要留空、不要写"我""作者"。
-3. 每条记录必须包含三要素：**改了哪些文件、具体行号、目的是什么**。
+2. 每条记录必须包含三要素：**改了哪些文件、具体行号、目的是什么**。
    - 行号写**改动后的当前行号**，支持 `L88`、`L88-L90` 形式。
    - 删除代码写成「原 Lxx-Lyy 删除」。
    - 目的写"为什么改"（触发原因、修的是什么问题），不要只复述"改了什么"。
-4. 写清**验证方式与结果**，方便后续代理判断该改动是否可信、能否回退。
-5. 若改动依赖数据库结构，须注明受影响的表/列，以及**旧库是否需要手工补列**。
-6. 纯环境、临时文件（如 `.dev/`、本地凭据）不属于源码改动，统一记在文末「环境与本地运行」一节。
+3. 写清**验证方式与结果**，方便后续代理判断该改动是否可信、能否回退。
+4. 若改动依赖数据库结构，须注明受影响的表/列，以及**旧库是否需要手工补列**。
+5. 纯环境、临时文件（如 `.dev/`、本地凭据）不属于源码改动，统一记在文末「环境与本地运行」一节。
 
 ## 条目模板
 
 ```markdown
 ### [YYYY-MM-DD HH:MM:SS] 标题（时间用 UTC+8，精确到秒）
-- 修改人：[xxx]
 - 目的：
 - 验证：
 - 改动明细：
@@ -33,9 +28,869 @@
 
 ---
 
+### [2026-09-27 22:36:34] ND-2 新需求三连做：R12 工单评价可选开关 / R11 文件在线预览 / R13 Notion 空间巡检与数据丢失提示
+
+- 目的：实现 ND-2 两张需求卡（与用户逐条问答定稿）。R12 工单评价改为后台可选（默认开，关闭时评价区块+外部调研入口一并隐藏、服务端拒绝提交，历史评价在「评价统计」保留）；R11 文档/图片/视频预览落地为**图片 / PDF / 音视频三大类**（MP3 等小音频并入音视频，不单列），后台各一个开关 + 大文件预览体积提醒阈值（默认 20MB，1~10240MB），列表行「预览」按钮 + 站内模态框，PDF 用同源 iframe，音视频走 Range 边下边播，预览失败统一提示「很抱歉，该文件数据已丢失，请重新上传」；R13 每天 12:00 巡检 Notion 空间，**优先自动修复**（恢复回收站页面 / 重建彻底 404 的空间页 / 单副本自动补齐为两份），全部副本失效且补不回则标记数据丢失（仅允许删除，下载/预览/重命名/移动全部拦截提示），后台开关默认开启，巡检结果走管理员告警（会发邮件）。
+- 提交节奏（均**仅本地 commit，未 push**）：`dbad4f3` R12、`d81a22f` 补录前序阶段未跟踪文件、`bc6facb` R11、`a18d62b` R13。
+- 数据库结构：`src/Schema.php` L11 `CURRENT_VERSION=21`；L243-L249 v21 迁移给 `uploads` 增列 `data_lost TINYINT(1) NOT NULL DEFAULT 0` + 索引 `idx_uploads_data_lost`；`install.php` L125-L133 全新建表同步含该列。**旧库访问即自动升级，无需手工补列**；`config` 表新增键 `ticket_review_enabled` / `preview_image_enabled` / `preview_pdf_enabled` / `preview_av_enabled` / `preview_warn_bytes` / `space_patrol_enabled` / `space_patrol_last_date`（均无需建表）。
+- 改动明细：
+  - R12：`src/Tickets/TicketService.php` 新增常量 `REVIEW_ENABLED_CONFIG_KEY` 与静态方法 `reviewEnabled()`（默认开，仅显式 '0' 关）、`saveReviewEnabled()`，`submitReview()` 开头加开关拦截；`tickets.php` 详情用 `$reviewEnabled` 同时门控评价区块与 `$surveyUrl`（关闭时整块不渲染，管理员视角同样隐藏，历史评价仍在后台统计）；`admin.php` 新增 `save_review_enabled` 分支与「站内评价开关」面板（工单设置页签）。
+  - R11：`src/helpers.php` L367 起新增预览常量与 `previewKind()`（mime 为主+扩展名兜底，**排除 SVG**）、`previewKindEnabled()`、`previewWarnBytes()`、`filePreviewable()`；`api/file.php` 增 `?inline=1` 预览分支（白名单+开关双校验，`Content-Disposition: inline` + `X-Content-Type-Options: nosniff`，鉴权/封禁/副本回退/Range 全复用）；`assets/app.js` 新增模态框预览逻辑（首字节 Range 预检，410/非 2xx 即提示数据丢失；图片 `<img>`、音频 `<audio>`、视频 `<video>`、PDF `<iframe>`；超阈值二次确认；ESC/点遮罩/关闭按钮收尾并还焦点）；`assets/app.css` 新增 `.preview-*`；`dashboard.php` 列表行加预览按钮与模态框；`admin.php` 新增「预览设置」页签（`$adminTabs` 加 `preview`）与 `save_preview_settings` 分支；`src/bootstrap.php` CSP 增补 `media-src 'self'; frame-src 'self'`。
+  - R13：新增 `src/Space/SpacePatrol.php`（空间页巡检 `scanSpaces()` 复用 `NotionSpaceRepair::repair()`、单副本补齐 `reconcileReplicas()`/`fillMissingReplica()`——从幸存副本下载字节再 `uploadAndAttach` 到缺失账户并登记 `upload_replicas`、`markLost()` 仅在 0→1 首次置位时告警避免重复邮件、`assertAccessible()`、`runIfDue()`/`run()`/开关与日期读写）；`src/NotionClient.php` 新增 `downloadBlockToFile()`（可信域名 S3 下载到临时文件）；`api/file.php` GET 在所有副本块均 404 时 `markLost()+410` 输出丢失文案，POST 对 `data_lost=1` 文件除 `delete` 外一律 410；`api/folder.php` 移动文件拦截丢失文件；`dashboard.php` 丢失文件置灰+删除线+「数据已丢失」角标且只留删除按钮；`src/bootstrap.php` L54-L70 登录态 HTML 页面 GET 懒触发（避开 api/* 与二进制接口，12 点后当天一次）；新增 CLI `bin/scan-space.php`；`admin.php` 系统设置页签顶部加「Notion 空间自动巡检与修复」面板（开关 + 显示最近巡检日期 + 立即巡检按钮，对应 `save_space_patrol`/`run_space_patrol`）。
+  - 资源版本号：`assets/app.css` 最终 `?v=52`（11 页一致）、`assets/app.js` 最终 `?v=27`（9 页一致），`admin.js?v=9` 未动。
+- 自查修复（本轮代码评审直接改）：①`install.php` 增补 `data_lost` 列时一度漏掉 `'active'` 的单引号转义导致 PHP 解析错误，已改回 `\'active\'`；②`markLost()` 改为以 `rowCount()` 判断首次置位，杜绝重复下载触发重复告警邮件；③音频预览改用 `<audio>`（按钮带 `data-preview-mime`）；④丢失角标移入 `.file-name` 弹性容器防错位；⑤`reconcileReplicas` 改子查询，规避 `ONLY_FULL_GROUP_BY` 严格模式。
+- 验证：**未做任何功能/HTTP 测试**（遵守「触发即格式化」红线；R13 涉真实 Notion 写操作，无法本机联网验证，需上线观察）。全量 `php -l`（排除 `storage/`）→ `PHP_LINT_ALL_OK`；`node --check assets/*.js` 全部退出码 0；版本号统计确认 css 52×11、js 27×9 无残留。CLI 用法：`php bin/scan-space.php`。
+- 待办（不属本次代码缺陷，供后续）：R13 副本补齐依赖真实 Notion，建议上线后用后台「立即巡检一次」小流量观察；此前 REVIEW_FINDINGS 中 H2（`forgetHash` 全局副作用）等历史问题未在本批处理。
+
+### [2026-09-27 20:57:06] ND 需求实现·阶段11：收尾（全量语法校验 + 版本号一致性 + 全量审查）
+
+- 目的：完成 `TASKS_ND.md` 阶段 11（收尾）。本阶段**不改功能代码**，只做三件事：①全量 PHP 语法校验；②前端资源版本号一致性检查；③把全量代码审查（bug / 功能性 / 逻辑，高→低）结论落盘到 `REVIEW_FINDINGS.md`。按项目约定**不 commit、不推送**，且**未做任何功能/HTTP 测试**（用户明确禁止：本机库触发即格式化）。
+- 关键结论：
+  1. **阶段 11 复审对原有清单逐条人工复核（明确不使用子代理）**，并把增量结论追加到 `REVIEW_FINDINGS.md` 文末「阶段 11 复审新增」小节。
+  2. **重要更正：原 H1 已修复**。原 H1「全新安装后文件系统整体不可用」在当前代码中**不复现**：`install.php` 的内联 `uploads` 建表已含 `scope`/`ticket_id` 及索引（`install.php` L104-L134），且已改用 19 个 `Schema::create*Table()` 统一建表口径（L136-L154），`schema_version` 写入 `Schema::CURRENT_VERSION`（L165，当前 20）而非硬编码 18。故 `migrate()` 不再提前返回，v17 补列路径不再被跳过。
+  3. **H2 仍存在（确认为高）**：`clearRecord()` → `forgetHash()` 删除**全站唯一**的 `content_hash` 指纹条目，一次单用户清除操作产生跨用户全局副作用（其他用户再传同内容不再被拦截）。
+  4. **新增 7 条中危**：M7 管理员批量改工单状态非结束态分支未排除 `expired`/`closed`，可「复活」已过期/已关闭工单并绕过 `reopenState()` 与 `MAX_REOPEN`（**此为该问题唯一可达入口**，此前「申诉路径可绕过过期」的推断经复核**不成立**——`appendAppealMessage()` 对 `expired` 有正确分支，另起新工单）；M8 `closeTicket()` 无原状态守卫，重复关闭会刷新 `closed_at`、`expired`↔`closed` 可互改；M9 `replyAsAdmin()` 缺 `isEnded()` 拦截（与 `api/upload.php` 结束态 409 `ticket_closed` 自相矛盾）；M10 `evaluateAutoBan()` 未先做 `expireDue()`+`accrueCycle()` 懒结算；M11 `unban()` 不重置 `violation_cycle_start`/`violation_ban_until`，解封后分数仍 ≥ 阈值；M12 账户页历史违规条数由两个 LIMIT 截断结果相加导致少报；M13 `site-asset.php` `k=media` 输出缺 `image/*` 白名单（`avatar.php` 有）。
+  5. **新增 2 条低危**：L12 `appendAppealMessage()` 调 `reopenTicket()` 未传 `$userId`（纵深防御缺失，当前不可利用）；L13 编辑公告删除正文图片引用时旧图片文件不随更新清理（仅整条删除时清理）。
+  6. **复审确认无问题**：`api/file.php` 工单附件下载授权/封禁拦截/副本回退与截断校验；`api/upload.php` 分块协议全链路（token 白名单、归属校验、顺序与字节校验、shutdown 清理、工单 scope 双重复核）；`src/Auth.php` 会话与权限；`src/NotionSpaceRepair.php` 自愈边界；`src/helpers.php` 站点标识系列函数（全部先判 `installed.lock`，安装向导阶段不触碰 `config` 表）；`dismissAllNotices()` 与单条清除同口径。公告「已读」以 cookie `nd_ann_<id>` 记录属设计选择，非缺陷。
+- 验证：
+  - **PHP 全量语法校验通过**：对全仓 `*.php`（排除 `storage/`）逐个 `php -l`，全部 `No syntax errors detected`，EXIT=0，无失败项。
+  - **JS 全量语法校验通过**：`node --check assets/app.js`、`assets/admin.js` 等全部 EXIT=0，无失败项。
+  - **资源版本号一致性通过**：`grep` 确认 `assets/app.css?v=49`（11 个页面）、`assets/app.js?v=25`（9 个页面）、`assets/admin.js?v=9` 全局一致，无残留旧 `?v=48` / `?v=24`。
+  - **未做任何功能/HTTP 测试**（用户明确禁止）。未触发还原/清库等不可逆路径。
+- 改动明细：
+  - `REVIEW_FINDINGS.md` — 追加「阶段 11 复审新增（2026-09-27 20:57:06 UTC+8）」小节（H1 已修复说明、H2 确认高、M7–M13 中危、L12–L13 低危、复审确认无问题补充项），并在文首补复审时间与说明、在文末更新「修复优先级建议」。H1 条目标题标注「阶段 11 复审：已修复」。
+  - `TASKS_ND.md` — 勾选阶段 11 完成项。
+- 数据库结构影响：**无**。`Schema::CURRENT_VERSION` 保持 20，旧库无需手工补列。
+- 遗留提醒：`REVIEW_FINDINGS.md` 中所有条目**仅记录、尚未修复**；H2、M1、M7、M8、M9 为建议优先处理项；M2（清除后是否自动解封）属产品预期待拍板。后续如需验证任何不可逆功能，务必在**一次性测试库**上操作。
+
+---
+
+### [2026-09-27 20:35:16] ND 需求实现·阶段10：R8 还原/恢复（还原个性化设置 + 恢复出厂设置）
+
+- 目的：完成 `TASKS_ND.md` 阶段 10。后台「还原/恢复」页签由占位面板改为**两项**可执行操作：①**还原个性化设置**（只把 `site_name`/`site_logo`/`site_favicon` 三项重置为内置默认，不触碰用户数据与密钥）；②**恢复出厂设置**（清空整个数据库 → 删 `storage/installed.lock` → 跳 `install.php` 重新安装）。按用户口径收敛为两项（原草案的「保留密钥还原」「清空内容保留账号」两项已作废，见 `TASKS_ND.md` R8 已确认口径修订）。**两项均为不可逆操作，本次全程未做功能测试**（用户明确要求：触发即会格式化数据库）。
+- 关键设计：
+  1. **新增 `src/Restore/RestoreService.php`** 承载全部还原逻辑与服务端校验，页面只负责渲染与跳转，避免高危代码散落在 `admin.php` 的 POST 分支里。构造器私有，统一 `RestoreService::create()` 获取实例。
+  2. **三重校验**（`TASKS_ND.md` R8「Q46=2」）：第一重为站内 `data-confirm` 内置弹窗二次确认；第二重为**管理员密码**（`assertConfirmed()` 内 `SELECT password_hash FROM users WHERE id = :id` + `password_verify`，不复用 `Auth::user()`，因其不含 `password_hash`）；第三重为**逐字输入的确认短语**（两项各自独立常量 `PHRASE_PERSONALIZATION` / `PHRASE_FACTORY_RESET`，必须完全相等）。
+  3. **前端弹窗会关闭原生校验**（`assets/app.js` 的 `data-confirm` 处理器会设 `form.noValidate = true`），故 `required` 等 HTML 校验形同虚设，`assertConfirmed()` 是唯一真源——已写成代码注释警示后续维护者。
+  4. **恢复出厂的执行顺序刻意把「清库」放最后**：先尽力归档 Notion 侧上传块 → 清本地 `storage/{avatars,site,announcements}` 内文件 → 最后 `SET FOREIGN_KEY_CHECKS=0` + 逐表 `DROP TABLE`（保留数据库本身，`install.php` 会重连并重新建表）→ 删锁。前面任何一步失败都还留有完整数据，不会出现「文件没了但库还在」的半损坏状态。
+  5. **Notion 归档走尽力而为**：副本可能分布在自有账户或官方账户池中的任意账户，逐行用对应 Token 建客户端（`$clients[$token] ??= new NotionClient($token)` 缓存），单块失败只 `Logger::warning('restore', ...)` 不阻断——否则一个坏块会卡死整个恢复出厂。**管理员自己的 Notion 根页面属基础设施、不属于「用户上传的文件」，故不归档**（依据 `TASKS_ND.md` R8-C2=1 的措辞口径）。
+  6. **`resetPersonalization()` 必须先读路径再删配置**：`siteLogoPath()`/`siteFaviconPath()` 读的是 config 行，顺序颠倒会取到空串导致文件成孤儿——已写注释说明。删文件用 realpath + `str_starts_with` 限定在 `storage/site` 内，防路径穿越。
+  7. 恢复出厂跳转用 `header('Location: install.php'); exit;`，**不能再落回后台**（锁已删，`bootstrap.php` 会把后台请求重定向到 `install.php`，依据 `bootstrap.php` L13-L19 与 L15 对 `install.php` 的豁免）。
+- 验证：
+  - **静态校验通过**：`php -l admin.php`、`php -l src/Restore/RestoreService.php` 均 `No syntax errors detected`（EXIT=0）；VS Code `GetDiagnostics` 返回 `[]`；`grep` 确认 `*.php` 中已无 `app.css?v=48` 残留。
+  - **未做任何功能/HTTP 测试**（用户明确禁止：本机库触发即格式化）。未触发两项还原，未调用 `assertConfirmed()`，未执行任何 DROP。
+- 改动明细：
+  - `src/Restore/RestoreService.php` — **新增**（全文件）。`namespace NotionDrive\Restore`；常量 `PHRASE_PERSONALIZATION`/`PHRASE_FACTORY_RESET`、私有 `PERSONALIZATION_KEYS`（3 项）/`CONTENT_DIRECTORIES`（3 个白名单目录）；方法 `create()`、`assertConfirmed(int $adminUserId, string $password, string $phrase, string $expectedPhrase)`、`resetPersonalization()`、`factoryReset()`、私有 `archiveUploadedBlocks()`/`removeStorageFile()`/`clearStorageDirectory()`；`factoryReset()` 开头 `@set_time_limit(0)`（批量归档可能上千次外部请求）。命名空间内调用全局助手函数一律加前导 `\`（`\siteLogoPath()`/`\userNotionToken()`/`\officialAccountToken()`）。
+  - `admin.php` — 新增 `use NotionDrive\Restore\RestoreService;`（`use NotionDrive\NotionClient;` 之后）；POST 分发链末尾 `else { throw new RuntimeException('未知操作。'); }` **之前**插入 `restore_personalization` 与 `factory_reset` 两个分支（各含 `assertConfirmed` + `Logger::warning('admin', ...)` 审计留痕；前者 `flash('success', ...)` 回落本页，后者 `header('Location: install.php'); exit;`）；原「还原/恢复」占位面板替换为两个真实 `.admin-panel`（后者带 `.danger-panel` 与 `.restore-impact` 影响清单：明确列出会清空的表、文件与需重新填写安装信息）；head 内 `assets/app.css?v=48` → `?v=49`。
+  - `assets/app.css` L455-L460 — 新增 `.danger-button` / `.danger-button:hover` / `.danger-panel` / `.restore-impact`，与弹窗内危险按钮（`.confirm-danger`）同色系（`--danger: #cf3c3c`、`--danger-soft: #fff1f1`）。
+  - 11 个页面（`account.php` / `admin.php` / `admin_orders.php` / `bans.php` / `install.php` / `dashboard.php` / `index.php` / `logs.php` / `pay.php` / `register.php` / `tickets.php`）全局升 `app.css?v=48→49`。未动 `app.js` / `admin.js`。
+- 数据库结构影响：**无**。未新增表/列，`Schema::CURRENT_VERSION` 保持 20，旧库无需手工补列。运行时「恢复出厂设置」会删除全部数据表（属功能行为，非结构变更）。
+- 遗留提醒：R8 属最高危且**本次刻意未做功能测试**，后续如要验证恢复出厂，务必在**一次性测试库**上操作（生产/本机库一触即格式化）；`install.php` 的「已有用户拒装」校验（`install.php` L69-L78）依赖 `users` 已被清空，故清库必须在跳转之前完成。
+
+---
+
+### [2026-09-27 20:19:18] ND 需求实现·阶段9：R9 用户侧批量清除（全选 + 一键删除）
+
+- 目的：完成 `TASKS_ND.md` 阶段 9。R9 —— `dashboard.php`「未通过内容审核」提示区新增**「全选 + 一键删除」**，用户可一次性把面板上的审核提示全部从自己视角隐藏；语义与既有单条「清除记录」**完全同源**（只置 `moderation_records.user_dismissed = 1`，**不改 `status`、不动风控记录与违规计数**），管理员仍可正常复核，复核时 `closeRecord()` 会把标记归零使提示**重新出现**（依据 `TASKS_ND.md` L356-L357 与 L178「R9-Q1 = 1」）。
+- 关键设计：
+  1. **一次 UPDATE 覆盖全部，而非循环单条**：新增 `ModerationService::dismissAllNotices(int $userId): int`，一条 `UPDATE ... SET user_dismissed = 1 WHERE user_id = :user_id AND decision = 'flagged' AND status IN ('open','resubmit') AND user_dismissed = 0`，返回 `rowCount()` 作为「已清除 N 条」。与单条 `dismissNotice()` 共用同一过滤口径，避免两套条件漂移。
+  2. **勾选框仅作 UI 示意，`一键删除` 以服务端为准作用于面板全部提示**：需求原文为「全选 + 一键删除」，且 R9-Q1 明确一键删除＝对面板上**全部**提示打标记；故「全选」是可见的批量入口（`data-check-all="notice-check"` 驱动同组 `input[name="notice-check"]` 的勾选/反勾选与半选态），**取消勾选不会改变提交结果**（已在 `assets/app.js` 注释中写明该取舍，避免后续代理误以为漏了「仅删所选」逻辑）。
+  3. **二次确认**：提交按钮沿用既有 `data-confirm` 机制（`assets/app.js` 的站内确认弹窗 `askConfirm`），文案含本次条数；**因 CSP 禁内联脚本**，全选逻辑落在 `assets/app.js`（与工单批量 `[data-check-all]` 同风格，但作用域以 `[data-check-all="notice-check"]` 收窄，不影响工单批量表单）。
+  4. **结果提示**：`?cleared=ok`（单条）与新增 `?cleared=all&count=N`（批量）分开展示，批量提示回显实际条数。
+- 验证：
+  - `php -l dashboard.php`、`php -l src/Moderation/ModerationService.php` — 均 **No syntax errors**；`node --check assets/app.js` — **退出码 0**。
+  - 实机 HTTP 冒烟（PHP 内建服务器 `127.0.0.1:8088`）：`dashboard.php → 302`（未登录跳登录页，无 500）；`assets/app.css?v=48 → 200`、`assets/app.js?v=25 → 200`。
+  - 全库检索 `app.css?v=47` / `app.js?v=24` 在 `.php` 内**已无残留**（仅历史 CHANGELOG 记录保留旧值）。
+  - 未做浏览器端到端复测（勾选/一键删除为登录后交互；风险低、不触发告警邮件，可由用户登录工作台目视确认）。
+- 改动明细：
+  - `src/Moderation/ModerationService.php` L494-L517 — 新增 `dismissAllNotices(int $userId): int`（批量置 `user_dismissed = 1`，返回受影响行数），置于 `noticeExists()` 之前。
+  - `dashboard.php` L68-L93 — `$noticeCleared` 由 bool 改为字符串（取 `$_GET['cleared']`）；新增 `action === 'dismiss_all_notices'` 的 POST 分支，成功后 `302 → dashboard.php?cleared=all&count=N`，失败复用 `$noticeError`。
+  - `dashboard.php` L181-L188 — 结果提示分支：`cleared === 'all'`（回显条数）/ `cleared === 'ok'` / 错误。
+  - `dashboard.php` L195-L200 — 提示区新增批量表单 `class="notice-bulk"`（csrf + `action=dismiss_all_notices` + `<label class="notice-check-all"><input type="checkbox" data-check-all="notice-check"> 全选</label>` + 带 `data-confirm` 的「一键删除」按钮）。
+  - `dashboard.php` L211 — 每条提示 `<li>` 首部新增 `<label class="notice-check"><input type="checkbox" name="notice-check" value="{recordId}"></label>`。
+  - `assets/app.js` L695-L710 — 新增 `[data-check-all="notice-check"]` 的全选/半选同步逻辑（纯 UI，作用域限定，不影响工单批量）。
+  - `assets/app.css` L113-L116 — 新增 `.notice-bulk` / `.notice-check-all` / `.notice-check` 样式与 `.alert-list li > span:first-of-type { flex: 1 1 auto; }` 以适配插入勾选框后的三列布局（`.alert-list li` 原为 `display:flex` + `space-between`）。
+  - 资源版本号全局升位：`assets/app.css?v=47→48`（11 个页面：`admin.php`、`admin_orders.php`、`account.php`、`bans.php`、`dashboard.php`、`install.php`、`index.php`、`logs.php`、`pay.php`、`register.php`、`tickets.php`）、`assets/app.js?v=24→25`（9 个页面：`admin.php`、`admin_orders.php`、`account.php`、`dashboard.php`、`index.php`、`logs.php`、`pay.php`、`register.php`、`tickets.php`）；`admin.js?v=9` 未动。
+- 数据库：**无结构变化**，沿用已有的 `moderation_records.user_dismissed`（v18 已加列）。旧库无需任何手工操作。
+- 回退：删除 `dismissAllNotices()` 与 `dashboard.php` 两处分支/表单、`assets/app.js` 全选块、`assets/app.css` L113-L116，并把两处版本号降回即可。
+
+---
+
+### [2026-09-27 20:07:48] ND 需求实现·阶段8：R10 可信度（违规次数 / 自动封禁 / 30 天周期重置）
+
+- 目的：完成 `TASKS_ND.md` 阶段 8。R10 —— 普通用户「账户管理」新增**可信度**卡片（= 违规次数，`x/5`，数字 + 5 格进度条 + 等级标签），0 良好 / 1 轻微 / 2–3 中等 / 4 高危 / 达阈值「封禁」；达阈值**真封禁**（写 `user_bans`，只拦上传/下载/文件夹，工单申诉入口保留），封禁 30 天后**自动解封并清零**；30 天为一个周期，到期**重新累计**；管理员可在「封禁管理」页**手动给用户加违规次数**。
+- 关键设计（与草案的微调，均已实测）：
+  1. **分数采用「实时统计」而非累计列**：`BanService::currentScore()` = 本周期内 `moderation_records.status='rejected'` 条数 + `user_violations` 中 `source='manual'` 的 `SUM(points)`，上限 `min(threshold)`。这样管理员「清除违规记录」（`ModerationService::clearRecord()` → status 改 `cleared`）后分数**同步下降**；若以累加列做真源则不会降，故 `users.violation_points` **不再作为分数真源**（列保留，仅历史遗留，无读写）。
+  2. **周期判定用 `violation_cycle_start` 起点过滤**：`accrueCycle()` 首次为该用户设起点（取**最早一次违规时间**，避免把存量历史违规误清；无违规则取当前时间），满 30 天后把起点前移到当前时间，`currentScore` 只统计起点及之后的违规——即「30 天周期自动重置」。**草案 R10-Q5 的「每周期最多 +2 分、逐周期叠加」简化为「周期重置后重新累计」**（依据：用户口径原文「30 天周期自动重置」；此简化之处需用户确认）。
+  3. **留痕表 `user_violations`（新表，v20）只用于历史展示**，不参与计分，避免与实时口径双重计数。内容风控打回（`ModerationService::reject()` 调 `recordViolation()`）与管理员手动加分（`addViolation()`）都写留痕。
+  4. **自动解封懒触发**（无 cron，仿 `TicketBanService::expireDue()`）：`expireDue()` 在 `trustSummary()` / `addViolation()` / `bans.php` 页面加载时调用，把 `violation_ban_until <= NOW()` 的用户解封并把周期起点重置为当前时间（等价清零）。留痕保留。
+  5. **幂等**：`BanService::ban()` 首行 `isBanned()` 早退，故已达阈值再次加分不会重复写 `user_bans`。
+  6. **管理员账户不展示该卡片**（`$trust = isAdmin($user) ? null : ...`），封禁对其无约束。
+- 验证：`php -l` 全通过（`BanService.php` / `Schema.php` / `ModerationService.php` / `account.php` / `bans.php` / `install.php` / `admin.php`）；临时 PDO 脚本 **28 项断言 `ALL PASS`**（等级映射 6 项、实时分数口径、加分/累计/触达阈值自动封禁、封顶、留痕条数、`trustSummary` 结构、到期自动解封清零且留痕保留、跨周期重置归零），断言后脚本已删；未登录访问 `account.php`/`bans.php`/`admin.php` 均 302 跳登录（无 500）。
+- 改动明细：
+  - `src/Bans/BanService.php` L23-L28 — 新增常量 `CYCLE_DAYS=30`、`AUTO_BAN_DAYS=30`、`MAX_MANUAL_POINTS=100`（`CYCLE_MAX_POINTS` 随 Q5 简化一并移除）。
+  - `src/Bans/BanService.php` L121-L155 — 新增 `trustSummary()`：懒结算 + 汇总（分数/阈值/等级/色调/封禁状态/解封时间/留痕/违规文件明细）。
+  - `src/Bans/BanService.php` L157-L198 — 新增私有 `accrueCycle()`：首次取最早违规时间为周期起点，满 30 天前移起点实现重置。
+  - `src/Bans/BanService.php` L200-L233 — 新增 `expireDue()`：到期自动解封 + 周期起点重置（懒触发）。
+  - `src/Bans/BanService.php` L235-L286 — 新增 `addViolation()`：校验 → 懒结算 → 写留痕（只写 `+Δ`）→ 达阈值自动封禁并写 `violation_ban_until = NOW()+30 天`。
+  - `src/Bans/BanService.php` L288-L316 — 新增 `recordViolation()`：内容风控打回时写留痕（`kind='record'`、`points=0`）。
+  - `src/Bans/BanService.php` L318-L351 — 新增 `violationHistory()` / `recentViolations()`：留痕与打回文件明细查询（账户页折叠区数据源）。
+  - `src/Bans/BanService.php` L353-L384 — 新增 `trustLabel()` / `trustTone()`：等级与色调映射（good/warn/high/ban）。
+  - `src/Bans/BanService.php` L403-L459 — 重写 `currentScore()`：按周期起点实时统计（打回记录 + 手动加分），上限阈值。
+  - `src/Bans/BanService.php` L399-L423 — `evaluateAutoBan()` 改用 `currentScore()`，与账户页 `x/5` 同源口径。
+  - `src/Bans/BanService.php` L461-L489 — `bannedUsers()` SQL：去掉 `violation_points`、`violations` 子查询按周期起点过滤。
+  - `src/Schema.php` L20 — `CURRENT_VERSION` 19 → 20；L232-L241 — v20 迁移块；L246-L267 — 新增 `createUserViolationsTable()`（新表 `user_violations`，含 `kind/source/record_kind/record_id/upload_id/points/reason/admin_id`，`user_id` 外键级联删除）。
+  - `install.php` L154 — 新增 `Schema::createUserViolationsTable($pdo);`；L92 仍有 `users.violation_points` 列（旧库无需手工补列，列已不再使用）。
+  - `src/Moderation/ModerationService.php` L359-L370 — `reject()` 内新增 `BanService::create()->recordViolation(...)` 写留痕（在 `evaluateAutoBan()` 之后）。
+  - `bans.php` L81-L94 — 新增 POST 分支 `add_violation`（手动加分 + `Logger::warning` + flash）；L104-L105 — 页面加载调用 `$service->expireDue()`；L176 / L183-L185 — 行内 `$autoBanUntil` 与「已达阈值」标记、自动解封时间列；L196-L198 — 新增「加违规」行内表单（`violation_points` 1–100 + `violation_reason` + `data-confirm`）。
+  - `account.php` L7 — `use NotionDrive\Bans\BanService;`；L187-L188 — `$trust` 变量；L233-L266 — 新增「可信度」卡片（`status-badge` 等级、`.trust-card` 数字/进度条、封禁提示、`<details>` 历史折叠；历史按「打回文件」与「管理员加计」去重展示）。
+  - `assets/app.css` L157-L186 — 新增 `.trust-card` / `.trust-score` / `.trust-progress`（5 格）/ `.tone-warn|high|ban` / `.trust-history` / `.violation-form` 样式。
+  - 全局升 `app.css?v=46→47`（11 个页面 head：`admin.php`、`account.php`、`admin_orders.php`、`bans.php`、`index.php`、`dashboard.php`、`install.php`、`register.php`、`pay.php`、`logs.php`、`tickets.php`）；未动 JS，`app.js?v=24` 不变。
+- 数据库：新表 `user_violations`（v20 迁移）；实机库 **已迁移至 v20**（`schema_version=20`）。旧库访问任一页面即自动迁移，无需手工补列。`users.violation_points` 保留但不再读写。
+- 回退：本阶段不 commit。如需回退，`git checkout --` 上述文件并 `DROP TABLE user_violations`、`UPDATE config SET value='19' WHERE name='schema_version'`。
+
+### [2026-09-27 19:48:37] ND 需求实现·阶段7：R6 工单评价 + 评价统计
+
+- 目的：完成 `TASKS_ND.md` 阶段 7。R6 —— 工单**任一方式结束**（`closed` / `expired`）后邀请用户评价：站内直接打分（0.5 ~ 5.0，步进 0.5，共 10 档，星星展示），**可重复提交覆盖**上次评分，**用户自选匿名与否**，留言可选；评价**只在站内使用、不共享到外部**，外部渠道的用户反馈走管理员配置的**外部调研链接**；后台提供**独立「评价统计」页**（平均分 / 分布 / 最近明细）。
+- 关键设计：
+  - 评分档位唯一来源 `TicketService::scoreOptions()`（由常量 `MIN_SCORE=0.5` / `MAX_SCORE=5.0` / `SCORE_STEP=0.5` 推导，共 10 档），`submitReview()` 用 `in_array(..., scoreOptions(), true)` 严格校验，非档位分值（如 0.3）直接拒收，避免 `DECIMAL(2,1)` 落库出脏值。
+  - 覆盖而非新增：`submitReview()` 用 `INSERT ... ON DUPLICATE KEY UPDATE`（依赖阶段 0 已建的 `uniq_ticket_review(ticket_id)`），重复提交只更新 `score`/`is_anonymous`/`comment`，**不新增行**——这是「每张工单至多计入 1 条」的结构保证，也让统计口径天然去重。
+  - 权限与状态校验集中在服务层：`submitReview()` 先 `findForUser($ticketId,$userId)` 确认归属，再要求 `isEnded($status)`；`tickets.php` 的 `submit_review` 分支额外拒绝管理员提交（管理员侧只有只读视图）。
+  - 匿名只在「对外展示」环节生效：`is_anonymous` 原样落库（便于本人回看与后台审计），后台明细按标记隐藏用户名，页面用 `status-badge` 显示「匿名」。
+  - 星星选择器为**纯 CSS + radio**：`.star-rating` 底层灰星 + 上层金层 `.star-rating-fg` 用宽度百分比裁剪出半星，10 个 `<label>` 各占 10% 宽做点击区；选中后金层宽度由 `.star-rating:has(input[value="x.y"]:checked)` 十条规则更新，**无需任何 JS**（CSP 禁内联脚本，且本次不动 `app.js`）。服务端同时把已有分数写进内联 `--pct`，即使浏览器不支持 `:has()` 也能正确回显历史评分。
+  - 调研入口为全局配置 `config.ticket_survey_url`（键 `TicketService::SURVEY_URL_CONFIG_KEY`），`saveSurveyUrl()` 仅接受 `http(s)://`、留空即关闭；渲染处 `target="_blank" rel="noopener noreferrer"`。
+  - 后台新增独立页签 `reviews`（`adminTabs()` 第 3 项），含平均分（大号数字 + 静态星级条）、10 档分布条形（以最大档计数为 100% 基准）与最近 50 条明细；分布表 `array_reverse(..., true)` 让 5.0 档显示在最上方，符合阅读习惯。空态与「未配置」态均单独处理，不再出现空白面板。
+  - 统计 SQL 只做 `COUNT(*)` / `AVG(score)` / `GROUP BY score` 三件小事，分布数组在 PHP 侧补齐 0 值档位，保证 10 列恒在（前端不用判空）。
+- 验证：
+  - `php -l` 全通过：`src/Tickets/TicketService.php`、`tickets.php`、`admin.php`、`src/Schema.php`（附带复查）、`src/helpers.php`、`src/NotionClient.php`、`src/NotionSpaceRepair.php`。
+  - 临时 PDO 脚本（事务内验证、结束即 `rollBack`，脚本已删除）`PASS 22 / FAIL 0`：档位 10 档且首末为 0.5 / 5.0；非法分值 0.3 被拒；非法调研链接 `ftp://` 被拒；首次提交可读回（分数 / 匿名 / 留言逐项比对）；**覆盖提交后总行数不变而分数、匿名标记、留言均已更新**；统计条目数 / 平均分 / 10 档分布 / 5.0 档计数正确；匿名条目标记可供后台隐藏用户名；事务回滚后评价表零残留；调研链接「保存→读回→空白关闭→恢复原值」往返正确。
+  - 真实 HTTP 端到端（自建临时 session 文件 + curl，`save_path` 为空故用系统默认会话目录；验证后已 `session_destroy`）：用户 `tickets.php?id=12`（`closed`）与管理员 `admin.php?tab=reviews` / `?tab=tickets` 均 200；用户侧含 `star-rating`、`submit_review`、`is_anonymous`、恰好 10 个 `name="score"`；表单 POST 返回 302 且落库；再次 POST 覆盖后**主键不变**（id=3）、分数 4.5→2.0、匿名 1→0、`updated_at` 前移、总数仍为 1；回显侧 `--pct: 90.00%` 与 4.5 档 `checked`、匿名勾选均正确；管理员详情页显示只读评价块；后台统计页平均分 `4.50` 与匿名徽标正常。临时链接与评价数据已清理（`remaining_reviews=0`、`survey_url=''`），5 个临时脚本全部删除（`Glob _tmp*.php` 无结果）。
+- 受影响表/列：读 `ticket_reviews`（全列）、`tickets`（`id`/`user_id`/`status`）；`config` 新增键 `ticket_survey_url`（首次读取回落空串 = 不展示入口）。**无新增表/列，旧库无需迁移**（`ticket_reviews` 在阶段 0 v19 已建）。
+- 前端资源：`assets/app.css` 新增评价卡片 / 半星选择器 / 统计条形样式（L122-L156），故**全局升 `app.css?v=45→46`（11 页：admin / account / admin_orders / bans / index / dashboard / install / register / pay / logs / tickets）**；未动 JS，`app.js?v=24`、`admin.js?v=9` 不变。
+- 改动明细：
+  - `src/Tickets/TicketService.php` L43-L52 — 新增常量 `MIN_SCORE` / `MAX_SCORE` / `SCORE_STEP` / `MAX_COMMENT_LENGTH` / `SURVEY_URL_CONFIG_KEY`
+  - `src/Tickets/TicketService.php` L827-L841 — 新增 `scoreOptions()`（10 档，唯一真源）
+  - `src/Tickets/TicketService.php` L843-L861 — 新增 `reviewFor()`（每单至多一条）
+  - `src/Tickets/TicketService.php` L863-L902 — 新增 `submitReview()`（归属 + 结束态 + 分值校验 + UPSERT 覆盖）
+  - `src/Tickets/TicketService.php` L904-L927 — 新增 `reviewStats()`（总数 / 平均分 / 10 档分布）
+  - `src/Tickets/TicketService.php` L929-L946 — 新增 `recentReviews()`（最近明细，匿名不展示用户名）
+  - `src/Tickets/TicketService.php` L948-L969 — 新增 `surveyUrl()` / `saveSurveyUrl()`（`config.ticket_survey_url`，仅 `http(s)` 或留空）
+  - `tickets.php` L83-L99 — 新增 POST 分支 `submit_review`（管理员拒收、成功后重定向回详情页）
+  - `tickets.php` L193 — 初始化 `$review = null;`
+  - `tickets.php` L209 — 详情页加载 `$review = $service->reviewFor($ticketId);`
+  - `tickets.php` L416-L422 — 详情页计算 `$canReview` / `$reviewScore` / `$reviewComment` / `$reviewAnonymous` / `$surveyUrl`
+  - `tickets.php` L536-L585 — 新增「工单评价」面板：用户侧半星打分表单（可覆盖）+ 匿名开关 + 留言；管理员侧只读；末尾按配置渲染「邀请您参加调研 → 点我参加」
+  - `admin.php` L30 — `adminTabs()` 新增 `reviews` 页签（`评价统计`）
+  - `admin.php` L948-L958 — 新增 POST 分支 `save_survey_url`（含 `Logger::info('ticket', ...)` 审计与空值关停提示）
+  - `admin.php` L1566-L1577 — `?tab=tickets` 新增「外部调研链接」配置面板（含启用状态徽标）
+  - `admin.php` L1635-L1698 — 新增 `?tab=reviews` 面板：「评价概览」（平均分 + 10 档分布条形）与「最近评价」明细表
+  - `assets/app.css` L122-L156 — 评价卡片 / 半星选择器 / 统计条形样式
+  - 11 个页面 head — `app.css?v=45→46`
+
+### [2026-09-27 19:36:49] 新增 Notion 空间页自愈模块：归档类错误自动修复并重试一次
+
+- 目的：线上出现用户空间页面被移入 Notion 回收站后，上传与删除持续报错（`Can't edit block that is archived. You must unarchive the block before editing.` / `Can't edit page on block with an archived ancestor. ...`），`upload_replicas` 里还有 active 副本导致 `ensureUserSpacePage()` 的自检（仅在 `accountReplicaCount()===0` 时触发）不会重建页面，故障会一直复现。这类故障不涉及数据丢失（页面及其下文件块都还在，只是被归档），属于可自愈范围，因此新增模块：命中特征明确的错误文案时先自动修复再重试一次，其余错误行为完全不变。
+- 关键设计：
+  - 判定与修复分离：`isRepairable()` 只按小写错误文案匹配三个特征（`block that is archived` / `archived ancestor` / `you must unarchive`），特征之外一律不修，避免误改用户数据。
+  - 修复顺序：先解析空间页与根页（官方账户读 `official_accounts.root_page_id` + `user_official_accounts.notion_page_id`；自有账户读 `users.notion_parent_page_id` / `users.notion_page_id`），再沿祖先链由近及远把 `in_trash`/`archived` 的页面 `restorePage()`（上限 6 层，防父链成环）；页面已彻底删除（`retrievePage` 抛异常）时按原父页面 `createUserSpace()` 重建并回写缓存（官方用 `rememberUserSpacePage()`，自有 `UPDATE users SET notion_page_id`）。
+  - 全程不抛异常：`repair()` 内部捕获 `Throwable` 并返回 `array{repaired,action,page_id,detail}`，调用方据此决定是否重试，修复失败仍抛**原始异常**，日志/告警行为与修复前一致。
+  - 接入点集中在 `notionWriteWithRepair()` 包装器，上传（`writeNotionReplicas`，含 `ensureUserSpacePage` + `uploadAndAttach`）与删除（`archiveUploadReplicas` → `archiveBlock`）两条路径各接入一次；`role` 由包装前算好传入闭包，保证重试后副本序号不跳号。
+  - 每次修复动作写 `Logger::warning('notion', '检测到 Notion 页面被归档，已尝试自动修复。', ...)`，含 `reason` / `repaired` / `action` / `page_id` / `detail`，便于事后核对。
+- 验证：`php -l` 通过（`src/NotionSpaceRepair.php` / `src/NotionClient.php` / `src/helpers.php`）。临时脚本（**只调用 `repair()` 与 `NotionClient`，不经过 `writeNotionReplicas` / `archiveUploadReplicas`，以规避 `raiseAdminAlert` 真实发信**）跑通后已删除，结果 `PASS 7 / FAIL 0`：① `isRepairable()` 3 个正例 + 5 个反例（含空串）判定正确；② 对健康空间页跑 `repair()` 返回 `repaired=false / action=none`，不产生多余动作；③ 用临时探针页面端到端复现——建页 → 写入成功 → `archivePage()` → 写入报出真实归档错误且 `isRepairable()===true` → `restorePage()` → **重试写入成功**（核心假设成立）→ 探针块与页面已清理；④ 修复动作日志按预期落 `notion` 通道。注：本机到 Notion 的连接偶发 15s 超时，会掩盖归档错误，此时 `isRepairable()` 判 false 不触发修复，属预期。
+- 受影响表/列：读 `official_accounts(root_page_id)`、`user_official_accounts(notion_page_id)`、`users(notion_parent_page_id, notion_page_id)`；重建空间页时写 `user_official_accounts.notion_page_id` 或 `users.notion_page_id`。**无新增表/列，旧库无需迁移。**
+- 无前端资源改动（未动 `assets/app.css` / `app.js`），故**不升版本号**（仍为 `app.css?v=45`、`app.js?v=24`、`admin.js?v=9`）。
+- 改动明细：
+  - `src/NotionSpaceRepair.php`（新建）— 自愈模块：`isRepairable()` / `repair()` + 私有 `resolveSpace()` / `state()` / `ancestorChain()` / `persist()` / `result()`
+  - `src/NotionClient.php` L122-L126 — 新增 `restorePage()`（PATCH `/pages/{id}` `in_trash=false`），与 `archivePage()` 对称
+  - `src/helpers.php` L11 — 引入 `use NotionDrive\NotionSpaceRepair;`
+  - `src/helpers.php` L1383-L1428 — 新增 `notionWriteWithRepair()`：命中可修复特征 → `repair()` → 重试一次；修复未成功时抛原始异常
+  - `src/helpers.php` L1437-L1489 — `writeNotionReplicas()` 改用 `notionWriteWithRepair()` 包装上传闭包（`role` 提到循环开头计算）
+  - `src/helpers.php` L1546-L1562 — `archiveUploadReplicas()` 改用 `notionWriteWithRepair()` 包装 `archiveBlock()`
+
+### [2026-09-27 19:01:47] ND 需求实现·阶段5+6：R5 工单过期档位 + R7 重开规则
+
+- 目的：完成 `TASKS_ND.md` 阶段 5/6。R5 —— 工单在「客服已回复、等待用户回复」且超期后自动过期（`expired`），过期后仅保留对话记录、附件立即清除、不可回复也不可重开；过期天数设全局默认档位（1/7/15/30 天 + 不过期），后台可设。R7 —— 关闭后的工单可在 30 天窗口内重开，每单最多 5 次，双方均可发起，复用原工单（`status=open`、清空 `closed_at`、`reopen_count+1`）；次数用尽/超窗口仅清附件、对话保留；重开入口带站内确认弹窗。
+- 关键设计：
+  - 修复 `Schema::createTicketsTable()` 与 v19 迁移的**结构漂移**：全新安装（`install.php` 直写 `schema_version=19`）时 `CREATE TABLE tickets` 缺 `closed_at` / `reopen_count` / `expired_at` 三列，已按迁移块顺序补齐（`closed_at AFTER last_message_at`、`reopen_count AFTER closed_at`、`expired_at AFTER reopen_count`）。**旧库无需手工补列**（v19 迁移已建）。
+  - `TicketService` 新增：常量 `MAX_REOPEN=5` / `REOPEN_WINDOW_DAYS=30` / `EXPIRE_CONFIG_KEY='ticket_expire_days'`；`expirePresets()`、`expireDays()`；`expireDueTickets()`（规则一：`status IN(open,processing)` 且最后一条留言为客服且 `COALESCE(last_message_at,created_at) <= now-N天`；规则二：`status=closed` 且 `COALESCE(closed_at,last_message_at,created_at) <= now-30天`；cutoff 用 PHP `date()` 计算避免 INTERVAL 占位符）；私有 `expireTicket()`（`UPDATE ... WHERE status<>expired`，`rowCount()>0` 才 `purgeAttachments()`，幂等）；`reopenTicket()` / `reopenState()` / `reopenInfo()` / 私有 `reopenDeadlinePassed()`。
+  - `closeTicket()` 补写时间戳列：`expired → expired_at`，其余（closed 等）→ `closed_at`。
+  - `appendAppealMessage()` 改 `ORDER BY id DESC LIMIT 1`：命中可重开的关闭单则**复用原单**（`reopenTicket`），已过期则新建，未结束则追加留言。
+  - `appealThreadsByRecords()` SQL 改 `ORDER BY id DESC` 并修正去重（`if (!isset($threads[$recordId]))` 保留首条=最新一张，原先的守卫无效会误留最早单）。
+  - 入口接入：`tickets.php`（顶部清理 + POST `reopen_ticket` + 详情页「重新开启工单」面板，含剩余次数/截止时间，可重开时 `data-confirm` 按钮）、`admin.php`（`?tab=tickets` 「工单过期设置」面板，`<input list>` + `<datalist>` 0/1/7/15/30 且支持手输；POST `save_ticket_settings` 校验 0~3650；顶部清理）、`dashboard.php`（顶部清理，失败不阻断文件页）。
+  - CSP 禁内联脚本，过期档位改用纯 HTML `<datalist>`，**无需新增 JS**。
+  - 过期默认档位取 **0（不过期）**：避免升级后自动把存量「客服已回复」的旧工单批量置过期、误清附件。
+- 验证：`php -l` 全通过（Schema / TicketService / tickets.php / admin.php / dashboard.php）。临时 PDO 脚本直插工单与留言（**刻意不调用 `openTicket()`，规避 `raiseAdminAlert` 真实发信**）实跑 26 项断言后已删除：`PASS 26 / FAIL 0`（档位读取/回落、规则一命中与两类对照、幂等、不过期模式、规则二、重开状态/清 `closed_at`/计数/剩余次数、次数用尽/超窗口/已过期不可重开、`closeTicket` 写时间戳、申诉复用原单并计数 +1、同记录多单取最新）。
+- 受影响表/列：`tickets`（读 `closed_at` / `reopen_count` / `expired_at`）；`config` 新增键 `ticket_expire_days`（首次读取回落 `0`）。
+- 无前端资源改动（未动 `assets/app.css` / `app.js`），故**不升版本号**（仍为 `app.css?v=45`、`app.js?v=24`、`admin.js?v=9`）。
+
+### [2026-09-27 18:50:19] ND 需求实现·阶段4：R2 禁止提交工单
+
+- 目的：完成 `TASKS_ND.md` 阶段 4 —— 新增「禁止提交工单」（`user_ticket_bans`）增删查 + 期限（1/3/7/30 天 / 永久）到期自动失效；拦截**新建工单**入口（不影响查看/回复已有工单，不影响上传/下载/重命名/新建文件夹）；后台工单设置页提供禁止/解除入口。该标记与「封禁管理」的账户封禁（`user_bans`）**完全独立**，封禁不限制提工单。
+- 关键设计：
+  - 服务门面 `TicketBanService`（仿 `BanService`）：`isTicketBanned`/`activeTicketBan`/`ban`/`unban`/`bannedUsers`/`durations`；读取前先 `expireDue()` 把 `until <= NOW()` 的记录统一置 `is_active=0` 实现到期自动失效。`ban($days)` 仅 1/3/7/30 生效为定时，其余（含 0/null）为永久（`until=NULL`）。
+  - 集中拦截：在 `TicketService::openTicket()` 开头判定，覆盖 `tickets.php` 表单与文件页快捷申诉两处新建路径，同时保留已有工单回复能力。
+  - 表格 `user_ticket_bans` 阶段 0 已建（含 `is_active`/`lifted_at`，无 `lifted_by`），本阶段**无需迁移**。
+  - 后台入口：`admin.php` `?tab=tickets` 面板 = 「禁止提交工单」表单（用户下拉 + 期限 select + 原因，`data-confirm`）+ 「已禁止用户」表格（行内解除）。
+- 验证：`php -l` 全通过（admin.php / tickets.php / TicketBanService / TicketService / helpers.php）。临时 PDO 脚本实跑后已删除，断言全 PASS：期限档位 1/3/7/30/0；`ban(days=7)` 写入 `until` 约为 7 天后；`ban(days=0)` 为永久（`until=NULL`）；`bannedUsers()` 能关联出 `username/email`；到期后 `isTicketBanned=false` 且记录置失效；禁止时 `openTicket` 抛「你已被禁止提交工单，请联系管理员。」。（与 bug 修复共用同一临时脚本批次验证。）
+- 无前端资源改动（未动 `assets/app.css` / `app.js`），故**不升版本号**（仍为 `app.css?v=45`、`app.js?v=24`、`admin.js?v=9`）。
+- 改动明细：
+  - `src/Tickets/TicketBanService.php`（新建，143 行）— 禁止提交工单门面：期限档位、增删查、到期自动失效、后台列表
+  - `src/Tickets/TicketService.php` L91-L96 — `openTicket()` 开头集中拦截被禁止用户新建工单
+  - `admin.php` L16 — 引入 `use NotionDrive\Tickets\TicketBanService;`
+  - `admin.php` L901-L931 — POST 分发链新增 `ban_ticket_user` / `unban_ticket_user` 分支（含自我禁止校验、`Logger`、`flash`）
+  - `admin.php` L1512-L1567 — `?tab=tickets` 面板：禁止表单 + 已禁止用户表格（替换原空壳面板）
+
+---
+
+### [2026-09-27 18:47:41] Bug 修复：封禁提示条「提交申诉」改为真正提交申诉工单
+
+- 目的：账户被手动封禁后，页面顶端提示条文案「如有疑问请 提交申诉」的链接却跳到 `tickets.php` 普通新建工单：工单类别下拉**跳过「申诉」**，且 POST 会把 `appeal` 类别强制转回 `general`，用户实际无法提交申诉类工单。修复后点击该链接进入**申诉模式**：自动选好「申诉」类别、预填标题「账户封禁申诉」，用户只补申诉理由即可提交。
+- 关键设计：
+  - 入口带参：提示条链接改为 `tickets.php?appeal=1`（仅 `link` / `detail` 两种提示样式输出该入口，`plain` 不变）。
+  - 申诉模式：`tickets.php` 以 GET `appeal=1` 且非管理员判定；该模式下表单用 hidden `appeal_mode=1` + hidden `category=appeal`，类别显示为**只读**「申诉」，标题预填、理由留空待补充。
+  - 放行规则：POST `create_ticket` 仅在带 `appeal_mode=1` 时允许 `category=appeal`，其余入口（含构造请求）仍只收普通工单，避免绕过入口直接建申诉。
+- 验证：新增临时脚本（PDO）实跑后已删除，9 项断言全 PASS：禁止/解除判定、到期自动失效并置 `is_active=0`、禁止时 `openTicket` 抛「你已被禁止提交工单，请联系管理员。」、未禁止时 `openTicket(...,'appeal')` 建单类别正确、`banNoticeHtml` 输出含 `tickets.php?appeal=1` 与「提交申诉」。相关文件 `php -l` 通过。
+- 改动明细：
+  - `src/helpers.php` L577-L578 — `banNoticeHtml()` 申诉链接 `tickets.php` → `tickets.php?appeal=1`
+  - `tickets.php` L9、L19 — 引入 `TicketBanService` 并实例化 `$ticketBanService`
+  - `tickets.php` L23-L24 — 新增 `$appealMode`（GET `appeal=1` 且非管理员）
+  - `tickets.php` L39-L43 — POST `create_ticket` 放行规则（带 `appeal_mode=1` 才允许 `appeal` 类别）
+  - `tickets.php` L158-L159 — 读取当前用户生效中的禁止提交工单记录 `$ticketBan`
+  - `tickets.php` L221-L261 — 用户侧新建区三层分支：被禁止 → 禁止提示面板（含原因/期限，提示仍可查看回复已有工单）；否则按 `$appealMode` 分申诉表单 / 普通表单
+
+---
+
+### [2026-09-27 18:34:54] ND 需求实现·阶段3：R1 工单批量管理 + 归档页
+
+- 目的：完成 `TASKS_ND.md` 阶段 3 —— 工单新增「已过期（`expired`）」终态；后台可按状态批量修改、批量归档、一键清除全部工单；用户侧可批量关闭、逐条移除；两端均新增「归档页（`tickets.php?view=archived`）」并可恢复。归档是 **viewer 维度**（普通用户自己的归档 / 每位管理员各自的归档）的**软隐藏**，不删工单、不删留言。
+- 依据取舍（重要）：`TASKS_ND.md` R1 的 Q5 曾写「删除时一并清除附件」，但 Q1-补 定稿为「所有删除（含清除全部工单）都是进入归档，不是全站真删」，二者冲突，**按定稿实现**：归档 / 删除 = 写入 `ticket_archives` 的可恢复软隐藏，**不清附件**；附件仅在工单被置为**结束态（关闭 / 过期）**时由 `closeTicket()` → `purgeAttachments()` 清除。
+- 关键设计：
+  - 结束态统一判定：新增 `endedStatuses()` / `isEnded()`，把原先散落的 `status !== STATUS_CLOSED` 全部替换，使 `expired` 与 `closed` 行为一致（不可回复、不可上传附件、详情页显示「已结束」）。
+  - 归档条件：普通用户 = 本人的工单且为结束态（`closed|expired`）；管理员**行内移除** = 仅 `expired`；管理员**批量归档 / 清除全部**属整理动作，不限状态（`onlyEligible=false`）。
+  - 列表排除归档：`ticketsForUser()` / `allTickets()` 用 `NOT EXISTS (SELECT 1 FROM ticket_archives ...)` 过滤，排序改为结束态排最后。
+  - 表单嵌套规避：列表的批量表单放在 `<table>` 外（`id="ticketBulkForm"`），行内勾选框用 HTML5 `form="ticketBulkForm"` 关联；每行「移除 / 恢复」用独立小表单放在 `<td>` 内。
+- 改动明细：
+  - `src/Tickets/TicketService.php` L23 — 新增 `STATUS_EXPIRED='expired'`；L28-L30 — 新增 `VIEWER_USER/VIEWER_ADMIN`；L78-L83 — 新增 `endedStatuses()` / `isEnded()`；L328 — 新增 `archivedTickets()`；L372 — 新增 `archiveTickets()`（`INSERT IGNORE` 幂等）；L408 — 新增 `archiveAllTickets()`；L428 — 新增 `restoreTickets()`；L449 — 新增 `setStatuses()`（目标为结束态时走 `closeTicket` 以清附件）；L483 — 新增私有 `normalizeIds()`；L569 — `closeTicket()` 增第 3 参 `$status`；`replyAsUser()` / `refreshDerivedStatus()` / `ticketsForUser()` / `allTickets()`（增第 4 参 `$viewerId`）同步适配。
+  - `api/upload.php` L294-L295 — 工单附件上传的关闭判断改为 `TicketService::isEnded(...)`（过期工单同样禁止上传）。
+  - `tickets.php` L15 — 新增 `$viewerKind`；L80-L148 — 新增 6 个批量动作（`batch_status` / `batch_close` / `batch_archive` / `archive_tickets` / `archive_all` / `restore_tickets`），ids 合并 `ids[]` 与 `ticket_id`，重定向保留 `view=archived`；L161/L173 — 新增归档视图判定与 `archivedTickets()` 分支，`allTickets()` 补第 4 参；L234-L345 — 列表 section 重写（标题栏「查看归档 / 返回工单列表」+ 批量栏 + 勾选列 + 行内移除 / 恢复）；L350 `$canReply` 与 L430 结束工单区块改用 `isEnded()`，并同步「已结束」文案（L385 / L391 / L426 附近）。
+  - `assets/app.js` L672-L692 — 新增工单批量全选：`[data-check-all]` ↔ `[data-check-item]` 联动 + `[data-check-count]` 已选计数（必须放在上传区提前 `return` 之前，否则工单页不执行）。
+  - `assets/app.css` L121 — 新增 `.ticket-status-expired`；L414-L424 — 新增批量栏 / 勾选列样式；L575-L588 — 移动端卡片：勾选列绝对定位到右上角、标题列 `.ticket-title-col` 顶替原首列排版。
+  - 资源版本号全局升位：`assets/app.css?v=44→45`（11 页）、`assets/app.js?v=23→24`（9 页）。
+- 数据库：使用阶段 0 已建的 `ticket_archives`（`ticket_id` + `viewer_kind` + `viewer_id`，含唯一键，`INSERT IGNORE` 幂等）。**旧库无需手工补列**（迁移在 `src/Schema.php` 建表清单内，首次请求自动 `CREATE TABLE IF NOT EXISTS`）。
+- 验证：`php -l tickets.php`、`php -l src/Tickets/TicketService.php`、`php -l api/upload.php` 全部通过；`node --check assets/app.js` 退出码 0。临时 PDO 脚本实跑：`ticketsForUser(1)=2`、`allTickets()=10`、`allTickets(viewer=1)=10`、`archivedTickets(admin/user)=0`、状态键含 `expired`、`isEnded('closed'/'expired')=true`、`isEnded('open')=false`（脚本已删除）。HTTP：未登录访问 `tickets.php` 与 `tickets.php?view=archived` 均 302 跳登录。全库检索 `app.js?v=23` / `app.css?v=44` 在 `.php` 内**已无残留**。未做浏览器端到端复测（批量交互可由用户登录后目视确认）。
+
+---
+
+### [2026-09-27 18:06:52] ND 需求实现·阶段2（下）：R3 公告 · 工作台弹窗 + 提醒档位
+
+- 目的：完成 `TASKS_ND.md` 阶段 2 的下半部分 —— 把后台配置的站点公告推送到用户**工作台（`dashboard.php`）**，以不可关闭的弹窗展示，并提供「每次/永久/3/7/15/30 天/自定义天数」提醒档位。
+- 关键设计：
+  - CSP 为 `script-src 'self'`，**禁止内联脚本**，故弹窗数据用**服务端渲染的隐藏 DOM**（`.announce-item` 带 `data-announce-id`/`data-announce-sig`，标题与 `renderMarkdown()` 后的正文直接内联），交互逻辑写进 `assets/app.js`。
+  - 弹窗**不可 Esc、不可点遮罩关闭**，只能点「我知道了」退出；不复用 `openDialog()`（其自带 Esc/遮罩关闭）。
+  - 已读状态用前端 cookie `nd_ann_<id>`，值 `{sig}~{expiresAt}`（`~` 为合法 cookie-octet；`expiresAt=0` 表示永久）。判定：cookie 缺失、或 `sig` 与服务器不一致（公告已更新）、或 `expiresAt` 已过期 → 展示；`sig` 一致且永久 → 跳过。「每次进入都提醒」不写 cookie（并清掉旧的），有限天数写 `max-age`，永久写约 10 年。
+- 改动明细：
+  - `dashboard.php` L319-L349 — `</main>` 后调用 `announcementList()`，有公告时渲染 `#announceModal.announce-overlay`（内含各条 `.announce-item`、底部 `#announceReminder` 档位下拉 + `#announceCustomDays` 自定义天数 + `#announceAck` 按钮）。
+  - `assets/app.js` L145-L209 — 在 `askConfirm`（L142-L143）之后、上传区提前 return（L611）之前插入公告逻辑：读 cookie 判定待展示条目 → 显示弹窗并锁定背景滚动 → 档位切换时显隐自定义天数输入 → 点「我知道了」按档位写入/清除各条 cookie 后隐藏。
+  - `assets/app.css` L393-L411 — 新增 `.announce-overlay`（含 `[hidden]` 覆盖，避免 `display:grid` 盖掉 `hidden` 属性）/`.announce-dialog`/`.announce-item`/`.announce-title`/`.announce-body`（含 `img`/`code`/列表排版）/`.announce-actions`/`.announce-remind`/`.announce-custom` 样式。
+  - 资源版本号全局升位：`assets/app.css?v=43→44`（11 个页面：`account.php`、`admin.php`、`admin_orders.php`、`bans.php`、`dashboard.php`、`index.php`、`install.php`、`logs.php`、`pay.php`、`register.php`、`tickets.php`）、`assets/app.js?v=22→23`（9 个页面：`account.php`、`admin.php`、`admin_orders.php`、`dashboard.php`、`index.php`、`logs.php`、`pay.php`、`register.php`、`tickets.php`）。
+- 数据库：无新增，沿用阶段 0 的 `announcements` 表。
+- 验证：`php -l dashboard.php`、`php -l admin.php`、`php -l src/helpers.php`、`php -l site-asset.php` 全部通过；`node --check assets/app.js` 退出码 0（语法通过）。全库检索 `app.js?v=22` / `app.css?v=43` 在 `.php` 内**已无残留**（仅历史 CHANGELOG 记录保留旧值）。未做浏览器端到端复测（弹窗为纯前端交互，可由用户登录工作台后目视确认）。
+
+---
+
+### [2026-09-27 18:02:39] ND 需求实现·阶段2（上）：R3 公告 · 后台管理 + 图片代理
+
+- 目的：落实 `TASKS_ND.md` 阶段 2 的前半部分 —— 后台「系统设置」内新增**多条目站点公告**管理（Markdown 正文 + 可插图片），并扩展 `site-asset.php` 支持公告图片代理输出。
+- 关键设计：
+  - CSP 为 `img-src 'self' data:` 且 `storage/.htaccess` 禁止 Web 直读，故公告图片与站点 logo/favicon 同走 **`site-asset.php` 代理**，新增 `k=media&f=<文件名>` 分支（白名单目录 `storage/announcements`，文件名正则 `^[A-Za-z0-9._-]+$`，`realpath` 防穿越）。
+  - 公告更新时间反推「已读指纹」：`updated_at` 在保存/启停时**显式刷新**（`SET updated_at = NOW()`），后续前台据此判断是否需重新弹窗。
+- 改动明细：
+  - `src/helpers.php` L123-L266 — 新增 `renderMarkdown()`（按行解析标题/无序列表/有序列表/段落，正文标题降级为 h4~h6 以免与页面标题冲突）、`renderMarkdownInline()`（先抽行内代码占位 → `e()` 转义 → 再识别图片/链接/粗体/斜体 → 还原代码；图片与站内链接仅接受 `site-asset.php?k=media&amp;f=…`，外链仅接受 http(s)）、`announcementImageMarkdown()`（生成正文图片 Markdown 片段）、`announcementList()`（查 `is_active=1` 按 `updated_at DESC`，每条附 `sig = substr(md5(id|updated_at),0,16)`，读取失败返回空数组）。
+  - `admin.php` L178-L235 — 新增 `storeAnnouncementImage()`（JPG/PNG/GIF/WebP ≤5MB，`getimagesize` 定 MIME，随机名 `ann-<hex>.<ext>` 存 `storage/announcements`）、`removeAnnouncementImage()`（正则 + `realpath` 限定目录内删除）、`announcementImagesInBody()`（正则提取正文引用的图片文件名）。
+  - `admin.php` L429-L484 — POST 动作新增 `save_announcement`（标题必填 ≤200 字、正文必填；新图上传后把 Markdown 片段追加正文末尾；新建 INSERT、编辑 UPDATE 并刷新 `updated_at`）、`toggle_announcement`（`is_active = 1 - is_active` 并刷新 `updated_at`）、`delete_announcement`（先按正文引用清理 `storage/announcements` 图片再删行）。
+  - `admin.php` L968-L979 — 渲染前载入 `$announcements`（含已停用）与 `$editingAnnouncement`（由 `?tab=system&edit=<id>` 预填）。
+  - `admin.php` L1440-L1476 — 「系统设置」页签内、站点信息面板之后新增「站点公告」面板：公告列表（标题/状态/更新时间/编辑·启停·删除）+ 新建/编辑表单（标题、Markdown 正文、图片上传、启用勾选）；删除按钮挂 `data-confirm`。
+  - `site-asset.php` L11-L36 — 重构为按 `k` 分流：`logo`/`favicon` 读 `storage/site`；新增 `media` 读 `storage/announcements/<f>`；其余 404。
+- 数据库：使用阶段 0 已建的 `announcements` 表（`title`/`body`/`is_active`/`created_at`/`updated_at`），**无需再迁移**。
+- 验证：`php -l admin.php`、`php -l src/helpers.php`、`php -l site-asset.php` 均通过。
+- 待办（阶段 2 下半）：工作台弹窗 + `assets/app.js` 提醒档位逻辑 + 版本号升级；最后补 `TASKS_ND.md` 勾选与本节说明。
+
+---
+
+### [2026-09-27 17:50:31] ND 需求实现·阶段1：后台分区骨架 + R4 自定义站点标识
+
+- 目的：落实 `TASKS_ND.md` 实现计划阶段 1 —— 为后续「工单设置」「还原/恢复」两个分区预置页签骨架，并实现 R4「自定义站点标识」（站点名称兼浏览器标题 / favicon / logo，留空回落「Notion Drive」）。
+- 关键设计：`storage/.htaccess` 禁止 Web 直读，站点 logo/favicon 不能像静态资源一样直链，故**新增公开代理脚本 `site-asset.php`**（仿 `avatar.php`：白名单目录 `storage/site`、`realpath` 防穿越、按 `finfo` 输出真实 MIME）。该脚本**不做登录校验**，因登录页/注册页也需展示品牌标识。
+- 改动明细：
+  - `src/helpers.php` L42-L122 — 新增站点标识助手：`siteName()`（读 `site_name`，空回落默认，安装前用 `installed.lock` 守卫）、`siteTitleTag()`、`siteFaviconPath()`、`siteAssetUrl()`（生成 `site-asset.php?k=…&v=…` 代理地址 + 按文件基名 md5 破缓存）、`siteFaviconTag()`、`siteLogoPath()`、`brandMarkHtml()`（有 logo 用 `<img class="brand-logo">`，否则站点名首字母方块）、`brandHtml()`。
+  - `site-asset.php`（**新增**）— 公开的站点 logo/favicon 输出接口；`k` 仅取 `logo`/`favicon`，路径必须落在 `storage/site` 内，否则 404。
+  - `admin.php` L21-L31 — `adminTabs()` 5→7 分区：`files` 后插入 `tickets`（工单设置）、末尾加 `restore`（还原/恢复）；`system` 描述改为「站点信息、注册与邮箱、上传与支付」。页签导航与筛选均按 `$adminTabs` 动态渲染，无需另改。
+  - `admin.php` L113-L175 — 新增 `storeSiteImage()`（logo：JPG/PNG/GIF/WebP ≤2MB，按 `getimagesize` 定 MIME；favicon：仅 `.ico` ≤1MB，用扩展名 + ICO 文件头 `\x00\x00\x01\x00` 双校验；随机文件名存 `storage/site`）与 `removeSiteAsset()`（`realpath` 限定 `storage/site` 内删除）。
+  - `admin.php` L340-L367（`save_site`）— 新增保存 `site_name`，并处理 favicon/logo 的「删除勾选」与「上传替换」（替换前先删旧文件，避免 `storage/site` 残留）。
+  - `admin.php` L963、L966 — head 改 `siteTitleTag('管理后台')`/`siteFaviconTag()`，侧边栏品牌改 `brandHtml('dashboard.php')`。
+  - `admin.php` L1299-L1312（站点信息面板）— `<form>` 加 `enctype="multipart/form-data"`，新增「站点名称」输入、favicon 文件选择 + 当前值提示 + 删除勾选、logo 文件选择 + 当前值提示 + 删除勾选。
+  - `admin.php` L1315-L1325 — 新增 `tickets`/`restore` 两个占位骨架面板。
+  - 10 个页面 head 的硬编码 `<title>… · Notion Drive</title>` + favicon 改读配置，侧边栏品牌改 `brandHtml()`：`account.php` L189/L192、`admin_orders.php` L264/L267、`bans.php` L102/L105、`dashboard.php` L113-L115/L119、`index.php` L54-L55/L62、`logs.php` L65/L68、`pay.php` L134/L137、`register.php` L137-L138/L144、`tickets.php` L98/L101。`install.php` L241-L250 因安装前无 `config` 表，head/品牌**保持静态**（仅随全局版本号改动）。
+  - `assets/app.css` L32 — 新增 `.brand-logo { width:32px; height:32px; display:block; border-radius:8px; object-fit:contain; }`。
+  - 资源版本号全局升位：`assets/app.css?v=42→43`（11 个页面：`account.php`、`admin.php`、`admin_orders.php`、`bans.php`、`dashboard.php`、`index.php`、`install.php`、`logs.php`、`pay.php`、`register.php`、`tickets.php`）。`app.js`/`admin.js` 未改动，版本号不变。
+- 验证：`php -l` 校验 `src/helpers.php`、`site-asset.php`、`admin.php` 及其余 11 个页面 → **全部无语法错误**。全库检索 `app.css?v=` 11 处**均为 `?v=43`，无 `?v=42` 残留**；检索 `Notion Drive` 确认站点标识类硬编码已全部改读配置（`install.php` 与邮件/告警/NotionClient/支付商品名等**非站点标识**用途的字符串按 R4 范围保持原样）。未做浏览器端到端复测（需人工登录后台并上传 ico/图片，风险低，可由用户在「系统设置 → 站点信息」实测）。
+- 影响（数据库结构）：无（复用 `settings` 键值，新增配置键 `site_name`/`site_favicon`/`site_logo`，无需补列）。
+
+---
+
+### [2026-09-27 17:42:19] ND 需求实现·阶段0：DB 迁移 v18→v19（新增 4 表 + tickets/users 加列 + install.php 同步）
+
+- 目的：为 ND 需求清单（`TASKS_ND.md` 第五节实现计划）预置数据结构，属分阶段实现的第一步。本阶段只建表/加列，不含业务逻辑。
+- 影响（数据库结构）：
+  - `tickets` 新增 `closed_at DATETIME NULL`、`reopen_count TINYINT UNSIGNED NOT NULL DEFAULT 0`、`expired_at DATETIME NULL`（供 R5 过期 / R7 重开 / R6 评价统计使用）。
+  - `users` 新增 `violation_points TINYINT UNSIGNED NOT NULL DEFAULT 0`、`violation_cycle_start DATETIME NULL`、`violation_ban_until DATETIME NULL`（供 R10 可信度跨周期累计与自动封禁使用）。
+  - 新增表 `ticket_archives`（工单归档，用户/管理员各自折叠）、`ticket_reviews`（每个工单一条评价，支持匿名）、`user_ticket_bans`（禁止提交工单，独立标记、不计入封禁体系）、`announcements`（站点公告，多条）。
+  - `Schema::CURRENT_VERSION` 18→19，旧库由 `migrate()` 的 `if ($version < 19)` 块自动补列/建表。
+- 改动明细：
+  - `src/Schema.php` L11 — `CURRENT_VERSION` 18→19。
+  - `src/Schema.php` L212-L235 — 新增 `if ($version < 19)` 迁移块（tickets/users 加列 + 调用 4 个建表方法）。
+  - `src/Schema.php` L316-L387 — 新增 `createTicketArchivesTable()`、`createTicketReviewsTable()`、`createUserTicketBansTable()`、`createAnnouncementsTable()` 四个静态建表方法。
+  - `install.php` L90-L92 — 内联 `CREATE TABLE users` 补 `violation_points`/`violation_cycle_start`/`violation_ban_until`。
+  - `install.php` L114-L120、L128-L133 — 内联 `CREATE TABLE uploads` 补 `scope`/`ticket_id` 列与 `idx_uploads_scope`/`idx_uploads_ticket` 索引（**修既有漂移**：见 `REVIEW_FINDINGS.md` H1，此前全新安装因 `install.php` 直接写 `schema_version=CURRENT_VERSION` 使 `migrate()` 提前返回，导致这两个 v17 列永远不补，文件系统不可用）。
+  - `install.php` L151-L154 — 安装流程补调 4 个新表创建方法。
+- 验证：`php -l src/Schema.php`、`php -l install.php` 均无语法错误；用临时 PDO 脚本执行 `Schema::migrate()` 后核对：`schema_version=19`，4 张新表全部存在，`tickets`/`users` 6 个新列全部存在（临时脚本已按约定删除）。**已在本机实机库执行迁移**。
+- 旧库补列说明：`migrate()` 幂等（`hasColumn`/`CREATE TABLE IF NOT EXISTS` 守卫），重复执行安全。**未 commit**。
+
+### [2026-09-27 16:30:56] 新增「清除违规记录」：管理员手动清除 + 用户侧清除未通过审核提示
+
+- 目的：**用户明确要求**。用户原话：「违规的话。就是用户违规的话，管理员可以手动清除，或者是管理员允许他重传了之后，也是自动清除这次违规的记录」「然后就是未通过那种审核的话，用户这边加一个清除记录」。核查后发现「允许重传后自动清除违规计数」**本就已实现**——`violationCount()`（`src/Bans/BanService.php` L67-L75）只统计 `status = 'rejected'`，而 `allowResubmit()` 会把状态改成 `resubmit`，自然脱离计数，因此本次只补齐两个缺失入口：①管理员的**手动清除**；②用户侧对自己面板上「未通过审核」提示的**清除（隐藏）**。
+- 影响：
+  - **新增审核状态 `cleared`（已清除违规）**：管理员清除后该条 `status = 'cleared'`，不再被 `violationCount()` 统计，也不会再触发自动封禁；与「放行重传」对称，会 `forgetHash()` 撤销内容指纹黑名单，避免用户再次上传同内容被直接拦截。**文件仍保持隔离**（内容确实未通过审核，此处不放行可用）。
+  - **审核记录列表**新增：状态列出现「已清除违规」徽章；`rejected` 行的「复核」列新增「清除记录」按钮（带 `data-confirm`），仅 `rejected` 行可见（只有 rejected 计入违规）。`open` 行维持原有「不可用 / 重新上传」两条路径。
+  - **用户面板（dashboard）**：每条「未通过审核」提示末尾新增「清除记录」按钮，点击后该条从面板隐藏；文件状态与后台记录均不变（软隐藏）。
+  - **用户清除采用独立标记列 `moderation_records.user_dismissed`，不改 `status`**：这样用户清除后管理员仍能正常复核该记录（若直接改 status 会让文件永久隔离且无人可改）。`userNotices()` 增加 `AND user_dismissed = 0` 过滤。
+  - **联动保护**：`closeRecord()` 一并把 `user_dismissed` 归零——管理员一旦复核（打回 / 放行重传 / 清除），用户此前的隐藏标记即被撤销，新结论会重新出现在用户面板上，避免「用户清除后管理员放行重传、用户却看不到重传提示」的死循环。
+  - **数据库结构变化**：`moderation_records` 新增列 `user_dismissed TINYINT(1) NOT NULL DEFAULT 0`（`AFTER appealed_at`）。`Schema::CURRENT_VERSION` 17→18，旧库由 `migrate()` 自动补列（已在实机执行成功）；`moderation_records.status` 是 `VARCHAR(20)` 非 ENUM，新增 `cleared` 状态**无需 ALTER**。
+  - 资源版本号升位：`assets/app.css?v=41→42`（11 个页面，因新增 `.notice-dismiss` 样式）。`app.js` / `admin.js` 未改动，版本号不变。
+- 验证：
+  - `php -l` → `src/Schema.php`、`src/Moderation/ModerationService.php`、`admin.php`、`dashboard.php` 均 **No syntax errors**。
+  - 临时脚本（`storage/_verify_g.php`，**已删除**）跑 `Schema::migrate()`：`schema_version=18`、`user_dismissed=tinyint(1) default='0'` 已落库；`ModerationService::create()->userNotices(-1)` 无异常返回 0 行，`STATUS_CLEARED=cleared`。
+  - 全库检索 `app.css?v=41` 无残留，11 处均为 `?v=42`。
+  - 未做浏览器端到端复测（admin / dashboard 需人工登录，且实测涉及告警邮件路径，按约定规避）；建议人工登录后确认两个按钮的显隐与文案。
+- 改动明细：
+  - `src/Schema.php` L11 — `CURRENT_VERSION` 17→18。
+  - `src/Schema.php` L204-L211 — 新增 `if ($version < 18)` 迁移块，补 `user_dismissed` 列。
+  - `src/Schema.php` L350 — `createModerationRecordsTable()` 建表语句补 `user_dismissed` 列（供全新安装）。
+  - `src/Moderation/ModerationService.php` L25 — 新增常量 `STATUS_CLEARED = 'cleared'`。
+  - `src/Moderation/ModerationService.php` L378-L397 — 新增 `clearRecord()`：`closeRecord(STATUS_CLEARED)` + `forgetHash()`。
+  - `src/Moderation/ModerationService.php` L445 — `userNotices()` 查询增加 `AND user_dismissed = 0`。
+  - `src/Moderation/ModerationService.php` L458-L490 — 新增 `dismissNotice()` 与私有辅助 `noticeExists()`。
+  - `src/Moderation/ModerationService.php` L636-L642 — `closeRecord()` 的 UPDATE 增加 `user_dismissed = 0`。
+  - `admin.php` L665-L681 — POST 分支扩为 `moderation_reject || moderation_resubmit || moderation_clear`，改用 `match` 分发到 `reject()/allowResubmit()/clearRecord()`。
+  - `admin.php` L1113 — 审核记录状态徽章 `match` 新增 `STATUS_CLEARED => 已清除违规`。
+  - `admin.php` L1138-L1144 — `rejected` 行「复核」列新增「清除记录」表单（`action=moderation_clear`）。
+  - `dashboard.php` L61-L73 — 新增 `dismiss_notice` POST 处理（成功后 `302 → dashboard.php?cleared=ok`）。
+  - `dashboard.php` L162-L166 — 新增清除成功 / 失败提示。
+  - `dashboard.php` L220-L226 — 每条未通过审核提示新增「清除记录」表单按钮。
+  - `assets/app.css` L108-L110 — 新增 `.notice-dismiss` 间距与按钮尺寸。
+  - 11 个页面（`account.php`、`admin.php`、`admin_orders.php`、`bans.php`、`dashboard.php`、`index.php`、`install.php`、`logs.php`、`pay.php`、`register.php`、`tickets.php`）— `assets/app.css?v=41→42`。
+
+---
+
+### [2026-09-27 16:18:57] 删除「系统设置 · Notion 连接」面板，把「套餐」并入账户池管理
+
+- 目的：**这是用户明确要求**。用户原话：「管理后台 · 系统设置 Notion 连接 删除 ，集成到账户池」。「系统设置」里的「Notion 连接」是**全局单例**（一个 Token + 一个根页面 + 一个套餐），而「账户池管理 → 官方账户池」本就按**每个账户**管理 Token 与根页面（保存/测试连接/删除），两者职责重叠；`src/Schema.php` L543-L567 甚至本就把旧的全局 Token 迁移成账户池的第一个账户。经与用户确认（用户选择「移到官方账户池面板」）后删除该面板，仅把其中唯一无处安放的全局项「套餐」并入账户池面板。
+- 影响：
+  - 「系统设置」页不再有「Notion 连接」面板，该页只剩 注册与邮箱 / 上传与容量 / 支付设置 / 站点信息。
+  - 「账户池管理 → 官方账户池」面板顶部新增「官方账户套餐」表单（免费版 · 5 MB / 付费版 · 5 GB），保存写 `notion_plan`。
+  - **配置键一律保留、未删除**：`notion_plan` 仍被 `officialFileLimitBytes()`（官方账户单文件上限是否放宽）与 `api/upload.php` 的超限提示读取；`default_page_id` / `notion_token` 仍被 `install.php` 写入、被 `src/Schema.php` 的迁移逻辑读取。**注意**：后台已不再提供修改全局 Token / 根页面 ID 的入口（改由账户池按账户维护），`default_page_id` 与 `notion_token` 现在只剩安装时写入的旧值。
+  - 资源版本号升位：`assets/app.css?v=40→41`（11 个页面）。
+  - 无数据库结构变化；无新增配置项。
+- 验证：
+  - `php -l admin.php` → **无语法错误**。
+  - Grep 全库：`app.css?v=` 11 处全为 `?v=41`，**无 `?v=40` 残留**；`admin.php` 内已无 `$pageId`、无 `name="page_id"` / `name="notion_token"`、无 `value="settings"` 表单，保存分支 `'settings'` 已不存在（仅剩注释中的历史说明）。
+  - Grep 确认其余配置键引用未被波及：`notion_plan` → `src/helpers.php` L150、`api/upload.php` L181；`default_page_id` / `notion_token` → `src/Schema.php` L550-L551、`install.php` L150-L152。
+  - **未做端到端实测**：建议登录后台，在「账户池管理」把套餐切到免费/付费各保存一次，确认提示正常且与「系统设置 · 上传与容量」的上限行为一致；同时确认「系统设置」页已无「Notion 连接」面板。
+- 改动明细：
+  - `admin.php` 原 L1168-L1171 — 删除「系统设置 → Notion 连接」整块面板（新 Token / 根页面 ID / 套餐 + `action=settings` 表单）。
+  - `admin.php` L529-L537 — 保存分支 `action === 'settings'` 改为 `action === 'save_plan'`，只校验并写 `notion_plan`；不再写 `default_page_id`、不再加密写 `notion_token`。
+  - `admin.php` L980-L985 — 「官方账户池」面板描述补充「套餐决定官方账户的单文件上限…」，并在标题下新增「官方账户套餐」表单（`class="create-user-row slim"`，`action=save_plan`）。
+  - `admin.php` 原 L763 — 删除 `$pageId = Database::config('default_page_id', '')`（面板删除后该变量已无使用者）；`$plan` 保留（供新表单回显）。
+  - `admin.php` L28 — `adminTabs()` 中 `system` 的 `desc` 由「注册与邮箱、Notion 连接、上传与支付」改为「注册与邮箱、上传与支付」。
+  - `admin.php` L702 — Notion 接口异常提示由「请检查「Notion 连接」设置后重试」改为「请到「账户池管理」检查对应账户的 Token 与根页面后重试」（面板已删，避免把管理员指向不存在的入口）。
+  - `assets/app.css` L268-L269 — 新增 `.create-user-row + .create-user-row { margin-top: 12px; }`，给上下相邻的「套餐」表单与「添加账户」表单留出间距。
+  - 版本号：`assets/app.css?v=40→41` — `account.php` L189、`admin.php` L870、`admin_orders.php` L264、`bans.php` L102、`dashboard.php` L101、`index.php` L57、`install.php` L232、`logs.php` L65、`pay.php` L134、`register.php` L139、`tickets.php` L98。
+  - `README.md` L85 — 目录说明 `admin.php 用户与 Notion 连接管理` → `admin.php 用户、账户池与系统设置管理`（同步能力描述）。
+
+---
+
+### [2026-09-27 15:27:04] 封禁提示两处修复：去掉「。，」重复标点 + 弹窗里的「提交申诉」可点击
+
+- 目的：**这是用户明确要求**。用户原话：「您的账户已被封禁（原因：管理员手动封禁。，封禁时间：2026-09-27 13:26）。如有疑问请 提交申诉。 申诉可以点击，和违规分区一样」。拆成两个问题：
+  1. **重复标点**：`banNoticeMessage()` 把管理员手填的原因原样嵌进「（原因：X，封禁时间：…）」，而原因本身可能自带句尾句号（本例为 `管理员手动封禁。`），拼出来就成了「。，」。
+  2. **申诉点不动**：页面顶端的封禁提示条（`banNoticeHtml`）本来就是 `<a href="tickets.php">提交申诉</a>`，可点击；但**被封禁用户点击上传/下载时弹出的右下角 toast 不是** —— `notify()` 用 `toast.textContent` 赋纯文本（链接被拍平成一串字），且 `.toast` 带 `pointer-events:none`、2.6 秒即消失。用户引用的文本与这条 toast 的内容逐字一致（含「请 提交申诉」之间的空格），故本次让 toast 也能像「违规分区」那样点进申诉。
+- 影响：
+  - 封禁原因尾部的标点（`。．.，,、；;：:！!？?`）在拼进模板前被剥掉；原因全为标点或空白时按「未说明」处理（沿用原有逻辑）。
+  - 被封禁用户点上传/下载/重命名等被拦入口时，弹出的提示改为**渲染 HTML 并保留「提交申诉」链接**，可点击进入 `tickets.php`；停留 2.6 秒 → **8 秒**，且该条 toast 放开 `pointer-events`。
+  - `plain` 模式本就没有申诉链接，取到的仍是纯文本，行为与原来一致。
+  - 资源版本号升位：`assets/app.js?v=21→22`（9 个页面）、`assets/app.css?v=39→40`（11 个页面）。
+  - 无数据库结构变化；无新增配置项。
+- 验证：
+  - `php -l src/helpers.php` → **无语法错误**；`node --check assets/app.js` → **退出码 0**。
+  - 临时脚本实测 `banNoticeMessage()`（`.dev/tmp_punct_check.php`，**用完已删除**）：`管理员手动封禁。` / `管理员手动封禁` / `管理员手动封禁！！` / `   ` / `测试原因.` → 依次输出「（原因：管理员手动封禁，封禁时间：…）」「（原因：未说明，封禁时间：…）」等，**无「。，」**。
+  - Grep 全库：`app.js?v=` 9 处全为 `?v=22`；`app.css?v=` 11 处全为 `?v=40`；**无 `?v=21` / `?v=39` 残留**。
+  - **未做端到端实测**：建议用被封禁账号（`test1`）点上传/下载，确认弹窗里「提交申诉」可点、点击跳到工单页；再把后台「封禁提示样式」切到 `plain`，复核无链接时仍为纯文本提示。
+- 改动明细：
+  - `src/helpers.php` L366-L369 — `banNoticeMessage()` 新增原因尾部标点剥离：`preg_replace('/[。．.，,、；;：:！!？?]+$/u', '', $reason)`，避免原因自带句号时拼出「。，」。
+  - `assets/app.js` L21-L33 — 新增 `notifyHtml(html, type, duration = 8000)`：用 `innerHTML` 渲染、加 `clickable` 类放开点击、停留 8 秒；`notify()`（纯文本版）保持不变。
+  - `assets/app.js` L37-L41、L59、L67 — 封禁拦截模块由读 `#banNotice` 的 `textContent` 改为 `innerHTML`（变量 `banMessage` → `banToastHtml`），两处 `notify(...)` 改为 `notifyHtml(...)`，使弹窗保留可点击的申诉链接。
+  - `assets/app.css` L366-L368 — 新增 `.toast.clickable { pointer-events: auto; }` 与 `.toast a { color:#fff; font-weight:600; text-decoration:underline; }`（toast 默认 `pointer-events:none`，不改则链接点不动）。
+  - 版本号：`assets/app.js?v=21→22` — `account.php` L342、`admin.php` L1219、`admin_orders.php` L354、`dashboard.php` L295、`index.php` L83、`logs.php` L125、`pay.php` L257、`register.php` L183、`tickets.php` L299；`assets/app.css?v=39→40` — 上述 9 个，再加 `bans.php` L102、`install.php` L232。
+
+---
+
+### [2026-09-27 15:19:08] 工单附件不再受封禁拦截（申诉通道放行：上传 + 下载），个人文件上传/下载仍拦
+
+- 目的：**这是用户明确要求**。用户上传截图（封禁用户 `test1` 打开 `tickets.php?pid=11`，红框圈出「工单附件」上传区与右下角的封禁 toast，批注「？？？？？这里不受限制」）并确认选择「工单附件区**不应该**被封禁限制」。依据：上一条（15:05:18 / 15:09:40）把工单附件上传区一并拦掉，但**封禁提示文案本身就是引导用户「提交申诉」，申诉走工单且需要上传证据**，拦掉附件自相矛盾。本次把工单附件这条申诉通道从封禁拦截中整体放行。
+- 影响（属**权限放宽**，已向用户明示后果）：
+  - 被封禁用户在工单页可正常**上传**附件（`#ticketDropZone` / `#ticketBrowseButton` / `#ticketFileInput` 从拦截列表移除），也可**下载**工单内附件（下载直链加 `data-ticket-download` 标记，从拦截选择器中排除）。
+  - 服务端同步放开：`api/upload.php` 的封禁检查改为**只拦 `scope=drive`**（工单附件 `scope=ticket` 放行）；`api/file.php` 的封禁检查加 `!$allowedTicketDownload` 例外（该变量仅在 `scope=ticket && GET && 请求者为工单归属者` 时为 `true`，因此工单附件的**改名/删除仍被拦**，只有下载放行）。
+  - 放开后果：被封禁用户可在**自己未关闭的工单**内上传附件；文件写入其 Notion 空间，不进「我的文件」、不计配额、不走内容风控，工单关闭时随工单从 Notion 一并删除。
+  - **行为不变**：个人文件（drive）的上传、下载、重命名、移动、删除、新建文件夹仍全部拦截。
+  - 资源版本号升位（因改了 `assets/app.js`）：`app.js?v=20→21`，同样 9 个页面：`account.php`、`admin.php`、`admin_orders.php`、`dashboard.php`、`index.php`、`logs.php`、`pay.php`、`register.php`、`tickets.php`。
+  - 无数据库结构变化；无新增配置项。
+- 验证：
+  - `node --check assets/app.js` → **退出码 0**；`php -l api/upload.php` / `php -l api/file.php` / `php -l tickets.php` → **均无语法错误**。
+  - Grep 全库检索 `app.js?v=` → 9 处全为 `?v=21`，**无 `?v=20` 残留**。
+  - **未做端到端实测**：建议用被封禁账号在工单页点「选择文件 / 拖放附件」确认不再弹封禁 toast、能正常上传；再点附件「下载」确认可下载；同时回「我的文件」页确认上传/下载/重命名仍被拦。
+- 改动明细：
+  - `assets/app.js` L27-L37 — `blockedEntry` 移除 `'#ticketDropZone'`、`'#ticketBrowseButton'`、`'#ticketFileInput'`；下载选择器由 `a[href^="api/file.php"]` 改为 `a[href^="api/file.php"]:not([data-ticket-download])`；注释说明工单附件整体放行。
+  - `tickets.php` L263 — 工单附件下载链接加 `data-ticket-download` 标记，与普通文件下载链接区分。
+  - `api/upload.php` L39-L45 — 原 L39-L43 的**无条件**封禁检查改为闭包 `$assertNotBanned(string $scope)`，仅当 `$scope === 'drive'` 且存在有效封禁时 `$fail('account_banned', ...)`。
+  - `api/upload.php` L302 — start 分支解析出 `$scope` 后调用 `$assertNotBanned($scope)`（原封禁检查位于此处之前的无条件位置，已下移）。
+  - `api/upload.php` L516 — finish 分支解析出 `$scope` 后同样调用 `$assertNotBanned($scope)`，对 `scope=drive` 兜底（防止 start 通过后被封禁、或分块元数据被篡改）。
+  - `api/file.php` L56 — 封禁检查条件由 `userActiveBan($user) !== null` 改为 `userActiveBan($user) !== null && !$allowedTicketDownload`（复用 L32-L37 现成的工单附件判定）。
+  - 版本号：`assets/app.js?v=20→21` — `admin.php` L1219、`admin_orders.php` L354、`account.php` L342、`dashboard.php` L295、`index.php` L83、`logs.php` L125、`pay.php` L257、`register.php` L183、`tickets.php` L299。
+
+---
+
+### [2026-09-27 15:09:40] 封禁拦截扩大到文件操作按钮：重命名 / 移动 / 删除 / 新建文件夹也弹封禁提示
+
+- 目的：**这是用户明确要求**，原话「其他的也提示啊」。上一条（15:05:18）只拦了上传与下载，被封禁用户点「重命名 / 移动 / 删除 / 新建文件夹」时前端不弹提示（虽然服务端 `api/file.php` / `api/folder.php` 本就会拒绝，但表现为「点了没反应」，用户不知道原因）。本次把这些入口也纳入同一套拦截，点击即弹后台配置的封禁模板文案。
+- 影响：
+  - 拦截范围扩为：上传区 / 工单附件区 / 下载直链，**加上** `[data-action]`（文件与文件夹的重命名、移动、删除）与 `#newFolderButton`（新建文件夹）。
+  - 覆盖页面：`dashboard.php` 文件列表全部操作按钮；`admin.php` L1031 管理员代管文件列表的「重命名 / 删除」（与 `api/file.php` 的判定一致——那里判断的是**当前操作者**是否被封禁，因此管理员自身被封禁时同样被拦）。
+  - **仍未拦**：`account.php` 的头像上传与保存资料、`tickets.php` 的提交工单/发消息/关闭工单。原因是这些属于账户设置与申诉通道，封禁用户仍需能改资料、提交申诉；如也要拦请另行告知。
+  - 资源版本号升位（因改了 `assets/app.js`）：`app.js?v=19→20`，同样 9 个页面：`account.php`、`admin.php`、`admin_orders.php`、`dashboard.php`、`index.php`、`logs.php`、`pay.php`、`register.php`、`tickets.php`。
+  - 无数据库结构变化；无新增配置项。
+- 验证：
+  - `node --check assets/app.js` → **退出码 0**；`php -l` 无改动 PHP 逻辑（仅版本号字符串），未重复全库扫描。
+  - Grep 全库检索 `app.js?v=` → 9 处全为 `?v=20`，**无 `?v=19` 残留**。
+  - **未做端到端实测**：建议登录一个被封禁账号，在文件列表点「重命名 / 移动 / 删除 / 新建文件夹」确认弹提示、且不进入行内改名或确认删除弹窗。
+- 改动明细：
+  - `assets/app.js` L22-L40 — 拦截模块重构：原 `uploadEntry` / `downloadEntry` 两个选择器合并为单个 `blockedEntry` 数组并 `.join(', ')`，新增 `[data-action]`、`#newFolderButton`；`isBlockedEntry` 改为单次 `closest(blockedEntry)`。捕获阶段 click + dragenter/dragover/drop 的拦截逻辑不变。
+  - 版本号：`assets/app.js?v=19→20` — `admin.php` L1219、`admin_orders.php` L354、`account.php` L342、`dashboard.php` L295、`index.php` L83、`logs.php` L125、`pay.php` L257、`register.php` L183、`tickets.php` L299。
+
+---
+
+### [2026-09-27 15:05:18] 封禁用户禁止点击上传/下载按钮并弹出后台封禁模板文案，直链下载也返回模板文本
+
+- 目的：**这是用户明确要求**，原话「封禁用户直接禁止点击上传和下载按钮，提示封禁（模板），且下载链接也提示返回」。此前被封禁用户仍能点击上传按钮、点下载链接，只有真正发起请求后才由后端报错；且报错文案是写死的两句话，与后台「封禁管理 → 封禁提示样式」（`ban_notice_mode`）里配置的模板不一致。本次让前端在点击/拖放时直接拦下并弹出**后台配置的同一份模板文案**，同时让下载直链被直接访问（JS 无法拦截）时由服务端返回同一份文案的纯文本版。
+- 设计取舍（复用单一数据源）：页面顶端提示条 `banNoticeHtml()` 输出的 `<div id="banNotice">` 已按 `ban_notice_mode` 渲染好文案，前端 JS 直接读取它的 `textContent` 作为弹提示内容，后台改样式后三处（提示条 / 前端弹提示 / 接口响应）自动同步，避免模板在多处维护。
+- 影响（含不可逆 / 用户体验后果，已向用户说明）：
+  - 被封禁用户在**所有加载 `assets/app.js` 的页面**（9 个）点击上传区、浏览按钮、文件输入、工单附件上传区、以及任何 `api/file.php` 下载链接时，一律被 `preventDefault + stopPropagation` 拦下并弹红色提示；拖拽文件到上传区同样被拦。
+  - **当时有意不拦**（**已被 15:09:40 的后续改动推翻，见下一条**）：重命名 / 移动 / 删除 / 新建文件夹按钮；`account.php` 的头像上传表单（属资料设置，非文件上传/下载）。
+  - 资源版本号升位（因改了 `assets/app.js`）：`app.js?v=18→19`，共 **9 个页面**：`account.php`、`admin.php`、`admin_orders.php`、`dashboard.php`、`index.php`、`logs.php`、`pay.php`、`register.php`、`tickets.php`。
+  - `tickets.php` **原先缺少 `#toast`**，导致该页 `notify()` 静默失败（提示不显示），本次一并补上。
+  - 无数据库结构变化；无新配置项（沿用既有 `ban_notice_mode`）。
+- 验证：
+  - `php -l` 全库递归扫描所有 `*.php` → **无报错**；`node --check assets/app.js` → **退出码 0**。
+  - Grep 全库检索 `app.js?v=` → 9 处全为 `?v=19`，**无 `?v=18` 残留**。
+  - **未做端到端实测**：需人工登录一个被封禁的账号，在页面上点上传/下载确认是否弹提示、直链是否返回文案。建议由用户自测一次。
+- 改动明细：
+  - `src/helpers.php` L338-L353 — `banNoticeHtml()` 重构：`<div class="alert error" role="alert">` 增加 `id="banNotice"`（供 JS 读取文案），文案改由 `banNoticeMessage()` 生成。
+  - `src/helpers.php` L355-L371 — **新增** `banNoticeMessage(array $ban, string $mode): string`：封禁文案正文（不含申诉入口），`plain`/`link` 返回「您的账户已被封禁。」，`detail` 追加原因与封禁时间。
+  - `src/helpers.php` L373-L388 — **新增** `banNoticeText(?array $user): string`：纯文本版封禁文案，供接口错误响应（下载直链无法返回 HTML）使用；未封禁返回空串。
+  - `api/file.php` L54-L62 — 封禁响应改用 `banNoticeText($user)`：GET 返回 `403` + 纯文本，POST 返回 `jsonResponse(..., 'account_banned', 403)`；替换掉原先写死的「账号已被封禁，暂时无法下载文件…」「账号已被封禁，暂时无法修改文件…」两句。
+  - `assets/app.js` L22-L48 — **新增**封禁拦截模块（紧随 `notify` 定义之后、早退守卫之前，保证非 dashboard 页面也生效）：读取 `#banNotice` 文案，非空时在 `document` **捕获阶段**监听 `click`（拦 `#dropZone/#browseButton/#fileInput/#ticketDropZone/#ticketBrowseButton/#ticketFileInput` 与 `a[href^="api/file.php"]`）与 `dragenter/dragover/drop`，命中即 `preventDefault + stopPropagation` 并 `notify(msg, 'error')`。
+  - `tickets.php` L298 — **补** `<div id="toast" class="toast" role="status" aria-live="polite"></div>`（原先缺失）。
+  - 版本号：`assets/app.js?v=18→19` — `admin.php` L1219、`admin_orders.php` L354、`account.php` L342、`dashboard.php` L295、`index.php` L83、`logs.php` L125、`pay.php` L257、`register.php` L183、`tickets.php` L299。
+
+---
+
+### [2026-09-27 13:49:35] 工单附件：可上传文件并双写 Notion，但不进「我的文件」，工单关闭时从 Notion 删除
+
+- 目的：**这是用户明确要求**，原话「工单系统允许上传文件，文件也放 notion。但是呢，工单系统上传的文件不会到我的文件，只在工单内有效。然后工单关闭的时候，文件就从 notion 里面删除」。此前工单只有文字对话，用户无法在工单里附上截图/日志等证据，只能先传到「我的文件」再发链接。本次让工单内可直接上传附件，复用现有分块上传与 Notion 双写能力，但**与个人网盘隔离**：不进「我的文件」、不计入个人容量配额、只在所属工单内可见可下载，且**工单关闭时从 Notion 真实删除**。
+- 策略确认（AskUserQuestion，均采纳推荐项）：① 工单附件**不计入**个人容量配额；② 工单附件**不走**内容风控（关键词/AI/SHA-256 指纹全跳过）；③ **用户和管理员都可以**上传。
+- 影响（**含不可逆后果，已向用户明示**）：
+  - **关闭工单会真实调用 Notion 删除接口**（`archiveUploadReplicas` → `NotionClient::archiveBlock`），附件在 Notion 侧被归档/删除且**不可恢复**；本地 `uploads.status` 同步置 `deleted`（文件行保留作审计，不再出现在附件列表，因列表只查 `status='active'`）。
+  - 数据库结构变化：`uploads` 新增 `scope VARCHAR(20) NOT NULL DEFAULT 'drive'`（区分 `drive`/`ticket`）与 `ticket_id BIGINT UNSIGNED NULL`，并加索引 `idx_uploads_scope`、`idx_uploads_ticket(ticket_id, status)`；`CURRENT_VERSION` **16→17**。**旧库无需手工补列**：`storage/installed.lock` 存在时每次请求自动 `Schema::migrate()` 叠加迁移；已实测确认自动升至 17。
+  - 隔离方式：所有「我的文件」入口的查询（容量、重名、列表、文件夹计数、移动校验）统一加 `scope = 'drive'`，因此老数据（默认 `drive`）行为不变，工单附件天然被排除。
+  - 权限约定：**下载**放宽为「上传者本人 / 工单提交者 / 管理员」三者皆可（便于用户在工单里看到自己附件、管理员查看用户附件）；**改名/删除**仍限「上传者本人或管理员」（未放宽，避免工单提交者改他人附件）。封禁用户按现有规则**仍不能**在工单内上传/下载（最小改动，非回归）。
+  - 资源版本号升位（因改了 `assets/app.js` 与 `assets/app.css`）：`app.css?v=38→39`（11 个页面）、`app.js?v=17→18`（8 个页面）。
+- 验证：
+  - `php -l` 全库递归扫描所有 `*.php` → **无报错**；`node --check assets/app.js` → **退出码 0**。
+  - 临时脚本 `_tmp_check_k.php`（**已删除**）经 `src/bootstrap.php` 触发 `Schema::migrate()` 后实测：`schema_version=17`、`CURRENT_VERSION=17`；`SHOW COLUMNS` 确认 `uploads.scope`（`varchar(20) default='drive'`）与 `uploads.ticket_id`（`bigint(20) unsigned default=NULL`）存在；`SHOW INDEX` 确认 `idx_uploads_scope`、`idx_uploads_ticket` 存在。
+  - HTTP 冒烟（PHP 内建服务器 `127.0.0.1:8088`）：`assets/app.js?v=18 → 200`、`assets/app.css?v=39 → 200`；`tickets.php → 302`（未登录跳登录页，无致命错误）。
+  - 全库检索确认版本号已无 `app.css?v=38` / `app.js?v=17` 残留。
+  - **未做端到端上传/关闭实测**：真实上传会在用户 Notion 空间落文件，关闭工单会真实删除 Notion 文件；且实测需人工登录管理员（受浏览器自动化「不得代填凭据」约束）。建议由用户在页面自测一次完整流程。
+- 改动明细：
+  - `src/Schema.php` L11 — `CURRENT_VERSION` **16→17**。
+  - `src/Schema.php` L195-L202 — 新增 v17 迁移块：`addColumn uploads.scope`（`VARCHAR(20) NOT NULL DEFAULT 'drive' AFTER user_id`）、`addColumn uploads.ticket_id`（`BIGINT UNSIGNED NULL DEFAULT NULL AFTER folder_id`）、`addIndex idx_uploads_scope`、`addIndex idx_uploads_ticket(ticket_id, status)`。
+  - `src/helpers.php` L203 — `userUsedBytes()` 容量统计加 `scope = 'drive'`，**工单附件不计入个人配额**。
+  - `src/helpers.php` L443 — `findActiveUploadByName()`（重名检测）加 `scope = 'drive'`，工单附件不参与「我的文件」重名。
+  - `src/helpers.php` L1370 — `folderFileCountMap()`（文件夹内文件数）加 `scope = 'drive'`。
+  - `dashboard.php` L77 — 文件总数 COUNT 加 `scope = 'drive'`。
+  - `dashboard.php` L87 — 文件列表 SELECT 加 `scope = 'drive'`。
+  - `admin.php` L726 — 后台用户「文件数」统计加 `scope = 'drive'`。
+  - `admin.php` L750 — 后台用户文件列表加 `scope = 'drive'`。
+  - `api/folder.php` L58 — 「移动文件到文件夹」的归属校验加 `scope = 'drive'`，工单附件不可被移动（`folder_id` 为 NULL，也无法落入任何文件夹；文件夹级联删除用 `folder_id IN (...)`，工单附件天然不受影响）。
+  - `api/upload.php` L14 — 新增 `use NotionDrive\Tickets\TicketService;`（读 `STATUS_CLOSED`）。
+  - `api/upload.php` L282-L296 — 新增闭包 `$resolveTicketScope(int $ticketId)`：查 `tickets` 校验工单存在且「工单提交者本人或管理员」；工单 `status = closed` 时 `409 ticket_closed` 拒绝；查不到 `404 ticket_not_found`。**start 与 finish 两阶段都调用**，防止上传途中工单被关闭仍能落库。
+  - `api/upload.php` L299-L303（start）— 解析 `scope`（`POST.scope === 'ticket'` 才为 ticket，否则 drive）与 `ticket_id`，ticket 时执行 `$resolveTicketScope`。
+  - `api/upload.php` L316（start）— 关键词风控条件加 `$scope === 'drive' &&`，工单附件跳过文件名关键词拦截。
+  - `api/upload.php` L355-L370（start）— 文件夹校验 / `$resolveDuplicate` 重名处理 / `$assertCapacity` 容量校验改为 `if ($scope === 'drive')` 分支；ticket 时 `$folderId = 0` 且 `$resolved` 用固定值（原名、无重名处理、释放 0 字节）。
+  - `api/upload.php` L405-L406（start）— 分块元数据新增 `'scope' => $scope, 'ticket_id' => $ticketId`，供 chunk/finish 阶段透传。
+  - `api/upload.php` L511-L515（finish）— 从 meta 读回 `scope`/`ticket_id`，ticket 时**再次** `$resolveTicketScope` 复核（工单已关闭则拒绝落库）。
+  - `api/upload.php` L543 / L562（finish）— 同 start：ticket 跳过重名与文件夹解析，drive 才走 `$resolveDuplicate`；`$assertCapacity` 亦只在 drive 执行。
+  - `api/upload.php` L583-L590（finish）— INSERT 语句扩展为 `(user_id, scope, folder_id, ticket_id, …)`，ticket 时 `folder_id = NULL`、`ticket_id = 工单号`；drive 时 `ticket_id = NULL`。
+  - `api/upload.php` L652（finish）— 写 `moderation_records` 等风控动作加 `$scope === 'drive' &&` 守卫，工单附件不落审核记录、不入 SHA-256 指纹库。
+  - `api/upload.php` L39-L42 — **未改动**：封禁拦截仍在 scope 判断之前，工单附件同样受封禁限制。
+  - `api/file.php` L32-L36 — 新增 `$allowedTicketDownload`：仅 `GET` 且文件 `scope='ticket'` 且 `ticket_id > 0` 时，查 `tickets.user_id`，若为当前用户则允许下载（**工单提交者可下载他人上传到自己工单的附件**）。
+  - `api/file.php` L39 — 归属判断由「上传者本人或管理员」放宽为 `|| $allowedTicketDownload`；`POST`（改名/删除）不进入该分支，仍限上传者本人或管理员。
+  - `src/Tickets/TicketService.php` L12 — 新增 `use NotionDrive\Logger;`。
+  - `src/Tickets/TicketService.php` L341-L354 — 新增 `attachments(int $ticketId): array`：查 `uploads` 中 `scope='ticket' AND ticket_id=:ticket_id AND status='active'`，`LEFT JOIN users` 带出 `username`，按 `id ASC` 返回（供工单详情渲染附件列表）。
+  - `src/Tickets/TicketService.php` L374 — `closeTicket()` 末尾新增 `$this->purgeAttachments($ticketId);`（关闭即失效：把该工单附件从 Notion 删除并本地标记 `deleted`）。
+  - `src/Tickets/TicketService.php` L381-L412 — 新增私有方法 `purgeAttachments(int $ticketId): void`：遍历 `attachments()`；按 `user_id` 缓存 owner 行（`SELECT id, notion_token_encrypted, notion_account_source FROM users`）；逐个 `archiveUploadReplicas($attachment, $owner)`（**真实删除 Notion 块**，单份失败 `catch` 后记 `Logger::warning`，不中断其余）；随后 `UPDATE uploads SET status='deleted' WHERE id=:id`；owner 行缺失则 `continue`（不误删他人数据）。
+  - `tickets.php` L76 / L89 — 新增 `$attachments = []` 初始化；`$ticketId > 0` 分支内 `$attachments = $service->attachments($ticketId);`。
+  - `tickets.php` L244-L283 — 新增「工单附件」面板 `<section class="admin-panel">`：附件表格（文件名/大小/上传者/上传时间/下载 `api/file.php?id=X`，复用 `.file-table`/`.file-name`/`.file-kind`/`.file-actions`）+ 上传控件（`$canReply` 时显示 `#ticketAttachments[data-ticket]` / `#ticketDropZone` / `#ticketFileInput` / `#ticketBrowseButton` / `#ticketQueue`；否则提示「该工单已关闭，无法继续上传附件」）。
+  - `tickets.php` L292 — 关闭工单按钮 `data-confirm` 文案追加「工单内的附件会从 Notion 一并删除且不可恢复」，让用户在确认框里看到不可逆后果。
+  - `tickets.php` L298 — 新增 `<script src="assets/app.js?v=18" defer></script>`（此前 tickets.php **未引入** app.js）。附带副作用：关闭工单按钮原本就带 `data-confirm` 属性，但该属性只由 `app.js` 的站内确认弹窗处理，故此前**并不生效**（点一下就直接提交）；引入后关闭工单会真正弹出站内确认框，与本次「关闭即删附件」的提示文案一致。已通读 `assets/app.js` L1-L348 确认前段代码均为空值防护（`toast`/`fileSearch`/`newFolderButton` 判空、点击处理器 `closest` 后 `if (!row) return`），在无 dashboard 上传区的 tickets.php 上不会抛错。
+  - `assets/app.js` L349-L398 — 把 `failureText`、`controlRequest`、`sendChunk` 三个函数**从 `addFiles` 之后上移**到早退守卫 `const dropZone = document.getElementById('dropZone');`（现 L557）**之前**（原位置删除）。原因：tickets.php 无 dashboard 上传区，若沿用原位置会在守卫处 `return` 而取不到这些函数。
+  - `assets/app.js` L400-L555 — 新增自包含「工单附件」模块：读 `#ticketAttachments` 等 5 个元素，齐全才启用；`ticketValidate`（仅校验 900 字节文件名、`allowed` 扩展名、非空**，不做内容风控**）、`ticketAddRetry`/`ticketUpload`（`controlRequest({action:'start', scope:'ticket', ticket_id, filename, size})` → 逐块 `sendChunk`（失败重试上限 3、`409 chunk_out_of_order` 自同步断点）→ `controlRequest({action:'finish', upload_token})`）、`ticketRunQueue`（队列串行；仍有失败则 `notify(..., 'error')` 保留重试按钮不刷新，否则 `window.location.reload()`）、`ticketAddFiles`；末尾绑定 click/keydown/change 与 dragenter/dragover/dragleave/drop 监听。
+  - `assets/app.css` L200-L201 — 新增 `#ticketAttachments { margin-top: 16px; display: grid; gap: 8px; }`：与上方附件表格留出间距，拖放区与上传队列之间保持 8px 间隔（复用 `.drop-zone`/`.upload-queue`/`.queue-item`/`.progress-track` 既有样式，无其他新增）。
+  - 资源版本号升位：`app.css?v=38→39` — `dashboard.php` L101、`tickets.php` L98、`account.php` L189、`admin.php` L879、`admin_orders.php` L264、`bans.php` L102、`index.php` L57、`install.php` L232、`pay.php` L134、`logs.php` L65、`register.php` L139；`app.js?v=17→18` — `dashboard.php` L295、`tickets.php` L298、`account.php` L342、`admin.php` L1219、`admin_orders.php` L354、`index.php` L83、`pay.php` L257、`logs.php` L125、`register.php` L183。
+
+### [2026-09-27 13:31:38] 重命名与新建文件夹：由浏览器 prompt 弹窗改为网页内行内编辑
+
+- 目的：**这是用户明确要求**，原话「将重命名方式改为内嵌网页内，而不是通过浏览器的弹窗重命名」。原先文件重命名走 `window.prompt('输入新的显示名称')`、文件夹重命名走 `window.prompt('输入新的文件夹名称')`，弹窗由浏览器渲染、样式不可控、且在中途无取消之外的反馈；改为**在当前行就地**把名称变成输入框，回车/失焦提交、Esc 取消，交互留在页面内。经确认「新建文件夹」也一并改为内嵌编辑（用户选择「一起改」），故 `window.prompt('输入新文件夹名称')` 同步去除，**`assets/app.js` 中已无任何 `window.prompt`**。
+- 影响：仅前端交互方式变化，**接口与校验完全未动**（仍走 `api/file.php?action=rename`、`api/folder.php?action=rename`、`api/folder.php?action=create`，服务端 `basename()`/`normalizeFolderName()` 及长度、控制字符校验照旧）。行为约定：输入框自动聚焦并全选（新建文件夹初值为空，不选中文本）；**Enter=提交、Esc=取消、失焦=提交**；值为空或与初值相同则不发起请求；提交失败由 `notify(..., 'error')` 提示并已自动还原为原显示/按钮。因改了 `assets/app.js` 与 `assets/app.css`，各页面资源版本号同步升位（`app.css?v=37→?v=38`、`app.js?v=16→?v=17`）以确保浏览器不取旧缓存。
+- 验证：`node --check assets/app.js` → **退出码 0**（语法通过）。全库检索确认 `assets/app.js` 内已无 `window.prompt`、全库已无 `app.css?v=37` / `app.js?v=16` 残留引用。未做浏览器端到端复测（行内编辑为纯前端交互，风险低、不触发告警邮件，站点登录页需人工登录，可由用户在页面直接确认）。
+- 改动明细：
+  - `assets/app.js` L108-L145 — 新增行内编辑辅助函数 `startInlineRename(nameEl, onCommit, initial)`：`nameEl.hidden = true` 后在原位置 `insertAdjacentElement('afterend', input)` 插入 `input.inline-rename`（初值取 `initial`，未传时取元素当前文本 `baseline`），`focus()` + `select()`；`finish(commit)` 用 `settled` 标志防重复提交，Enter/Esc/`blur` 三处触发；提交走 `Promise.resolve(onCommit(value)).catch(...)`，失败提示并还原显示。
+  - `assets/app.js` L183-L198 — 文件行 `action === 'rename'` 分支：原 `window.prompt('输入新的显示名称', current)`（原 L182-L191 删除）改为取 `row.querySelector('.display-name')` 调用 `startInlineRename` 并**提前 `return`**；提交成功后 `nameEl.textContent = data.name` 就地更新名称（无需刷新）。
+  - `assets/app.js` L220-L226 — 原 try 块内处理 rename 的 `if (action === 'rename') {...} else { row.remove(); }` 结构拍平（rename 已在上方 `return`，此处只剩 move 刷新 / delete 移除）：`move` → `window.location.reload()`，其余 → `row.remove(); notify(data.message);`。
+  - `assets/app.js` L243-L263 — 文件夹行处理器：`current` 改为删除提示专用取值；`body` 声明收敛为删除用途 `action: 'delete'`；`folder-rename` 分支（原 `window.prompt('输入新的文件夹名称', current)`，原 L235-L247 删除）改为调用 `startInlineRename` 并**提前 `return`**，提交成功后 `notify` 并 `window.location.reload()`（刷新以同步列表与各文件夹文件数）；其后的删除逻辑由原 `if/else` 拍平为直落执行。
+  - `assets/app.js` L290-L312 — 新建文件夹按钮：原 `window.prompt('输入新文件夹名称')`（原 L292-L314 删除）改为点击后按钮就地换成输入框（`startInlineRename(newFolderButton, …, '')`，初值空串），回车/失焦提交 `api/folder.php?action=create`，成功 `notify` + `window.location.reload()`；`newFolderButton.hidden` 作重复点击守卫（输入期间按钮已被隐藏）。
+  - `assets/app.css` L245-L248 — 新增 `.inline-rename` 样式：`width:100%; max-width:420px; height:30px; padding:0 8px; border:1px solid var(--primary); border-radius:6px; background:#fff; font-size/weight:inherit;`，与行内 `.display-name`/`.folder-link` 视觉一致，避免沿用全局 `input{height:44px}` 撑高表格行；另加 `.file-section-tools .inline-rename { max-width:220px; }`，新建文件夹输入框出现在工具栏按钮位置，收窄以免挤压右侧「已同步」状态文案。
+  - 资源版本号升位（`app.css?v=37→38`）：`dashboard.php` L101、`account.php` L189、`admin.php` L879、`admin_orders.php` L264、`bans.php` L102、`index.php` L57、`install.php` L232、`pay.php` L134、`logs.php` L65、`tickets.php` L96、`register.php` L139；`app.js?v=16→17`：`dashboard.php` L295、`account.php` L342、`admin.php` L1219、`admin_orders.php` L354、`index.php` L83、`pay.php` L257、`logs.php` L125、`register.php` L183。
+  - `api/file.php`、`api/folder.php` — **未改动**，重命名/新建接口与校验保持不变。
+
+### [2026-09-27 13:23:39] 账户封禁提示：由「上传时报错」改为所有页面顶端统一提示
+
+- 目的：**这是用户明确要求**，原话「账户封禁提示从上传文件提示改为在所有页面顶端提示您的账户已被封禁」。此前被封禁的用户只有在触发上传/下载/改文件时才会看到 `api/*.php` 返回的「账号已被封禁…」消息；改为在**每个页面顶端**统一显示提示条，进站即刻可见。经确认：① 覆盖范围为**全部页面**（含管理员的 admin / bans / logs / admin_orders）；② 三种展示内容**都实现**，由后台「封禁管理」选择。
+- 影响：顶端提示条与接口层拦截**并存**——`api/upload.php`、`api/file.php`、`api/folder.php` 的 403/拒绝消息**保留不动**，作为兜底（封禁期间仍禁止上传/下载/修改/重命名）。新增配置项 `config.ban_notice_mode`，取值 `plain`（仅一句文案）/ `link`（文案 + 工单申诉入口，默认）/ `detail`（文案 + 封禁原因与时间 + 工单申诉入口）；取值缺失或非法时回退 `link`。**旧库无需手工补列/迁移**：该配置缺失时函数内回退默认值，安装向导的默认配置数组已同步补入（未升 `schema_version`）。
+- 验证：`php -l` 全部 10 个涉及文件（`src/helpers.php`、`bans.php`、`install.php`、`dashboard.php`、`account.php`、`pay.php`、`tickets.php`、`admin.php`、`logs.php`、`admin_orders.php`）→ 均 `No syntax errors detected`。用临时脚本 `.dev/tmp_ban_notice.php`（**已删除**，全程包在事务内并 `rollBack()`）实测三种模式：`plain` → `您的账户已被封禁。`；`link` → 文案 + `<a href="tickets.php">提交申诉</a>`；`detail` → 文案 + `（原因：… ，封禁时间：2026-09-27 13:23）` + 申诉入口；未封禁用户返回空串（`is_empty=1`）；非法配置回退 `link`。回滚后复查 `config.ban_notice_mode=__MISSING__`、`user 2 生效封禁=0`，确认未残留。未做浏览器复测：顶端提示条只对**被封禁用户**显示，而管理员不会被封禁（`bans.php` 限制不能封管理员/自己），要看到效果需真实封禁用户并可能触发告警邮件，故只做单元级实测。
+- 改动明细：
+  - `src/helpers.php` L329-L360 — 新增全局函数 `banNoticeHtml(?array $user): string`：内部复用现成的 `userActiveBan($user)`（L320-L327），未封禁返回空串；按 `Database::config('ban_notice_mode', 'link')` 输出三种样式（文案固定以「您的账户已被封禁」开头，`detail` 时展开原因与封禁时间）。
+  - `bans.php` L9 — 新增 `use NotionDrive\Database;`（用于读写 `ban_notice_mode`）。
+  - `bans.php` L38-L52 — 新增 POST 分支 `save_notice_mode`：校验取值 ∈ {plain,link,detail}，写 `Database::setConfig('ban_notice_mode', …)`、记 `Logger::info`、flash 后重定向 `bans.php`。
+  - `bans.php` L90 — 读取 `$noticeMode = Database::config('ban_notice_mode', 'link')` 供面板回显。
+  - `bans.php` L113 — `<main class="drive-main admin-main">` 起始处输出 `<?= banNoticeHtml($currentUser) ?>`。
+  - `bans.php` L128-L139 — 新增「封禁提示样式」面板（`<select name="ban_notice_mode">` 三选项 + 「保存样式」按钮）。
+  - `install.php` L161 — 安装默认配置数组新增 `'ban_notice_mode' => 'link',`（与 `ban_threshold` 相邻）。
+  - `dashboard.php` L124、`account.php` L211、`pay.php` L156、`tickets.php` L118、`admin.php` L890、`logs.php` L76、`admin_orders.php` L275 — 各自 `<main class="drive-main…">` 起始处插入 `<?= banNoticeHtml($user) ?>`（普通用户页，变量 `$user`）/ `<?= banNoticeHtml($currentUser) ?>`（管理员页，变量 `$currentUser`）。
+  - `api/upload.php`、`api/file.php`、`api/folder.php` — **未改动**，接口层封禁拦截保留作兜底。
+
+### [2026-09-27 13:10:59] 内容风控 · 审核记录：删除「豁免」动作，仅保留「重新上传」「不可用」
+
+- 目的：审核记录的复核动作收敛为两个——「重新上传」（放开同名文件的上传前拦截）与「不可用」（判定违规、维持/执行隔离）；删除「豁免」（恢复文件可用），避免管理员一键让违规内容重新可用。**这是用户明确要求**：原话「管理后台 · 内容风控，审核记录，的豁免删除，只有重新上传和不可用」；经确认范围为「两行都删豁免动作」、文案统一为「重新上传」「不可用」。
+- 影响（用户已确认的取舍，需知悉）：① 待复核行的动作由「豁免 / 允许重传 / 打回」变为「重新上传 / 不可用」；② 待人工复核（AI 降级）行的动作由「判定通过 / 判定违规」变为仅「不可用」——**AI 降级的记录此后无法再被人工判为通过**，只能判违规或让用户重传；③ 被判违规而隔离的文件**不再有「恢复可用」入口**（历史已豁免记录不受影响，状态仍显示「已豁免」）；④ 判定违规仍会计入违规累计、达阈值自动封禁（逻辑未动）。
+- 验证：`php -l admin.php`、`php -l src/Moderation/ModerationService.php` → 均 `No syntax errors detected`。全项目 Grep 复核：已无 `moderation_exempt`（审核动作）与 `->exempt(` 残留；剩余的「豁免」字样均属**另一个功能**（`users.moderation_exempt` 的「免审核上传」面板 / 历史状态标签「已豁免」），本轮未改动。未做浏览器复测：需管理员登录且库里存在待复核记录才能看到按钮，且实操「不可用」会触发违规累计与自动封禁、可能发告警邮件，故只做静态验证。
+- 改动明细：
+  - `admin.php` L673 — 动作分支由 `moderation_exempt || moderation_reject || moderation_resubmit` 收窄为 `moderation_reject || moderation_resubmit`。
+  - `admin.php` L680-L682 — 原 `match` 三分支改为三元判断：`moderation_reject` → `reject()`，否则 → `allowResubmit()`（移除 `exempt()` 分支）。
+  - `admin.php` L1093 — 审核记录面板说明文字去掉「豁免后文件恢复可用，打回则维持不可用，允许重传…」，改为「不可用则维持隔离状态，重新上传仅放开同名文件的上传前拦截」。
+  - `admin.php` L1130-L1133 — 待人工复核行：删除「判定通过」（`moderation_exempt`），「判定违规」按钮文案改为**不可用**；待复核行：删除「豁免」（`moderation_exempt`），「允许重传」文案改为**重新上传**、「打回」文案改为**不可用**（`data-confirm` 提示语保持）。
+  - `src/Moderation/ModerationService.php` — 删除公开方法 `exempt()`（原 L326-L367，含恢复文件可用、修复悬空 `folder_id` 的逻辑）；该方法删除后已无任何调用方。随之移除其中**13:06:19 条目新增的**「exempt → rememberHash(APPROVED) 白名单联动」——白名单此后仅由上传时 AI 判定通过（`api/upload.php`）写入，功能不受影响。`STATUS_EXEMPTED` 常量保留（用于渲染历史记录状态）。
+  - `src/Schema.php` L189 — 注释同步：`供管理员改判（豁免/打回/放行重传）` → `供管理员改判（打回/放行重传）`。
+- 依赖与影响：无数据库结构变更；仅后台界面与动作收敛。未提交、未推送。
+
+### [2026-09-27 13:06:19] 内容审核加 SHA-256 指纹（全站白/黑名单）+ 用户侧「未通过审核」清单折叠
+
+- 目的：① 用户上传内容只要审核过一次，全站再次上传**同一内容**就不该重复跑 AI——已通过进白名单**免重复审核**直接放行，已违规进黑名单**直接拦截**，节省审核开销并保证同内容结论一致；② `dashboard.php` 的「有 N 个文件未通过内容审核」提示条内嵌完整文件清单，条目多时把上传区挤到首屏之外，改为**默认折叠**、可展开。
+- 验证：
+  - `php -l` 对 5 个文件（`src/Schema.php`、`install.php`、`src/Moderation/ModerationService.php`、`api/upload.php`、`dashboard.php`）→ 全部 `No syntax errors detected`。（过程备注：首次 `php -l src/Schema.php` 报 L341 解析错误，原因是新加的列写成 `DEFAULT ''` 未转义、提前闭合了单引号字符串，已改为 `DEFAULT \'\'` 后通过。）
+  - 临时脚本（`.dev/tmp_hash_check.php`，**已删除**；指纹读写与 `record()` 均包在事务内并 `rollBack()`，库内无残留）实测输出：
+    - 迁移生效：`schema_version=16`、`moderation_hashes_table=1`、`moderation_records.content_hash=1`（旧库由 `Schema::migrate()` 自动补表补列，无需手工迁移）。
+    - `rememberHash($h, approved)` → `lookupHash($h)` 返回 `'approved'`；改为 `flagged` → 返回 `'flagged'`；`forgetHash($h)` → 返回 `NULL`（白→黑→撤销链路正确）。
+    - 非法输入被归一化丢弃：`rememberHash('not-a-hash', …)` → `lookupHash('not-a-hash')` 返回 `NULL`；大写哈希 `strtoupper($h)` 登记后用小写查询仍命中 `'approved'`（`normalizeHash` 统一小写 + 64 位十六进制校验）。
+    - `record(..., $hash)` 落库的 `moderation_records.content_hash` 与传入值**完全一致**；不传 hash（start 阶段路径）落库为 `''`。
+  - 未做浏览器端到端复测：端到端需真实上传并触发 AI 审核，且违规分支会调用 `raiseAdminAlert` → 本地 SMTP 已配置、会**真实发邮件**（详见 12:56:39 条目副作用说明），故按既往约定不做会发信的真实复测，仅做静态 + DB 层验证。
+  - 折叠为纯 CSS/HTML（`<details>`），未登录态无法渲染该区块（仅登录后 `dashboard.php` 可见），本轮未做浏览器截图验证。
+- 改动明细：
+  - `src/Schema.php` L11 — `CURRENT_VERSION` `15` → `16`。
+  - `src/Schema.php` L187-L193 — 新增 `if ($version < 16)` 分段：建指纹表 + 给 `moderation_records` 补 `content_hash` 列。
+  - `src/Schema.php` L198-L212 — 新增 `public static function createModerationHashesTable(PDO $pdo)`：建 `moderation_hashes`（`content_hash` 唯一键、`decision` 取值 `approved`/`flagged`、`idx_moderation_hash_decision(decision, updated_at)`）。
+  - `src/Schema.php` L320 — `createModerationRecordsTable()` 的 CREATE 语句在 `filename` 之后插入 `content_hash CHAR(64) NOT NULL DEFAULT ''`。
+  - `install.php` L139 — `Schema::createModerationRecordsTable($pdo);` 之后新增 `Schema::createModerationHashesTable($pdo);`（全新建库时同步建表）。
+  - `src/Moderation/ModerationService.php` L216-L225 — `record()` 签名新增 `string $contentHash = ''`，方法体先 `$contentHash = self::normalizeHash($contentHash)`；L232 与 L241 把 `content_hash` 列/占位符接入 INSERT。
+  - `src/Moderation/ModerationService.php` L263-L316 — 新增三个公开方法：`lookupHash()`（查全站结论，返回 `approved`/`flagged`/`null`）、`rememberHash()`（UPSERT 进白/黑名单，只接受两个合法 decision）、`forgetHash()`（删除指纹，供放行重传）。
+  - `src/Moderation/ModerationService.php` L356 — `exempt()` 在 `closeRecord()` 后新增 `rememberHash($record['content_hash'], Verdict::APPROVED)`：管理员判定通过 → 内容进白名单。
+  - `src/Moderation/ModerationService.php` L385 — `reject()` 在 `closeRecord()` 后新增 `rememberHash($record['content_hash'], Verdict::FLAGGED)`：管理员判定违规 → 内容进黑名单。
+  - `src/Moderation/ModerationService.php` L412 — `allowResubmit()` 在 `closeRecord()` 后新增 `forgetHash($record['content_hash'])`：放行重传 → 撤销指纹，重传内容重新进入审核而非被指纹直接拦截。
+  - `src/Moderation/ModerationService.php` L636-L643 — 新增私有静态 `normalizeHash()`：`strtolower(trim())` 后按 `/^[0-9a-f]{64}$/` 校验，合法返回小写、否则返回 `''`（视为未提供，`record()` 落空串、`lookupHash()` 返回 `null`）。
+  - `api/upload.php` L11 — 新增 `use NotionDrive\Moderation\Verdict;`。
+  - `api/upload.php` L597-L679 — finish 阶段审核块改为「先指纹、后 AI」：L603 用 `hash_file('sha256', $partPath)` 算全站内容指纹（`$partPath` 在 `register_shutdown_function` 清理前仍存在，可安全读取；哈希同时写入日志上下文 `file.sha256`）→ L607 `lookupHash()`：命中 `approved` **跳过审核**（仅 info 日志）；命中 `flagged` 不调用 AI，构造 `Verdict::flagged(...,'hash','sha256',$hash)` 走原违规分支；未收录才 `inspect()`。违规分支 L629 `rememberHash(..., FLAGGED)` 并入黑名单；待人工复核（pending）分支只 `record()` 带哈希、**不登记指纹**（结论未定）；审核通过分支 L676 `rememberHash(..., APPROVED)` 入白名单。所有 `record()` 调用均带上 `$contentHash`。
+  - `dashboard.php` L152-L154 — 把 `<ul class="alert-list">` 前插入 `<details class="alert-fold">` + `<summary>点此展开 / 收起文件清单（N 个）</summary>`（无 `open` 属性，默认收起）。
+  - `dashboard.php` L202 — 对应补上 `</details>` 闭合标签。
+  - `assets/app.css` L86-L90 — 新增 `.alert-fold` 样式（`summary` 用主色、`[open]` 时留出下间距），仿既有 `.appeal-box`。
+- 依赖与影响：**有数据库结构变更** —— 新增表 `moderation_hashes`、`moderation_records` 新增列 `content_hash`；已改动 `schema_version` 15 → 16。旧库由 `Schema::migrate()` 在下次请求时自动补建，无需手工迁移；全新建库走 `install.php`。指纹为**全站共享**（不同用户上传同内容共享同一结论），管理员改判（豁免/打回/放行重传）会联动白/黑名单。未提交、未推送。
+
+### [2026-09-27 12:56:39] 用户提交新工单时告警管理员（后台告警条 + 邮件）
+
+- 目的：用户提交工单后需管理员及时响应，此前无任何提醒，管理员只能主动翻看工单列表。改为：**每张新工单落地时写入一条后台告警**（管理后台顶部「N 条未读告警」可见），并按系统既有告警机制**同时发送告警邮件**（SMTP 已配置且存在收件人时）。
+- 验证：
+  - `php -l src/Tickets/TicketService.php` → `No syntax errors detected`。
+  - 临时脚本（`.dev/tmp_alert_check.php`，已删除；全程在事务内并 `rollBack()`）实测：`openTicket(2, '临时验证：工单提交告警', …)` 返回 `ticket id=6`，`admin_alerts` 计数 11 → 12，新增记录 `alert#12 level=warning read=0 msg=用户「test1」提交了新工单 T-8BH3N5：临时验证：工单提交告警`；回滚后告警表恢复 11 条、临时工单消失（库内无数据残留）。
+  - **副作用提示**：本地 `.dev` 已配置 SMTP（收件人 `3628385871@qq.com`），`smtpConfigured()=true`，因此上述实测**真实发出了 1 封告警邮件**（`sendAdminAlertMail` 对新告警发信，成功不记日志、失败才记，日志无失败记录）；日志另留有 1 行 `[WARNING] [alert] 用户「test1」提交了新工单 T-8BH3N5：…`。邮件不可撤回，若非预期请忽略。
+  - 后台渲染复用既有告警条代码（`admin.php` L896-L908：`level === 'error'` 显示「严重」，其余显示「提醒」），无需改动即可展示；为避免重复发信，未再以浏览器真实提单复测。
+- 改动明细：
+  - `src/Tickets/TicketService.php` L116-L136 — `openTicket()` 在写库并落首条留言后新增告警：查提交人 `username`（L117-L119，取不到回退 `#用户ID`）、标题超 80 字截断加省略号（L120），再调用全局函数 `\raiseAdminAlert('warning', '用户「%s」提交了%s工单 %s：%s', ['ticket_id','ticket_no','user_id','category'])`（L121-L136）。级别取 `warning`（界面显示「提醒」）；`raiseAdminAlert` 自带「相同未读消息去重」与内部 catch，不会影响提单主流程。
+  - 覆盖范围：`openTicket()` 是新工单的唯一入口（`tickets.php` L37 普通工单、`TicketService::appendAppealMessage()` L170 申诉快捷提单的首次新建），故普通工单与申诉首单都会告警。**仅在新建工单时告警**：申诉对已有工单的追加留言、以及用户对已有工单的回复均不告警。
+- 依赖与影响：无数据库结构变更，复用既有 `admin_alerts` 表与 `alert_email` 配置，旧库无需迁移。未提交、未推送。
+
+### [2026-09-27 12:53:43] 禁止管理员提交工单 + 删除「管理后台 · 工单管理」页签
+
+- 目的：① **管理员不应能提交工单**——工单是用户向管理员提交的诉求，管理员只负责回复与关闭，不具备提交者身份；② 后台二级页签里的「工单管理」与侧栏一级页面 `tickets.php`（「工单管理」）功能重复，删除该页签以消除重复入口。
+- 验证：
+  - `php -l admin.php` → `No syntax errors detected in admin.php`；`php -l tickets.php` → `No syntax errors detected in tickets.php`。
+  - Grep 确认 `admin.php` 中已无 `TicketService` / `adminTickets` / `tab=tickets` 任何残留；全项目无指向 `admin.php?tab=tickets` 的外链（删除安全，无死链）。
+  - 浏览器实测（`127.0.0.1:8088`，管理员态）`admin.php`：页签导航只剩 5 项（用户管理 / 账户池管理 / 内容风控 / 文件管理 / 系统设置），**「工单管理」页签已消失**；页头 `管理后台 · 用户管理`；侧栏仍保留「✉ 工单管理」（指向 `tickets.php`，未受影响）。
+  - 浏览器实测 `admin.php?tab=tickets`（意图访问已删除页签）→ 页头回落为 `管理后台 · 用户管理`、无任何工单列表内容，确认 `normalizeAdminTab()` 对已删除键返回 `''`、`$activeTab` 回落默认页（无 500 / 报错）。
+  - 浏览器实测（管理员态）`tickets.php` → 页面**不出现**「提交新工单」面板，DOM 中无 `action="create_ticket"` 表单；仅有「工单列表」+ 状态/类别筛选与「查看」入口，符合「管理员只回复与关闭」的定位。普通用户侧由 `<?php if (!$isAdmin): ?>` 条件渲染，代码路径确认表单仍对其显示（未登录 test1 实测，仅代码核对）。
+  - 说明：`tickets.php` 的 `<title>` 仍固定拼「我的工单」（L96），管理员态标题与页头「工单管理」略有不一致，属既有文案、本次未改（不在需求范围）。
+- 改动明细：
+  - `admin.php` L16 — 删除 `use NotionDrive\Tickets\TicketService;`（删页签后本文件不再引用该类）。
+  - `admin.php` L23-L29 — `adminTabs()` 删除 `'tickets' => ['group' => '管理后台', 'label' => '工单管理', 'desc' => '…']` 一行，现存 5 个页签：`users` / `content` / `risk` / `files` / `system`。
+  - `admin.php` 原 L812 — 删除 `$adminTickets = [];`。
+  - `admin.php` 原 L821-L825 — 删除 `try { $adminTickets = TicketService::create()->allTickets(); } catch (Throwable $ticketException) { Logger::warning('ticket', '读取工单列表失败', …); }` 数据加载块。
+  - `admin.php` 原 L1157-L1198 — 整块删除 `<?php if ($activeTab === 'tickets'): ?> … <?php endif; ?>` 渲染块（含「工单管理」说明面板、`$ticketCategories` / `$ticketStatuses` / `$openTicketCount` 预处理、工单列表表格）。现 L1149 之后直接衔接 `<?php if ($activeTab === 'system'): ?>`。
+  - `tickets.php` L27-L31 — `create_ticket` 分支开头新增后端拦截：`if ($isAdmin) { throw new RuntimeException('管理员账号不能提交工单，请直接在用户工单里回复。'); }`（由外层 `catch (Throwable $exception)` 转成 `$error` 提示，属纵深防御，即使绕过页面直接 POST 也会被拒）。
+  - `tickets.php` L126 / L145 — 「提交新工单」面板整体用 `<?php if (!$isAdmin): ?> … <?php endif; ?>` 包裹，管理员访问时不再渲染；同时 L135 类别下拉对所有人跳过 `CATEGORY_APPEAL`（申诉）。
+- 依赖与影响：无数据库结构变更（不涉及 `schema_version` / 建表 / 补列），旧库直接升级无迁移动作。未提交、未推送。
+
+### [2026-09-27 12:47:21] 新增「封禁管理」一级页面：违规累计自动封号 + 手动封禁，封禁期间禁上传/下载/修改/重命名
+
+- 目的：用户要求新增一个**只对管理员可见的一级页面「封禁管理」**（侧栏位置：订单管理与运行日志之间），用于处置上传多次违规文件的用户。规则：① **自动封禁**——用户被管理员打回（判定违规）的文件累计达到可配置阈值时自动封号；② **AI 掉线/无法识别时先转人工审核**（不自动封），人工确认违规才计数、才可能触发封禁；人工审核期间用户可正常使用；③ 人工也可**手动封禁/解封**；④ 封禁生效后**禁止上传、下载、修改、重命名**（含文件夹管理），**仅保留工单申诉入口**，申诉即普通工单，用户可自行提交。
+- 验证：
+  - `php -l` 对 16 个改动文件（`src/Schema.php`、`src/Bans/BanService.php`、`bans.php`、`install.php`、`src/Moderation/ModerationService.php`、`src/helpers.php`、`api/upload.php`、`api/file.php`、`api/folder.php`、`admin.php`、`admin_orders.php`、`logs.php`、`dashboard.php`、`account.php`、`pay.php`、`tickets.php`）→ 全部 `No syntax errors detected`。
+  - 迁移已实际执行：本地库 `schema_version` 由 14 升至 **15**、`user_bans` 表创建成功、`ban_threshold=5`、`BanService::threshold()` 返回 5。
+  - 临时 PHP 脚本（已删除，全程在事务内、末尾 `rollBack()`，未写入任何数据）实测：新建用户 `isBanned=false`/`violationCount=0` → 写入 2 条 `rejected` 记录后 `count=2` → `setThreshold(2)` → `evaluateAutoBan()` 返回 `true`、`isBanned=true`、`banned_by=NULL`、reason 含「自动封禁阈值」→ 重复调用返回 `false`（幂等）→ `unban()` 后 `isBanned=false` → 手动 `ban($uid,'手动测试封禁',1)` 后 `banned_by=1` → `bannedUsers()` 能列出该用户且 `violations=2`、`ban_id` 非空 → `userActiveBan()` 对封禁用户返回非 null、对未封禁返回 null → 回滚后 `user_bans` 0 行、阈值仍 5、临时用户消失（无数据残留）。
+  - 浏览器实测（`127.0.0.1:8088`，管理员态）`bans.php`：h1「封禁管理」、侧栏出现「⛔ 封禁管理」；「自动封禁阈值」面板（阈值为 5）+「用户违规与封禁状态」面板（`共 2 位用户 · 封禁中 0 位 · 阈值 5 次`）。**完整走通封禁/解封闭环**：对 `test1`(ID 2) 点「封禁」→ 页面刷新出现 flash「用户已封禁：禁止上传、下载、修改与重命名，仅保留工单申诉入口。」、统计变「封禁中 1 位」、该行状态变「已封禁」并给出封禁时间与「解封」按钮；点「解封」→ flash「已解除该用户的封禁，上传与下载恢复可用。」、统计回「封禁中 0 位」、`test1` 状态回「正常」（验证结束已恢复为未封禁，开发库无残留脏数据）。
+  - **旧库/生产库需执行迁移**：本改动依赖 `schema_version=15` 新增的 `user_bans` 表与 `ban_threshold` 配置项（默认 `5`）。bootstrap 在 `storage/installed.lock` 存在时会自动跑 `Schema::migrate()`，正常访问一次站点即完成升级；若未迁移，封禁相关页面与上传/下载拦截会因缺表报错。
+- 改动明细：
+  - `src/Schema.php` L11 — `CURRENT_VERSION` 由 14 改为 15。
+  - `src/Schema.php` L178-L185 — 新增 `if ($version < 15)` 段：调用 `createUserBansTable()` 建表，并在 `ban_threshold` 未设置时写入默认值 `'5'`。
+  - `src/Schema.php` L190-L210 — 新增 `public static function createUserBansTable(PDO $pdo): void`：建 `user_bans` 表（`user_id`/`reason`/`violation_count`/`banned_by`/`is_active`/`banned_at`/`lifted_at`/`lifted_by`，`is_active=1` 表示生效中，外键 `user_id → users(id) ON DELETE CASCADE`，含 `idx_user_bans_user`、`idx_user_bans_active`）。
+  - `src/Bans/BanService.php` — **新建**（封禁系统核心门面）。常量 `MIN_THRESHOLD=1`/`MAX_THRESHOLD=100`/`DEFAULT_THRESHOLD=5`；`threshold()` L34-L38、`setThreshold()` L42-L45（写 `config.ban_threshold`）；`isBanned()`/`activeBan()`（读生效中的 `user_bans`）；`violationCount()` L~80（统计 `moderation_records` 中 `status='rejected'` 的条数，即「被管理员打回的违规文件数」，AI 转人工也计入）；`ban()`（校验用户存在、幂等，写入 `violation_count` 快照与 `banned_by`）；`unban()`（置 `is_active=0` + `lifted_at`/`lifted_by`）；`evaluateAutoBan()` L117（未封禁且违规数 ≥ 阈值时自动 `ban()`，`banned_by=NULL`，并 `Logger::warning('ban', …)`）；`bannedUsers()`（LEFT JOIN `user_bans` 列出全部用户及其违规数与封禁状态，管理员排前、封禁中排前）。
+  - `install.php` L141 — 在 `Schema::createTicketMessagesTable($pdo);` 之后新增 `Schema::createUserBansTable($pdo);`。
+  - `install.php` L159 — 配置默认值数组新增 `'ban_threshold' => '5',`。
+  - `src/Moderation/ModerationService.php` L7 — 新增 `use NotionDrive\Bans\BanService;`。
+  - `src/Moderation/ModerationService.php` L318-L332 — `reject()` 中，`closeRecord(...REJECTED...)` 之后调用 `BanService::create()->evaluateAutoBan((int) $record['user_id'])`（**只有人工判定违规才走这里**，符合「AI 无法识别转人工、人工确认才封」的要求），并在返回 message 末尾追加「该用户违规已累计达阈值，已自动封禁。」提示（`$autoBanned` 为真时）。
+  - `src/helpers.php` L5 — 新增 `use NotionDrive\Bans\BanService;`。
+  - `src/helpers.php` L314-L330 — 新增 `userActiveBan(?array $user): ?array`：返回当前生效中的封禁记录，未封禁返回 null（供各 API 入口统一判断）。
+  - `api/upload.php` L37-L41 — 在 `$fail` 闭包之后新增封禁拦截：封禁用户上传直接返回 `account_banned`（HTTP 403，提示走工单申诉）。
+  - `api/file.php` L38-L46 — 在 `$owner` 定义之后新增封禁拦截：`GET`（下载）返回 403 文本，其余方法（重命名/移动/删除等修改）返回 JSON 403。
+  - `api/folder.php` L26-L29 — 在 `$userId` 定义之后新增封禁拦截：文件夹的创建/重命名/移动/删除统一返回 JSON 403（均属「修改」范畴）。
+  - `bans.php` — **新建**（一级页面，`Auth::requireAdmin()`）。POST 处理 3 个动作：`save_threshold`（L22-L35，校验 1–100、写配置、`flash` 后 302）、`ban_user`（L37-L52，禁止封禁当前登录账号、原因可留空默认「管理员手动封禁。」）、`unban_user`（L54-L63）；页面渲染「自动封禁阈值」表单与「用户违规与封禁状态」表格（列：用户/邮箱/违规次数/状态/封禁时间/原因/操作；管理员或自己显示「—」）。侧栏 L88 含 `封禁管理` 且带 `class="active"`。
+  - 后台侧栏新增「⛔ 封禁管理」链接（位于「订单管理」与「运行日志」之间），共 7 处：`admin.php` L893、`admin_orders.php` L268、`logs.php` L69、`dashboard.php` L109、`account.php` L196、`pay.php` L141、`tickets.php` L99（后五处均包裹在各自的 `isAdmin()` 分支内，普通用户不可见）。
+- 备注：`bans.php` 的状态徽标复用 `assets/app.css` 现有变体（已封禁/已达阈值用 `.status-badge.void`，正常用默认绿色 `.status-badge`），未新增 CSS。
+
+### [2026-09-27 12:35:54] 后台「申诉管理」改为「工单管理」+ 免审核上传迁入「内容风控」+ 工单状态改为自动判定（仅可关闭）
+
+- 目的：三件事一起改。① 用户指出「申诉管理」页签实质对接的是工单系统，既然已有工单系统，该页签就应直接叫「工单管理」而非重复的「申诉管理」。② 「免审核上传（豁免用户）」原本挂在申诉页签下不搭，用户要求移到「内容风控」页签。③ **工单状态模型的纠错**（用户原话：「什么叫做工单标记为已处理中？你处理中是不可以让用户选的……待处理/处理中是没用的」）：旧实现把状态做成管理员在后台手动「标记为待处理 / 处理中 / 已关闭」三个按钮，语义错误。新模型：**「待处理」= 用户已提交但尚无管理员回复（自动判定）**，**「处理中」= 已有管理员回复（自动判定）**，二者**不允许人工选择**；**「已关闭」是唯一手动动作、也是终态**，用户本人与管理员都可关闭，关闭后双方都无法继续回复。
+- 验证：
+  - `php -l` 对 `admin.php` / `tickets.php` / `src/Tickets/TicketService.php` → 全部 `No syntax errors detected`。
+  - 临时 PHP 脚本（已删除）直连本地库、在事务内跑完再 `rollBack()`（未写入任何数据），实测状态流转全部符合预期：新建=`open` → 用户追问仍=`open` → 管理员回复=`processing` → 用户再追问仍=`processing` → 关闭=`closed` → 关闭后用户回复被拦截（抛「工单已关闭，无法继续回复。」）→ 关闭后管理员留言不会把状态改回（保持 `closed`）→ 申诉快捷提单在已关闭工单上重开并按推导重算状态。
+  - 浏览器实测（`127.0.0.1:8088`，管理员态）：`admin.php?tab=tickets` → 侧栏/页签显示「工单管理」，页面 h1「管理后台 · 工单管理」，含「工单管理 / 工单列表」两个面板与「N 条未关闭」徽标；`admin.php?tab=risk` → 面板顺序为「内容风控 / 免审核上传 / 审核记录」，免审核上传已迁入且可用；`tickets.php` → 列表状态徽标（处理中 / 已关闭）正常；`tickets.php?id=4` → 仅有「发送回复 / 关闭工单」按钮，页面**不再出现「标记为…」**、DOM 中 `set_status` 表单已消失、`close_ticket` 表单存在。
+  - 旧库无需改结构：本次不涉及建表 / 加列（`tickets.status` 取值不变，仍为 `open/processing/closed`）。
+- 改动明细：
+  - `admin.php` L16 — 新增 `use NotionDrive\Tickets\TicketService;`。
+  - `admin.php` L27 — 「内容风控」页签 desc 改为「关键词拦截、AI 识别、豁免免审核上传与申诉复核」。
+  - `admin.php` L29 — 页签键 `'appeals'` 重命名为 `'tickets'`，label 由「申诉管理」改为「工单管理」，desc 改为「用户的申诉与咨询工单，含对话记录与关闭」；已确认全项目无 `tab=appeals` 外链，改名安全。
+  - `admin.php` L812 / L822 — 数据加载：删除 `$moderationAppeals = $moderationService->appealRecords(100);`，改为 `$adminTickets = [];` + try/catch `$adminTickets = TicketService::create()->allTickets();`（异常仅 `Logger::warning('ticket', …)`，不阻断后台）。
+  - `admin.php` L1073-L1098 — 「免审核上传」面板由申诉页签**迁移**到 `risk` 页签（位置：内容风控设置面板之后、审核记录之前），前面加 `$exemptUsers` 派生变量；表单仍走 `save_moderation_exempt`，未改后端逻辑。
+  - `admin.php` L1157-L1198 — 原申诉页签头部替换为 `$activeTab === 'tickets'` 区块：「工单管理」说明面板（含「N 条未关闭」徽标 + 跳 `tickets.php`）+「工单列表」表格（工单号/标题、提交人、类别、状态徽标、留言数、最后更新、查看）。
+  - `admin.php` 原 L1200-L1243 — **删除**残留的「用户申诉」section（它引用已删除的 `$moderationAppeals`，且末尾 `<?php endif; ?>` 无匹配 `if`，会导致 PHP 解析错误）。
+  - `src/Tickets/TicketService.php` L147-L176 — `appendAppealMessage()`：已存在工单时**先**把 `closed` 重开为 `open`（`UPDATE … WHERE status='closed'`）再追加留言，状态随后交给自动判定；不再单独手工置 `open`。
+  - `src/Tickets/TicketService.php` L182-L196 — `replyAsUser()`：移除末尾把状态强制改回 `open` 的 UPDATE；关闭态仍抛「工单已关闭，无法继续回复。」。
+  - `src/Tickets/TicketService.php` L198-L207 — `replyAsAdmin()`：移除「若原为 open 则改 processing」的手工 UPDATE，全权交由自动判定。
+  - `src/Tickets/TicketService.php` L314-L334 — 删除 `setStatus()`（原允许人工设定任意状态），替换为 `closeTicket(int $ticketId, ?int $userId = null)`：置 `closed`；传入 `$userId` 时经 `findForUser` 校验归属（普通用户只能关闭自己的工单），管理员可不传。
+  - `src/Tickets/TicketService.php` L336-L349 — 新增私有 `refreshDerivedStatus()`：统计该工单 `author_role='admin'` 的留言数，>0 则状态=`processing`，否则=`open`；`UPDATE … WHERE id=:id AND status <> 'closed'` 保证**已关闭工单不被改写**（保持终态）。
+  - `src/Tickets/TicketService.php` L394-L430 — `insertMessage()` 末尾调用 `refreshDerivedStatus()`，即「每写一条留言就按是否有管理员回复自动判定状态」，这是新模型的唯一状态来源。
+  - `tickets.php` 原 L55-L63 — POST 动作 `set_status`（仅管理员可调 `setStatus`）替换为 `close_ticket`：`$service->closeTicket($ticketId, $isAdmin ? null : $userId)`，管理员可关闭任意工单、普通用户只能关闭自己的工单。
+  - `tickets.php` 原 L237-L253 — 管理员「工单状态」手动面板（遍历状态生成「标记为待处理/处理中/已关闭」按钮）**整体删除**，替换为对用户与管理员都显示的「关闭工单」面板（未关闭时才渲染），按钮 `data-confirm="确认关闭该工单？关闭后无法继续回复。"`。
+- 备注：`assets/app.css` L109 的 `.ticket-status-actions` 随手动面板下线已不再被引用（保留未删，属无副作用的死样式）。
+
+### [2026-09-27 12:25:50] 修复官方账户池误报「没有可用账户」：账户池改为全体付费用户共享
+
+- 目的：生产站用户 ShiZhongyan 在 `account.php` 看到红字「官方账户池暂时没有可用账户，请联系管理员检查账户池状态。」，且文案「已固定分配 0 个官方账户」。用户指出账户池语义应是**多个用户共用一个账户**（全体付费用户共享的池），而非「一个用户固定对应一个账户」。根因：旧 `uploadTargets()` 官方分支**只读 `user_official_accounts`（每用户固定分配）**，用户若没有分配记录（典型成因：先买套餐时池内还没有启用账户 → `grantPremium()` 末尾 `autoAssignOfficialAccounts()` 因 `activeOfficialAccounts()===[]` 提前返回 → 之后管理员才加账户，该用户永久 0 分配；或注册时选「官方账户」不写分配记录，见 `register.php` L83 注释「官方账户待购买高级套餐后由系统分配」）→ 返回空数组 → 前端误判「池内没有可用账户」。修复后「是否有可用目标」不再依赖预分配。
+- 验证：
+  - `php -l` 对 `src/helpers.php` / `account.php` / `admin.php` → 全部 `No syntax errors detected`。
+  - 临时 PHP 脚本（已删除）直连本地库实测：构造「`notion_account_source='official'` + `user_official_accounts` 0 行」的模拟用户 → `userOfficialAccounts` = 0 条，但 `uploadTargets()` 返回 **1** 个目标（池内账户 `ZZR`，`token_len=50`、`root_ok=true`），`notionSourceUsable()` = **true**、`canUseOfficialSource()` = **true**、`uploadBlockedReason()` = 空串。证明 0 分配用户也能正常上传，错误分支不再可达。
+  - 浏览器实测（`127.0.0.1:8088`，管理员态）：`account.php` → `.source-note` 渲染为「官方账户池为全体付费用户共享：优先使用这里分配的 1 个账户，池内其他启用账户在需要时自动顺延（最多主备两个）。」，页面无「官方账户池暂时没有可用账户」文本；`admin.php?tab=content` → 面板说明渲染为「全体付费用户共享这里的账户；优先级数值越大越靠前，用户按「已分配的主备账户 → 池内剩余账户」的顺序取用，因此未分配的用户也能直接上传。Token 加密保存，不会回显。」
+  - 旧库无需改结构：本次不涉及建表 / 加列。
+- 改动明细：
+  - `src/helpers.php` L953-L1019 — `uploadTargets()` 官方分支重写：先收集 `userOfficialAccounts()`（管理员分配的主备账户，保持优先顺序），再按 `activeOfficialAccounts()`（`priority DESC, id ASC`）补齐池内尚未分配的启用账户（补入行的 `user_page_id` 置空，交给 `ensureUserSpacePage` 首次上传时创建）；仍沿用「最多主 + 备 2 个目标」上限，避免向整池重复写入放大 Notion 调用。
+  - `src/helpers.php` L1021-L1043 — 新增 `rememberUserSpacePage()`：为「池内非分配账户」惰性补建/更新 `user_official_accounts` 行以缓存用户空间页（`INSERT IGNORE` 兼容并发首次上传，随后统一 `UPDATE notion_page_id`），防止每次上传重复创建 Notion 页面。
+  - `src/helpers.php` L1064-L1070 — `ensureUserSpacePage()` 官方账户分支由内联 UPDATE 改为调用 `rememberUserSpacePage()`。
+  - `account.php` L276 — `.source-note` 文案由「已固定分配 N 个官方账户（按负载选取，主账户优先，失败时自动顺延下一个）。」改为「官方账户池为全体付费用户共享：优先使用这里分配的 N 个账户，池内其他启用账户在需要时自动顺延（最多主备两个）。」。
+  - `admin.php` L994 — 「官方账户池」面板说明改为共享池语义（用户取用顺序 = 已分配主备 → 池内剩余账户）。
+  - `admin.php` L1006 — 账户行 `<small>` 由「N 位用户 · 」改为「N 位用户优先使用 · 」，弱化「绑定归属」暗示、强调只是优先顺序。
+  - `admin.php` L1017 — 「&lt;用户名&gt; 的官方账户」面板说明改为「分配只决定优先顺序；未分配的用户也能直接使用池内账户」。
+- 兼容性说明：`autoAssignOfficialAccounts()`（L1763）与后台「自动分配」仍保留，但语义降级为「决定该用户的优先取用顺序」，不再是可上传的前提；`user_official_accounts` 新增的惰性行会同时反映到后台分配计数与负载统计（更贴近真实用量）。
+
+### [2026-09-27 12:04:47] AI 审核稳定性：请求自动重试 + 「待人工复核」操作语义化
+
+- 目的：用户要求「AI 掉线或识别不了就转人工审核，用户照常可上传使用；人工判违规才封禁」。主链路现状已满足（AI 失败 → `Verdict::pending` → 只登记不隔离、文件保持可用，见 `api/upload.php` L632-L646），但有两处缺口：① `AiModerator::request()` 一次 curl 失败即降级，扛不住瞬时抖动，易误降级为人工；② 后台对 pending 记录仍显示「豁免 / 允许重传 / 打回」，语义不清（文件本就可用，谈不上「恢复」）。本次补齐这两点。
+- 验证：
+  - `php -l` 对 `src/Moderation/AiModerator.php` / `src/Moderation/ModerationService.php` / `admin.php` → 全部 `No syntax errors detected`。
+  - 重试逻辑用本地 mock 接口实测（临时脚本与 mock 已删除）：用例 A（首次 503、第二次 200）→ `isApproved=true`、mock 收到 **2** 次请求、耗时 **411ms**（含 400ms 间隔），证明可恢复失败会重试并成功；用例 B（固定 401 鉴权失败）→ `isPending=true`、reason「AI 审核暂时不可用，已转为人工复核」、mock 仅收到 **1** 次请求、耗时 **4ms**，证明 4xx 不重试、快速降级为人工复核。
+  - 后台按钮：临时插入一条 `decision='pending'` 记录（验证后已删除，`mock-model` 记录清零），浏览器实测 `admin.php?tab=risk` → pending 行按钮为「判定通过 / 判定违规」，flagged 行仍为「豁免 / 允许重传 / 打回」。
+  - 旧库无需改结构：本次不涉及建表 / 加列。
+- 改动明细：
+  - `src/Moderation/AiModerator.php` L35-L39 — 新增常量 `MAX_ATTEMPTS = 2`、`RETRY_DELAY_MS = 400`。
+  - `src/Moderation/AiModerator.php` L186-L232 — `request()` 改为重试循环：调用 `send()`，成功即返回；失败且 `retryable` 时 `usleep(400ms)` 后重试，重试耗尽或不可重试时 `throw RuntimeException($lastError)`（对外仍被 `review()` 捕获为 pending，语义不变）。
+  - `src/Moderation/AiModerator.php` L235-L311 — 新增 `send()`：单次 curl 请求，返回 `['ok','content','error','retryable']`；curl 层失败（网络 / 超时）= 可重试、HTTP 429/5xx = 可重试、其它非 2xx（如 401/403）= 不可重试、200 但响应体非 JSON = 可重试；2xx 且内容为空 → `ok=true, content=null`（保持「AI 未返回可解析的结果」pending 语义，不重试）。
+  - `src/Moderation/ModerationService.php` L291-L298 — `exempt()`：按记录 `decision` 区分文案，pending → 「已判定通过…文件保持可用」，非 pending → 「已豁免…文件恢复可用」。
+  - `src/Moderation/ModerationService.php` L319-L326 — `reject()`：pending → 「已判定违规…文件已隔离」，非 pending → 「已打回…文件维持不可用」。
+  - `admin.php` L1069 — 「审核记录」说明补充：AI 降级记录文件仍可正常使用，人工判定违规才隔离。
+  - `admin.php` L1102 / L1106-L1110 — 审核记录表格：`decision=pending` 的行渲染「判定通过（moderation_exempt）」/「判定违规（moderation_reject）」两个按钮，隐藏对 pending 无意义的「允许重传」；其余行保持原「豁免 / 允许重传 / 打回」。
+
+### [2026-09-27 11:47:18] 新增工单系统：申诉改为「快捷提单」，用户可自提普通工单，管理员后台对话/改状态
+
+- 目的：用户要求把「一次性申诉文本」升级为**工单型**记录——① 每次提交都要留有**提交记录与时间**，不再反复覆盖同一条文本；② 管理员可在后台与用户**对话**；③ 申诉是「一键快捷提交工单」，用户也能自己提**普通工单**。因此新增 `tickets` / `ticket_messages` 两表，并把历史申诉文本回填为工单+首条留言；`moderation_records.appeal_text` 仅保留「最近一条」摘要供后台列表兼容展示。
+- 验证：
+  - `php -l` 对 `src/Schema.php` / `src/Tickets/TicketService.php` / `src/Moderation/ModerationService.php` / `tickets.php` / `dashboard.php` / `admin.php` → 全部 `No syntax errors detected`。
+  - 迁移（临时脚本已删除）：`schema_version = 14`，`tickets` / `ticket_messages` 均建成，历史申诉（记录 #3 / `R-SS5K8X`）自动回填为工单 `T-6HA8WQ`（category=appeal）+ 首条留言。
+  - 浏览器实测（管理员态 `127.0.0.1:8088`）：`tickets.php` 列表出现 `T-6HA8WQ`（申诉 R-SS5K8X · 色情内容测试文件.txt｜admin｜申诉｜待处理｜1 条）；详情页渲染对话线程 + 回复表单；以管理员回复一条 → 留言以 `.ticket-msg.from-admin` 追加、状态自动 `open → processing`；点「标记为已关闭」并在确认弹窗确认 → 状态变为 `closed`（状态按钮随之变为「标记为待处理 / 标记为处理中」）；`dashboard.php` 风控提示条渲染 `.ticket-thread`（含用户原申诉 + 管理员回复两条），summary 显示「继续申诉 / 补充说明」，「查看完整对话 →」指向 `tickets.php?id=1`。
+  - 旧库无需手工补列：`storage/installed.lock` 存在时每次请求自动 `migrate()`，v14 块会幂等建表；`install.php` 已同步建表，全新建库亦可用。
+- 改动明细：
+  - `src/Schema.php` L11 — `CURRENT_VERSION` 13 → 14。
+  - `src/Schema.php` L170-L176 — 新增 v14 迁移块：调用 `createTicketsTable()` / `createTicketMessagesTable()` / `migrateAppealsToTickets()`。
+  - `src/Schema.php` L182-L204 — 新增 `createTicketsTable()`：`tickets`（id、ticket_no VARCHAR(16) UNIQUE、user_id、category 默认 'general'、subject VARCHAR(200)、status 默认 'open'、related_record_id NULL、last_message_at NULL、created_at/updated_at；索引 `idx_tickets_user` / `idx_tickets_status` / `idx_tickets_record`；FK `fk_tickets_user → users(id) ON DELETE CASCADE`）。
+  - `src/Schema.php` L206-L221 — 新增 `createTicketMessagesTable()`：`ticket_messages`（id、ticket_id、author_role VARCHAR(10) 默认 'user'、author_id、body VARCHAR(2000)、created_at；索引 `idx_ticket_messages_ticket`；FK `fk_ticket_messages_ticket → tickets(id) ON DELETE CASCADE`）。
+  - `src/Schema.php` L223-L255 — 新增 `migrateAppealsToTickets()`：把历史 `moderation_records.appeal_text <> ''` 的记录转成申诉工单 + 首条留言。
+  - `src/Schema.php` L528-L540 — 新增 `generateTicketNo()`：`T-` + 6 位（字母表去掉易混字符），与申诉号风格一致（此前 v14 块引用但方法缺失，会导致文件不可运行，已补齐）。
+  - `install.php` L139-L140 — 在 `createModerationRecordsTable()` 后追加 `createTicketsTable()` / `createTicketMessagesTable()`。
+  - `src/Tickets/TicketService.php`（新建）— `NotionDrive\Tickets\TicketService`：类别/状态/角色常量；`openTicket()`（唯一 `ticket_no` 5 次重试）、`appendMessage()`、`appendAppealMessage()`（同一 `related_record_id` 只对应一张申诉工单，存在则追加留言并把 `closed` 回置 `open`）、`replyAsUser()`、`replyAsAdmin()`（open → processing）、`ticketsForUser()`、`allTickets()`、`find()` / `findForUser()`、`messages()`、`setStatus()`、`appealThreadsByRecords()`。
+  - `src/Moderation/ModerationService.php` L10 — 新增 `use NotionDrive\Tickets\TicketService;`。
+  - `src/Moderation/ModerationService.php` L400-L431 — `submitAppeal()` 重写：先 `findOpenRecord()` 校验存在性（避免 MySQL「更新后值未变化」返回 0 affected rows 被误判为已处理），再 UPDATE 最近摘要 + `appendAppealMessage()` 落地工单留言。
+  - `src/Moderation/ModerationService.php` L438-L455 — 新增 `findOpenRecord()`。
+  - `dashboard.php` L11 / L37 — 引入 `TicketService`，按当前用户的未处理记录批量取工单线程 `$moderationThreads`。
+  - `dashboard.php` L108 — 导航新增 `<a href="tickets.php">我的工单</a>`。
+  - `dashboard.php` L174-L195 — 风控提示条：先渲染 `.ticket-thread` 对话，再是 `.appeal-box`（summary 依有无留言显示「继续申诉 / 补充说明」或「填写申诉理由」），末尾若有工单则给 `.ticket-more` → `tickets.php?id=`。
+  - `tickets.php`（新建）— 双角色页面：用户提单（强制 general 类别）/ 回复 / 查看自己的工单；管理员看全部（可按状态、类别筛选）、回复、改状态（`data-confirm` 二次确认）。POST 走 PRG。
+  - `admin.php` L28 — `'appeals'` 页签描述改为「免审核用户豁免与申诉复核（对话内容在「工单管理」）」。
+  - `admin.php` L888、`admin_orders.php` L268、`logs.php` L69 — 左侧一级菜单新增「工单管理」；`account.php` L195、`pay.php` L140 — 按角色显示「工单管理 / 我的工单」。
+  - `assets/app.css` L97-L112 — 新增工单样式 `.ticket-thread` / `.ticket-msg` / `.ticket-msg.from-user|from-admin` / `.ticket-msg-meta` / `.ticket-msg-body` / `.ticket-more` / `.ticket-form` / `.ticket-status-actions` / `.ticket-status-open|processing|closed`。
+  - 静态资源版本 `assets/app.css?v=36 → v=37`，同步 `admin.php` L884、`admin_orders.php` L264、`account.php` L189、`dashboard.php` L101、`install.php` L228、`logs.php` L65、`pay.php` L134、`index.php` L57、`register.php` L139、`tickets.php` L94。
+  - 数据库：新增 `tickets`、`ticket_messages` 两表（v14 迁移，旧库自动建）。
+
+---
+
+### [2026-09-27 11:02:43] 修复：窄屏下进入管理后台后底部导航丢失「管理后台」入口，并清理已删入口的残留文案
+
+- 目的：用户报告「打开页面之后进入下面的管理后台，管理后台会（被）删掉」。根因：`admin.php` 侧栏用 `<details class="nav-group">`（summary 为「⚙ 管理后台」）承载二级页签，而窄屏媒体查询 `@media (max-width: 760px)` 里的 `.nav-group { display: none; }` 是按设计隐藏整个分组（二级菜单改由正文顶部 `.admin-tabs` 分区条承担）；其余页面（`dashboard.php` / `admin_orders.php` / `logs.php`）用的是普通 `<a href="admin.php">管理后台</a>`，窄屏下仍然存在——只有 `admin.php` 自己会缺这一项，于是「在后台页面里底部导航没有『管理后台』」，看起来像入口被删掉了。顺带清理 `files` 页签里指向已删除行内入口的失效文案。
+- 验证：`php -l` 对 `admin.php` / `dashboard.php` / `admin_orders.php` / `logs.php` / `account.php` / `pay.php` / `index.php` / `install.php` / `register.php` → 全部 `No syntax errors detected`；全仓检索 `?v=34` → 0 匹配；`admin.php` 内检索 `管理文件` → 0 匹配（仅本文件历史条目提及）。
+- 改动明细：
+  - `admin.php` L870 — 侧栏 `<nav class="drive-nav">` 在「我的文件」之后新增 `<a class="active nav-admin-link" href="admin.php"><span>⚙</span>管理后台</a>`：窄屏专用入口，桌面端仍由 `<details class="nav-group">` 承担，不产生重复项。
+  - `assets/app.css` L112-L113 — 新增注释 + `.drive-nav a.nav-admin-link { display: none; }`（基础隐藏）。
+  - `assets/app.css` L448-L449 — 移动端媒体查询内新增注释 + `.drive-nav a.nav-admin-link { display: flex; }`（≤760px 恢复入口）。
+  - `admin.php` L1022 — 「用户文件」空态说明由「选择一位用户查看并管理其文件；也可以在『用户管理』里点击用户旁的『管理文件』直接进入。」改为「选择一位用户，查看并管理其文件（下载 / 重命名 / 删除）。」
+  - `admin.php` L866、`admin_orders.php` L264、`account.php` L189、`logs.php` L65、`pay.php` L134、`index.php` L57、`install.php` L225、`dashboard.php` L72、`register.php` L139 — 静态资源版本号 `assets/app.css?v=34` → `?v=35`。
+  - 无数据库 / 表结构改动。
+
+---
+
+### [2026-09-27 10:57:13] 移除日志中的「修改人」字段：不再标注改动归属
+
+- 目的：项目由两人协作，而历史记录里的「修改人」一律写成同一个人，无法区分实际改动者，用户要求直接删掉该字段，避免错误归属。
+- 验证：除本条记录自身提及外，全文检索 `修改人` / `ShiZhongyan` → 0 匹配；22 条既有记录的标题、目的、验证、改动明细均完整保留（仅少一行字段，标题下方的空行与后续内容未受影响）。
+- 改动明细：
+  - `AI_CHANGELOG.md` 原 L38、L59、L85、L108、L130、L144、L159、L182、L200、L225、L252、L295、L309、L328、L350、L368、L379、L417、L448、L499、L534、L547 — 删除 22 条记录中的 `- 修改人：…` 行。
+  - `AI_CHANGELOG.md` 原 L11-L14 — 「记录规范」删除原第 2 条（关于「修改人」的 4 行要求），原第 3-6 条重编号为现 L11-L17 的第 2-5 条。
+  - `AI_CHANGELOG.md` 原 L27 — 「条目模板」删除 `- 修改人：[xxx]` 行。
+  - `AI_CHANGELOG.md` 原 L451、L483、L503 — 正文内联署名改为「用户」（「按 用户 决策」「其后又按 用户 要求」「已与 用户 确认」）。
+  - 无代码 / 数据库改动，不影响任何运行时行为。
+
+---
+
+### [2026-09-27 10:46:29] 后台新增「文件管理」独立页签（与「系统设置」同级、位于其前），用户文件入口从账户池管理拆出并明面化
+
+- 目的：用户要求把「管理员管理用户文件」的功能**明面展示**：① 在「用户管理」每位用户的行内直接给出「管理文件」入口（与「续费订阅 / 编辑」并排，不必展开「编辑」）；② 在后台顶部页签里**单独新增「文件管理」一栏，位置在「系统设置」之前、与「系统设置」同级**，不再只藏在「账户池管理」里。故把原 `?tab=content#user-files` 的用户文件面板整体迁到新的 `?tab=files`；「账户池管理」只保留官方账户池与该用户的账户分配。
+- 验证：
+  - `php -l admin.php`、`php -l admin_orders.php` → 均 `No syntax errors detected`（exit 0）。
+  - 登录态实测（本机 PHP 内建服务器 `127.0.0.1:8088` + `admin` 账号）：`admin.php?tab=files` → HTTP 200，页面含 `tab=files` 页签与用户选择列表「用户文件」；页签顺序满足 `tab=risk` < `tab=files` < `tab=system`（即「文件管理」在「内容风控」之后、「系统设置」之前，同级并列）；`admin.php?tab=files&user_id=1` → 页面含 `id="user-files"` 文件面板，且面板「关闭」链接指向 `admin.php?tab=files`。
+  - 未做浏览器点击回归：重命名/删除按钮沿用原 `.file-actions` + `assets/app.js` 逻辑，DOM 结构未变（仅所在页签变化）。
+  - 无数据库结构改动（不涉及建表/加列，旧库无需手工迁移）。
+- 改动明细：
+  - `admin.php` L27 — `adminTabs()` 在 `'risk'` 与 `'system'` 之间新增 `'files' => label「文件管理」`，达成「比系统设置靠前、与系统设置平级」。
+  - `admin.php` L25 — `content` 页签描述由「用户文件、官方账户分配与账户池」改为「官方账户池与用户账户分配」（用户文件已迁出）。
+  - `admin.php` L40 — 页签默认值注释同步：去掉「用户行点『管理文件』默认进 content」的说明（行内入口已改用 `tab=files`）；默认值逻辑本身未改。
+  - `admin.php` L914 — 用户行 `.user-row-actions` 的「管理文件」链接由 `?tab=content` 改为 `?tab=files`（上一轮新增的明面入口，本轮同步页签）。
+  - `admin.php` L965 — 权限组「查看该组用户」成员链接同步改为 `?tab=files`。
+  - `admin.php` L1013-L1032 — 新增 `if ($activeTab === 'files')` 渲染块：无 `user_id` 时渲染用户选择列表（复用 `#user-search` 即时筛选 + 新增 `.file-user-list`），点击进入该用户文件；带 `user_id` 时渲染原 `#user-files` 文件面板，「关闭」回到 `admin.php?tab=files`。
+  - `admin.php` 原 L997-L1004 — 从 `content` 页签删除 `#user-files` 面板（迁至 `files` 页签）。
+  - `assets/app.css` L266 — 过滤选择器由 `.admin-user-row.is-filtered-out` 扩展为 `.admin-user-row.is-filtered-out, .file-user-list li.is-filtered-out`，使新页签的用户选择列表也能即时筛选。
+  - 资源缓存版本：`assets/app.css?v=33 → v=34`，同步 `admin.php` L866、`admin_orders.php` L264、`account.php` L189、`logs.php` L65、`pay.php` L134、`index.php` L57、`install.php` L225、`dashboard.php` L72、`register.php` L139。
+  - 注：`admin_orders.php` L321 订单页「用户」链接仍为 `?tab=content&user_id=`（该入口用于查看账户分配，不在本次需求内，未改动）。
+
+### [2026-09-27 09:36:29] 新增可插拔 AI 内容风控：关键词上传前拦截 + AI 上传后识别 + 申诉号与后台复核
+
+- 目的：用户要求站内新增「增量插件」形式的 AI 审核模块。① 命中**关键词**的文件在**上传开始前**直接拒绝；② 上传**完成后再由 AI 识别**，判定违规则「不让用、暂时保留」（隔离）；③ 拒绝时分配**唯一申诉号**，用户凭号线上/线下联系管理员申诉；④ 管理员在「内容风控」后台查看记录并**豁免 / 允许重传 / 打回**。按用户「默认做」落地以下默认决策：AI 接口沿用 OpenAI 兼容 `/chat/completions`；未配置接口地址或 Key 时**只跑关键词**；AI 超时或异常一律 fail-open（文件照常放行）且仅登记待人工复核、**不隔离**（避免 AI 故障导致全站上传不可用）；pending 记录**不展示给用户**；豁免时才修复悬空 `folder_id`。
+- 验证：
+  - 临时脚本断言 **65 项全部 PASS / 0 FAIL**（exit 0），覆盖 7 组：Schema（`schema_version=12` / `moderation_records` 表存在且 15 个关键列齐全 / 4 索引 / `uploads.status` 非 ENUM）、`KeywordModerator`（去空去重、大小写不敏感、命中字段）、`saveSettings`（写入回读、API Key `enc:` 加密、7 类非法输入拒绝：http / 内网 IP / localhost / timeout 越界 / 超长 model / 超长 keywords、非法 scope 回退全部）、`guardFilename` 与 `inspect`（关键词优先于 AI、未配置 AI 时跳过）、记录-隔离-复核闭环（申诉号 `R-XXXXXX` 格式、`quarantine` 后用户不可见、`exempt` 恢复 active、`reject` 维持隔离、`resubmit` 放行同名重传且不误放他名）、pending 不泄漏给用户、`recentRecords` 关联用户名。
+  - 上述临时脚本执行后已删除；末尾自动恢复风控配置并清理测试数据（`moderation_enabled` 已回到 `0`）。
+  - `php -l` 对全部 13 个改动文件（含 5 个新文件）语法检查 0 错误；`node --check assets/app.js` exit=0。
+  - **安全审计结论（未发现新增漏洞）**：`admin.php` 复核动作受 `Auth::requireAdmin()`（L17）+ `Security::verifyCsrf()`（L111-L113）双重保护，无 CSRF/越权；后台与首页所有记录字段输出均经 `e()`、前端经 `textContent`，无 XSS；`recentRecords` 的 `LIMIT` 经 `max(1,min(300,...))` 整数收敛，其余全部原生预处理，无注入；**隔离绕过已逐一核对**——下载 [`api/file.php`](api/file.php#L15-L21)、文件夹移动/删除 [`api/folder.php`](api/folder.php#L53)、首页列表 [`dashboard.php`](dashboard.php#L48)、重名探测 `findActiveUploadByName`、`folderFileCountMap`、`accountReplicaCount` 均带 `status='active'`，隔离文件自动 404/不可见/不可下载/不可移动；`userNotices($userId)` 严格按当前登录用户过滤，无 IDOR；申诉号无任何用户端查询接口（仅线下凭号申诉），不存在枚举利用面。
+  - **已知残余风险（低，已取舍）**：`isPrivateHost()` 仅对 IP 字面量做内网判断，如管理员填写「解析到内网的非 IP 域名」不会被拦；因该地址只能由管理员在后台配置、用户无法注入，判定为可接受，未额外增加 DNS 解析校验（会引入 CDN/误杀复杂度）。
+  - **已知设计取舍**：管理员「允许重传」后，同名文件的**上传前关键词拦截会一直放行**（`hasResubmitPass` 按 用户+文件名+`resubmit` 匹配），但上传后仍会重新跑关键词与 AI 识别并可能再次隔离；被隔离文件无法由用户自行删除，会持续占用配额，需管理员复核后解决。
+- 改动明细（数据库：新增表 `moderation_records`，`uploads.status` 追加取值 `'quarantined'`；**旧库无需手工补列**，`Schema::migrate()` 会在请求时自动升级）：
+  - `src/Moderation/Verdict.php` L1-L63 — 新增。审核结论值对象（`approved`/`flagged`/`pending` + `provider`/`model`/`reason`/`matched`/`detail` 与 3 个静态工厂）。
+  - `src/Moderation/Moderator.php` L1-L21 — 新增。审核器接口 `name()` / `review(array $subject)`。
+  - `src/Moderation/KeywordModerator.php` L1-L61 — 新增。大小写不敏感的关键词命中实现。
+  - `src/Moderation/AiModerator.php` L1-L303 — 新增。OpenAI 兼容 `/chat/completions` 调用；按扩展名读文本片段、按 MIME 传 base64 图片；**不依赖 `finfo`**（生产 `fileinfo` 曾缺失）；解析失败/超时/HTTP 非 200 一律返回 `pending`。
+  - `src/Moderation/ModerationService.php` L1-L477 — 新增。门面：`create()` 读配置（API Key 经 `Security::decrypt`）、`settings()`、`saveSettings()`（https + URL 合法 + 非内网 + 超时 2-60 + 长度与 scope 白名单校验）、`guardFilename()`、`inspect()`、`record()`（`R-XXXXXX`，23000 冲突重试 5 次）、`quarantine()`、`exempt()`/`reject()`/`allowResubmit()`、`hasResubmitPass()`、`recentRecords()`、`userNotices()`。
+  - `src/Schema.php` L11（`CURRENT_VERSION` 11→12）、L159（调用建表）、L164-L194（`createModerationRecordsTable()`：`appeal_no` 唯一索引 `uniq_moderation_appeal` + `idx_moderation_user` / `idx_moderation_status` / `idx_moderation_upload` 三个索引 + `user_id` 外键 `fk_moderation_user` `ON DELETE CASCADE`）。
+  - `install.php` L137（全新安装即建风控表）、L149-L154（初始配置 6 项 `moderation_*`）。
+  - `src/helpers.php` L201 — `userUsedBytes()` 容量统计由仅 `active` 改为 `status IN ('active','quarantined')`，使「暂时保留」的隔离文件仍占配额，避免用户靠违规内容绕过容量限制。
+  - `api/upload.php` L280-L318 — start 阶段关键词拦截：命中即拒绝（不建分块会话、不落盘）并写入 `STAGE_START` 记录、`raiseAdminAlert`、返回 `code=moderation_rejected` + `appeal_no`；已被「允许重传」的同名文件跳过拦截；本段异常一律放行并 `Logger::error`。L587-L660 — finish 阶段 `inspect()`：`flagged` → 记录 + `quarantine` + 告警，响应体 `moderation.message` 含申诉号；`pending` → 仅记录 + 告警（**不隔离**）；响应新增 `moderation` 字段。
+  - `dashboard.php` L25-L30（取 `userNotices`，失败静默）、L111-L137（申诉提示条，列出文件名/原因/申诉号与处理状态）。
+  - `assets/app.js` L309-L312（`held` / `reviewing` 计数）、L495-L498（`fail(detail, retry)`）、L515-L521（start 被拒不重试）、L566-L580（按 `moderation.decision` 分支：`flagged` 记 `held` 不重试、`pending` 记 `reviewing` 且标记「上传完成，等待人工复核」）、L604-L610（汇总提示追加两项文案）。
+  - `admin.php` L12（引入 `ModerationService`）、L26（新增 `?tab=risk`「内容风控」）、L669-L687（POST 分发：`save_moderation` 与 `moderation_exempt|moderation_reject|moderation_resubmit`）、L785-L799（视图数据准备，读取失败只影响该页签）、L1021-L1087（风控页签：配置表单 + 审核记录表 + 行内复核表单）、L865（`app.css` 缓存版本 `v=32`→`v=33`）。
+  - `assets/app.css` L60-L62（新增 `textarea` 基础样式与 focus/placeholder）、L232（`.checkbox-row > span`）、L236-L238（`.moderation-review` 窄列内纵向排布）；同步 9 个页面静态资源版本号 `v=32`→`v=33`：`admin.php` L865、`account.php`、`admin_orders.php`、`dashboard.php`、`index.php`、`install.php`、`logs.php`、`pay.php`、`register.php`（用于强制刷新旧缓存）。
+
+### [2026-09-27 01:58:30] 「全部文件」新增站内文件夹（多层嵌套 / 移动文件 / 递归删除）
+
+- 目的：用户要求「全部文件内容能不能加一个文件夹的功能，就是正常的文件夹文件可以移动到文件夹，也可以移出文件夹，可以删除重命名新建」。经用户拍板：① 文件夹**只在站内生效**，不同步到 Notion；② **支持多层嵌套**；③ 删除文件夹时**连同其中内容一起删除**（含 Notion 归档）；④ 删除前**必须提示**会连带删除多少个文件、且不可恢复。
+- 验证：
+  - 临时脚本 `storage/_folder_verify.php` 跑 58 项断言**全部通过**（exit 0），覆盖：迁移（`schema_version=11` / `folders` 表 / `uploads.folder_id` / `idx_uploads_folder`）、6 个辅助函数（越权隔离与排序 / 树形层级 / 递归后代 / 计数上卷 / 面包屑）、根目录 `folder_id <=> NULL` 只命中未归类文件、HTTP 全流程（未登录 401 / 缺 CSRF 422 / 新建（根与嵌套）/ 空名与控制字符拒绝 / `../../etc/passwd` 仅留 `passwd` / 重命名 / 移动文件移入移出 / 深层浏览与面包屑与 `data-folder` 注入 / 越权一律 404 或 302 / 递归删除后子文件夹与内部文件消失且同级与他人不受影响 / 上传 start+finish 的 `folder_id` 注入与失效降级为根）。
+  - `php -l` 全量语法检查 0 错误；`node --check assets/app.js` exit=0。
+  - 临时脚本已删除；用 `mysql.exe` 直连复核测试数据已清空：`test_users=0 / folders_total=0 / orphan_folders=0 / schema_version=11`。
+  - 本次同时完成 bug 与安全审计：IDOR / SQL 注入 / XSS / CSRF 均未发现新增问题。
+- 改动明细：
+  - `src/Schema.php` L11 — `CURRENT_VERSION` 由 10 提到 11；L149-L154 迁移块（建 `folders` 表 + 加 `uploads.folder_id` + 加索引）；L159-L174 `createFoldersTable()`（`user_id` 外键级联，`parent_id` 为 NULL 表示根目录，`(user_id, parent_id)` 复合索引）。
+  - `src/helpers.php` L1191-L1308 — 新增「站内文件夹」分区 6 个函数：`folderRow` L1196、`folderAncestors` L1211、`folderChildren` L1224、`folderTree` L1237、`folderFileCountMap` L1266、`folderDescendantIds` L1291；全部强制 `user_id` 过滤，计数按树倒序上卷（含嵌套子文件夹）。
+  - `api/folder.php`（**新增**）— `normalizeFolderName` L13；`Auth::requireLogin(true)` L23、非 POST 405、`Security::verifyCsrf` L30；四 action：`create` L34 / `move_file` L45 / `rename` L70 / `delete` L77；删除为递归（`folderDescendantIds` → 批量置 `status='deleted'` + `archiveUploadReplicas` 归档 Notion → `DELETE FROM folders`）；异常统一 422 且不回显 SQL / 路径。
+  - `api/upload.php` — `start` 读取并校验 `folder_id`（L280-L283，越权降级 0）并写入分块 meta（L322）；`finish` 二次校验（L465-L466）并落库（L484-L488，0 存 NULL）。
+  - `dashboard.php` — 按 `?folder=` 过滤（L24-L36，越权 302 回根）；列表 `folder_id <=> :folder_id`（L40、L50）；`body data-folder`（L66）；面包屑 L123-L134；工具条「新建文件夹」按钮 L136；空状态条件含文件夹 L137；文件夹行 L144-L150（`data-folder-id` / `data-file-name` / `data-folder-inside` / 含 N 个文件 / 重命名·删除）；分页保留 `&folder=`（L179-L181）；`<template id="folderOptions">` L185。
+  - `assets/app.js` — `openDialog` 弹窗骨架 L25-L90（Esc / 遮罩 / 焦点陷阱）；`askConfirm` L92；`askFolderPicker` L95-L106；文件操作新增 `move` 分支 L150-L154（走 `api/folder.php` + `move_file`）；文件夹操作委托 L193-L230（重命名 prompt、删除前按 `data-folder-inside` 提示连带删除数量、删除时防重入）；新建文件夹 L233-L259；上传 start 带 `folder_id` L507。
+  - `assets/app.css` L186-L191 — 面包屑与工具条；L209-L212 — `.folder-kind` / `.folder-link` / `.folder-picker`。
+  - `install.php` — 新装建表同步：`folder_id` L111、索引 L123、`createFoldersTable` L128、`schema_version` L147。
+  - 静态资源版本：`app.css?v=32`、`app.js?v=16`，同步更新 `index.php` L57/L83、`register.php` L139/L183、`account.php` L189/L340、`pay.php` L134/L255、`admin.php` L826/L1053、`admin_orders.php` L264/L353、`logs.php` L65/L124。
+- 备注：`uploads.folder_id` **故意不加外键**（删除文件夹时需保留已删文件的归属，靠 `status='active'` 过滤）；旧库升级由 `bootstrap.php` → `Schema::migrate()` 自动完成，**无需手工补列**。已知非安全问题（仅为记录）：CSRF 失败返回 422（与既有 `api/file.php` 一致）、允许同名文件夹（与 Windows 一致）、`folderAncestors` 对理论上的 parent 环无深度上限（当前无「移动文件夹」功能，无法造环）。
+
+---
+
 ### [2026-09-27 00:55:45] 全库清理记录性 / 臃肿注释，只保留重要功能性注释
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：用户要求「将代码库中所有文件中因修改而留下的记录性注释删除，以及臃肿注释全部删除，仅保留部分重要功能性注释」。清理口径经用户确认为**标准力度**（删：改动记录类「原为…/改为…/此前…/已废弃…/不再…/兼容旧版本…」、重述代码类、超过 1~2 行的冗长「为什么」铺陈、只重复函数名/参数类型的 docblock；留：并发/加锁/幂等、安全（路径穿越/CSRF/加密/权限）、外部协议兼容（Notion API / 易支付字段差异）、业务规则（配额/套餐/续费顺延/到期降级/订单状态机）、时序要求、前端非直观行为（移动端断点 / 44px 触摸目标 / 焦点陷阱 / 滚动锁）、Schema 迁移意图）与**全部源文件**范围（根目录页面、`api/`、`src/`、`assets/`、`config/`、`scripts/`、`.dev/`）。
 - 验证：
   - 改动前把全部 44 个 php/js/css/ps1 源文件快照到 `%TEMP%\nd-cmt-bak`；事后用 PHP `token_get_all` 剥掉 `T_COMMENT` / `T_DOC_COMMENT` / `T_WHITESPACE`（`T_INLINE_HTML` 去掉 HTML 注释并折叠空白）后逐 token 比对代码序列 → 38 个 PHP 文件全部 `OK`，输出 `== ALL PHP CODE-TOKENS MATCH ==`，证明**未改动任何代码 token**。
@@ -57,7 +912,6 @@
 
 ### [2026-09-26 23:48:40] 侧栏备案号改为居中并调整上下间距
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：用户要求「优化备案号样式，间隔距离适当，侧边栏居中显示」。此前侧栏备案号是左对齐（沿用侧栏正文默认对齐），且 `.sidebar-icp + .sidebar-police` 的上间距只有 2px，两条备案号挤在一起；同时最后一条备案号紧贴账号信息上方的分隔线。本次统一居中，并把上、内、下三处间距调到均衡。
 - 验证：`assets/app.css` 单文件 CSS 改动，无 PHP 变更，无需 `php -l`；产品页面渲染出 `<p class="sidebar-icp">` / `<p class="sidebar-police">` 的 DOM 未变（仍由 `sidebarIcpHtml()` / `sidebarPoliceHtml()` 输出），仅样式生效。逻辑核对：`.sidebar-storage` 下内边距 16px 与备案号上内边距 4px 构成上方间距 20px，备案号下内边距 12px 与 `.account-menu` 上内边距 14px 构成下方间距 26px，两条备案号之间间距 4px；由于 `.account-menu` 顶部有 1px 分隔线，视觉上下方留白不会被文字压住。
 - 改动明细：
@@ -71,7 +925,6 @@
 
 ### [2026-09-26 23:46:19] 管理后台 / 订单管理 / 运行日志侧栏也展示「用量信息」
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：用户要求「管理员也要在包含管理面板、日志查看等页面有同样的已用空间 / 不限总容量」。上一条已把用量区块抽成共用 helper 并让「我的文件 / 账户管理 / 会员套餐」三页统一调用，但管理员可见的 `admin.php`（管理后台）、`admin_orders.php`（订单管理）、`logs.php`（运行日志）三页侧栏仍没有该区块，管理员在这几页看不到已用空间。本次把同一 helper 也接入这三页，管理员全站侧栏用量信息保持一致。
 - 验证：`php -l admin.php / admin_orders.php / logs.php` → `No syntax errors detected`。grep 确认 6 个侧栏页均已调用 `sidebarStorageHtml()`（`dashboard.php` L59、`account.php` L199、`pay.php` L151、`admin.php` L841、`admin_orders.php` L273、`logs.php` L70）。管理员渲染结果沿用上一条 CLI 实测（id=1 `admin`）→ `<div class="sidebar-storage"><div><span>已用空间</span><strong>11.7 KB</strong></div><small>不限总容量</small></div>`，正是用户要求的形态；`sidebarStorageHtml()` 对管理员不输出「会员套餐」两行。
 - 改动明细：
@@ -86,7 +939,6 @@
 
 ### [2026-09-26 23:41:39] 公网安备号改为可跳转 + 统一三页侧边栏「用量信息」区块
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：用户要求「公网安备跳转 `https://beian.mps.gov.cn/#/query/webSearch`，同时让不同页面侧边栏显示的用量信息完全相同」。此前公网安备号是纯文本（ICP 已在上一条改为链接）；且「我的文件 / 账户管理 / 会员套餐」三页侧栏的用量区块是各自内联的重复代码，内容不一致——`dashboard.php` 有「会员套餐」两行，`account.php` / `pay.php` 只有「已用空间」一行且整块依赖 `if (!isAdmin($user))`。本次把用量区块抽成一个共用 helper，三页统一调用，保证不同页面显示逐字节一致。
 - 验证：`php -l`（`src/helpers.php` / `dashboard.php` / `account.php` / `pay.php` 及全部 9 个含版本号页面）→ `No syntax errors detected`。CLI 实测（`require src/bootstrap.php`，临时写入 `config.icp_license` / `config.police_license` 后渲染真实用户，跑完已删除该两行、临时脚本 `.dev/render-check.php` 已删除，库中仅剩 id=1 `admin` / id=2 `test`）：
   - 非管理员 id=2 `test`（高级用户）→ `<div class="sidebar-storage"><div><span>已用空间</span><strong>40.5 KB</strong></div><small>不限总容量</small><div><span>会员套餐</span><strong>高级 · 30 天</strong></div><small><a href="pay.php">续费 / 延长</a></small></div>`，正是用户要求的形态。
@@ -109,7 +961,6 @@
 
 ### [2026-09-26 23:35:22] ICP 备案号改为可点击跳转工信部备案系统
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：用户要求「ICP备跳转工信部网页」。此前 ICP 备案号是纯文本，按国内备案合规惯例应可点击跳转工信部备案系统（`https://beian.miit.gov.cn/`）。本次只处理 ICP，公网安备号未要求、保持纯文本不动。
 - 验证：`php -l src/helpers.php` → `No syntax errors detected`。CLI 实测（`php -r 'require "src/bootstrap.php"; ...'`，临时写入 `config.icp_license` / `config.police_license` 后渲染，跑完已删除该两行、库中仅剩 id=1 `admin` / id=2 `test`）：
   - `sidebarIcpHtml()` → `<p class="sidebar-icp"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">ICP-TEST-2024000000-1</a></p>`
@@ -127,7 +978,6 @@
 
 ### [2026-09-26 23:30:17] 在 ICP 备案号基础上新增「公网安备号」展示（后台可填、留空不显示）
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：用户要求「原有基础上再加一个公网安备」，即在既有 ICP 备案号之外，再增加一个独立的公网安备号字段，行为与 ICP 完全一致：后台「系统设置 → 站点信息」可填、留空则不显示、有侧栏页显示在侧栏 ICP 之下、无侧栏页显示在页脚 ICP 右侧；两个字段相互独立，只填其一不影响另一个。原 `sidebarIcpHtml()` / `.sidebar-icp` 与 `config.icp_license` 均不改名（保持上一条记录的行号引用仍有效），本次为纯增量。
 - 验证：`php -l` 校验 10 个受影响 PHP 文件全部 `No syntax errors detected`。实机冒烟（PHP 8.5.9 内建服务器 `127.0.0.1:8088` + MariaDB 3306，临时脚本 `.dev/smoke-police.ps1` / `.dev/smoke-anon.ps1` 跑完已删除）四阶段结果：
   1. 两条都未填：6 个侧栏页与匿名 `index / register` 全部 `sidebarIcp=N sidebarPolice=N footerIcp=N footerPolice=N`，`credit=Y`。
@@ -152,7 +1002,6 @@
 
 ### [2026-09-26 23:22:42] 新增可配置 ICP 备案号展示与 SZY创新工作室技术支持署名，并把用量信息补到账户管理 / 会员套餐页
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：三条需求。① 系统设置里预留 ICP 备案号填写位，留空则不显示，填写后在登录页与所有页面展示；② 所有页面注明「由 SZY创新工作室 提供技术支持」并链接 `https://www.szystudio.cn`（固定不可配置）；③ 非管理员用户的用量信息此前只在「我的文件」侧栏出现，要同时出现在「账户管理」与「会员套餐」页。
   1. **展示位置（已与用户确认）**：无侧栏页（`index` / `register` / `install`）放页面底部居中页脚；有侧栏页（`dashboard` / `account` / `pay` / `admin` / `admin_orders` / `logs`）的 ICP 放侧边栏「用量信息下侧」，署名放页面底部页脚。窄屏（`≤760px`）侧栏被压缩成底部导航条、放不下 ICP，改由页脚展示（`body.drive-shell` 下桌面端隐藏页脚 ICP、移动端再显示回来）。
   2. **署名不可修改**：直接写在 `siteCreditHtml()` 里，不读 `config` 表，后台也没有对应开关，避免被改掉或去掉。链接 `target="_blank" rel="noopener noreferrer"` 新标签页打开。
@@ -179,7 +1028,6 @@
 
 ### [2026-09-26 22:36:58] 全流程功能检查后的 P1/P2 缺陷修复与上传队列、确认弹窗交互优化
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：对「安装 → 注册 → 登录 → 绑定 Notion → 上传/下载 → 购买会员 → 支付回调 → 开通/到期降级 → 后台管理」全链路做一轮功能检查，修掉 12 项缺陷（6 项 P1 + 6 项 P2，其中 1 项核实后撤销），并顺带优化上传队列、自定义确认弹窗的交互与样式。
 - 验证：
   1. `php -l` 校验 13 个受影响 PHP 文件，均无语法错误；`node --check assets/app.js` 退出码 0。
@@ -222,7 +1070,6 @@
 
 ### [2026-09-26 21:30:07] 权限组「查看该组用户」入口改为右对齐页脚，消除「位置不对」的观感
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：用户反馈管理后台权限组区块里「查看该组用户（1）」位置不对（截图红框标出它孤零零贴在左栏头像下方）。
   1. **先做实机复现，排除「重复渲染」**：用临时 CLI 脚本伪造 `$_SESSION['user_id']` 后 `include admin.php`（`?tab=users`）统计渲染结果，`查看该组用户` 出现 3 次、`class="group-members"` 3 次、DOM 顺序为「组行 form → 该组 details」交替出现。数据库里确有 3 个权限组（管理员 / 高级用户 / 普通用户），前两个各 1 位成员，因此页面上**本来就会有两处「查看该组用户（1）」**，分属不同组，并非模板重复或 CSS 伪元素复制（全项目 Grep 该文案仅 `admin.php` L912 一处，`assets/` 下无相关 JS 克隆）。
   2. **真正的问题是位置**：`.group-members` 是 `.admin-user-list` 网格里的独立一行，铺满整行却只把文字留在左栏，右侧空出大片，视觉上像不属于上面那个组；而「用户管理」里用户行的操作按钮（开通订阅 / 编辑）都在右侧，此处应与组行的「保存」同侧保持一致。改为页脚右对齐。
@@ -236,7 +1083,6 @@
 
 ### [2026-09-26 21:18:54] 结算白名单修正为「待支付 + 已关闭」并统一加锁顺序，补记 README 的 Nginx 规则
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：接着上一轮审计的未修项继续处理（L1 锁顺序、L2、L4、B4），过程中发现上一轮 H1 修得过严，会引入「用户已付款却开通不了」的资金风险，一并纠正。
   1. **修正 H1 过度收窄（重要）**：上一轮把可结算状态收窄成只允许 `pending`。但 `createOrder()` 会用新订单把该用户的旧 `pending` 订单置为 `closed`（`src/helpers.php` L1467-L1468），若用户在下单页与收银台之间反复点击、旧单其实已在网关付款成功，回调到达时订单已是 `closed`，此时会被直接拒绝且网关只收到 `fail`/不再重推，钱就白付了。因此白名单改为 `['pending','closed']`：仍然拒绝 `paid`（幂等）与 `void`（管理员已撤销并回滚过时长，绝不能被复活），但允许 `closed` 被付款回调开通回来。
   2. **L1 死锁**：`settleOrderPayment()` 原先是「先锁 orders 行 → 再等 users 行」，而 `createOrder()`（L1460-L1468）、`revokePremium()`（L1940 起）都是「先锁 users 行 → 再动 orders 行」。当用户点「立即支付」与上一笔订单的支付回调同时到达时，两边互相等待对方持有的行锁，构成真实死锁环。现统一为 `users → orders`。
@@ -255,7 +1101,6 @@
 
 ### [2026-09-26 21:12:58] 安全审计后的 4 处修复：作废订单防复活、回调金额核对、永久会员不被降级、月末时长不溢出
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：全项目安全审计发现 1 个高危 + 2 个业务 Bug，本次一并修掉。
   1. **高危**：`settleOrderPayment()` 的幂等判断只挡 `paid`，不挡 `void`/`closed`，管理员作废订单（时长已精确回滚）后，攻击者重放原支付回调即可让订单重新开通，作废白做；易支付签名不含时间戳/nonce，回调可长期重放。
   2. **中危**：`pay_notify.php` 用 `$params['money'] ?? '0'` 兜底，回调一旦不带 `money` 就被当成 0 元判为「金额不符」并拒开，语义是错的（应为「无法核对」）；同时缺失金额与金额不等两种情况在日志里无法区分。
@@ -277,7 +1122,6 @@
 
 ### [2026-09-26 21:05:11] 用户管理页两处 UI 修正：搜索框对齐、点「续费订阅」不再连带展开编辑区
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：
   1. 用户管理页「搜索用户」把 `.log-filters` 直接套在 `<label>` 上，而该样式是「横排 flex + `align-items: flex-end`」的**容器**样式，导致「搜索用户」四个字与输入框被排成并排且底部对齐，看起来错位；本页所有其它字段都是「文字在上、控件在下」。
   2. 行内「开通订阅 / 续费订阅」面板 `<div class="user-row-grant">` 原先放在 `<details>` **内部**（`</summary>` 之后），因此打开面板必须先展开折叠，会把「编辑」区一起摊开；点「取消」只把面板置 `hidden`，折叠状态仍为展开，必须再点「收起」才能关掉——与「编辑」「续费订阅」本应是两个并列入口的预期不符。
@@ -295,7 +1139,6 @@
 
 ### [2026-09-26 20:06:20] 管理后台二级菜单「内容与账户」改名为「账户池管理」
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：原标签「内容与账户」与该分区实际职责（用户文件 + 官方账户池分配）不符，容易误解，改为「账户池管理」更贴合用途。
 - 验证：`php -l admin.php` → `No syntax errors detected`；本地 `http://127.0.0.1:8088` 以 admin 登录访问 `admin.php?tab=content` → HTTP 200，页面标题与侧栏/页签均显示「账户池管理」，页面内已无「内容与账户」字样；**tab 键保持 `content` 不变**，`?tab=content` 链接与 `user_id` 跳转（订单页「用户」、用户行「管理文件」）不受影响。
 - 改动明细：
@@ -306,7 +1149,6 @@
 
 ### [2026-09-26 19:56:30] 全站时区改为 UTC+8；作废订单只扣减该笔订单月数（叠加 1+1 撤 1）；用户列表新增「到期时长」
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：
   1. **时区修正（订单创建时间显示成 UTC+0）**：项目此前没有任何时区设置，PHP 默认 `UTC`；`Database::connection()` 会把 MySQL 会话时区设成 PHP 时区偏移，于是 `orders.created_at`（`TIMESTAMP` 列）被按 UTC 显示，比北京时间少 8 小时。框架要求全站时间统一 UTC+8，故在 `bootstrap.php` 设置 `date_default_timezone_set('Asia/Shanghai')`，PHP 与 MySQL 会话时区同时变为 `+08:00`（17 个入口文件都 `require` 该文件，一处生效全站）。
   2. **作废语义修正（作废 1+1 应只撤 1）**：因购买可叠加（`grantPremium` 以 `max(现有到期时间, now)` 为基准再 `+months`），原先 `revokePremium()` 直接 `UPDATE users SET premium_expires_at = NOW()`，把叠加出来的会员时长**全部清空**——表现为"看着只作废了一条，实际会员全没了"。现改为按该笔订单的 `months` 反向扣减：从当前到期时间 `strtotime('-N month')`，扣减后仍晚于当前时刻则保持高级用户（只缩短到期时间），**扣完才**降回默认用户组；`premium_expires_at IS NULL`（永久有效）无具体时间可扣，保持原状；管理员组不降级，避免把管理员移出管理组。
@@ -344,7 +1186,6 @@
 
 ### [2026-09-26 19:48:02] 修复「作废一笔连作废全部」+ 已作废不可重复作废 + 自定义确认弹窗替换浏览器原生 confirm
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：
   1. **修 Bug（作废溢出）**：管理员点「作废订阅」时，原 `revokePremium()` 是按 **userId** 把该用户**所有**已支付订单一次性全部作废，因此出现"作废一条就把所有都给作废了"。改为按 **orderId** 只作废当前这一笔，同一用户的其他已支付订单保持原状（`revokePremium($userId, $orderId)`）。
   2. **已作废订单不可重复作废**：前端在状态不是 `paid` 时不再渲染「作废订阅」按钮；后端在动作分支先判 `status === 'void'` 直接拒绝并提示「该订单已作废，无需重复操作。」；`revokePremium()` 内 UPDATE 追加 `status = 'paid'` 条件并用 `rowCount() === 0` 回滚兜底，防并发下重复作废。
@@ -375,10 +1216,9 @@
 
 ### [2026-09-26 19:40:15] 会员操作入口归位 + 用户/权限组折叠与搜索 + 删除「套餐与订单」二级菜单
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：
   1. **开通订阅入口归位**：此前把「开通订阅」放进了订单列表（顶部表单 + 行内按钮），与「订单只读、会员操作归用户」的心智冲突——管理员要开通订阅应当面向「用户」而不是「某笔订单」。现改为：用户管理页每行「编辑」旁新增「开通订阅 / 续费订阅」，点击后在行内展开时长选择，再点「确认开通」提交。
-  2. **删除名不副实的「套餐与订单」二级菜单**：该菜单（`?tab=premium`）不含任何订单列表，实际只有「选中用户后的会员与到期」面板，必须先到用户管理选用户才显示，对管理员长期是"不知道干啥用"的死入口。按 [ShiZhongyan] 决策（选项 1）整块删除，其中唯一独有的「保存到期时间（含永久有效）」搬到订单管理页成为独立面板。
+  2. **删除名不副实的「套餐与订单」二级菜单**：该菜单（`?tab=premium`）不含任何订单列表，实际只有「选中用户后的会员与到期」面板，必须先到用户管理选用户才显示，对管理员长期是"不知道干啥用"的死入口。按 用户 决策（选项 1）整块删除，其中唯一独有的「保存到期时间（含永久有效）」搬到订单管理页成为独立面板。
   3. **用户管理页减噪**：列表每行默认只显示头像、用户名与概览，展开「编辑」后才出现可修改控件；新增搜索框按用户名 / 邮箱即时筛选，用户多时不必长滚动。
   4. **权限组可下钻**：3 个权限组每块下方新增折叠「查看该组用户（N）」，展开列出组内成员（头像、用户名、文件数、会员状态），解决"权限组看不到到底有谁"。
   5. **作废订阅可追溯**：新增 `orders.voided_at`，一键作废后该用户已支付订单标记为「已作废」并记录作废时间，金额与订单号保留以便对账。
@@ -410,7 +1250,7 @@
   - `admin_orders.php` L232 / L317 — 缓存版本 `app.css?v=21` → `v=22`、`admin.js?v=6` → `v=7`。
   - `assets/admin.js` L28-L52 — 新增 `[data-grant-toggle]` 逻辑：点击「开通订阅」先 `preventDefault()+stopPropagation()`（否则会连带触发 summary 的折叠切换），再展开折叠并显示 `.user-row-grant`；「取消」收起面板。
   - `assets/app.css` L243-L249 — 新增 `.user-row-actions`（「开通订阅」与「编辑」并排）、`.user-row-grant`（面板样式）、`.user-row-grant[hidden]`。
-  - `assets/app.css` 原 `.user-premium-actions` 两条样式删除 — 该快捷按钮组已撤销，改为订单页行内操作（其后又按 [ShiZhongyan] 要求改为用户页开通 + 订单页仅作废）。
+  - `assets/app.css` 原 `.user-premium-actions` 两条样式删除 — 该快捷按钮组已撤销，改为订单页行内操作（其后又按 用户 要求改为用户页开通 + 订单页仅作废）。
   - `assets/app.css` L258-L259 — 新增 `.status-badge.void`（危险色，已作废）与 `.status-badge.granted`（主色，管理员授权），与线上支付成功色区分。
   - `assets/app.css` L233-L255 — 用户行折叠（`.user-row-fold`）、搜索框（`.log-filters.user-search`）、过滤隐藏（`.is-filtered-out`，用类而非 `hidden` 以免被行内 `display` 覆盖）、组员清单（`.group-member-list`）等样式。
   - `src/helpers.php` L1358 — `payTypeLabel()` 增加 `'manual' => '管理员授权'`。
@@ -426,11 +1266,10 @@
 
 ### [2026-09-26 19:00:53] 管理后台二级菜单分区，并修复「管理文件」点进去看不到文件
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：
   1. **修 Bug（管理员查看任意用户文件）**：此后端一直放行管理员操作他人文件（`api/file.php` 的 `isAdmin()` 分支），但 `admin.php` 里「管理文件」是无锚点链接 `admin.php?user_id=N`，点击后只回到页面顶部；而真正的文件面板（`id="user-files"`）被「权限组」「官方账户池」夹在页面最底部，管理员视觉上等于"点了没反应"，误以为功能没实现。
   2. **治理后台杂乱**：`admin.php` 单页平铺 10 块面板（约 1080 行），管理员要靠长滚动找入口；改为侧边栏可折叠二级菜单 + `?tab=` 服务端分区，一屏只渲染一个分区。
-- 方案（已与 [ShiZhongyan] 确认）：单页面板 + 锚点自动定位（`#user-files` + CSS `:target` 高亮）；侧栏 `<details>` 二级菜单；四分组 = 用户管理 / 内容与账户 / 套餐与订单 / 系统设置。不引入 JS，不改表单提交与权限逻辑。
+- 方案（已与 用户 确认）：单页面板 + 锚点自动定位（`#user-files` + CSS `:target` 高亮）；侧栏 `<details>` 二级菜单；四分组 = 用户管理 / 内容与账户 / 套餐与订单 / 系统设置。不引入 JS，不改表单提交与权限逻辑。
 - 验证：`php -l admin.php`、`php -l admin_orders.php` 均无语法错误。本地跑起后以 admin 登录做端到端校验：
   - `?tab=users` → 仅「用户与容量 + 权限组」；`?tab=content` → 仅「官方账户池 + 用户文件 + 用户官方账户」；`?tab=premium` → 仅「会员与到期」；`?tab=system` → 仅「注册与邮箱 / Notion 连接 / 上传与容量 / 支付设置」。四个分区互不泄漏。
   - `admin.php?user_id=1`（不带 tab）→ 自动落到 `content` 分区并渲染 `id="user-files"` 面板。
@@ -461,7 +1300,6 @@
 
 ### [2026-09-26 18:29:57] 修复全新安装后登录任意页面即 500（users 表缺列）
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：`install.php` 建 `users` 表时未包含 `premium_reminder_sent_at`，却在安装流程里把 `config.schema_version` 直接写成 `Schema::CURRENT_VERSION`（9），导致 `Schema::migrate()` 中 v8 的加列迁移被判定为「已是最新」而跳过；而 `Auth::user()` 的 SELECT 又包含该列，于是全新安装后一登录就抛 `Unknown column 'u.premium_reminder_sent_at'`，管理端所有页面 500。属于"新装即坏"的阻断性 Bug。
 - 验证：删库并删除 `storage/installed.lock`、`config/database.php` 后重装，`SHOW COLUMNS FROM users` 可见该列；admin 登录后 `dashboard.php`、`account.php`、`admin.php`、`logs.php`、`admin_orders.php` 均返回 200，PHP 内置服务器日志无新增报错。
 - 改动明细：
@@ -474,7 +1312,6 @@
 
 ### [2026-09-26 17:59:57] 初始化本地开发环境
 
-- 修改人：[ShiZhongyan]（Github: ShiZhongyanGH）
 - 目的：仓库克隆后 `.dev/` 不存在，`scripts/dev-start.ps1` 会因缺少 `.dev/mariadb-data/my.ini` 直接报「MariaDB 数据目录尚未初始化」，无法本地运行。
 - 改动明细（均在 `.dev/`，已被 `.gitignore` 忽略，不进版本库）：
   - `.dev/mariadb-data/data` — 用 `C:\Program Files\MariaDB 13.0\bin\mysql_install_db.exe` 初始化的隔离数据目录。

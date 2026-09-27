@@ -193,14 +193,19 @@ final class SpacePatrol
     private static function reconcileReplicas(array &$stats): void
     {
         $pdo = Database::connection();
-        // 仅取 drive 域文件；工单附件不做副本补齐（随工单关闭清理）
+        // 仅取 drive 域文件；工单附件不做副本补齐（随工单关闭清理）。
+        // 用子查询先找出「恰好 1 份有效副本」的文件，避免 GROUP BY 与 SELECT u.* 在严格模式下冲突。
         $rows = $pdo->query(
-            "SELECT u.*, COUNT(r.id) AS replica_count
+            "SELECT u.*
                FROM uploads u
-               JOIN upload_replicas r ON r.upload_id = u.id AND r.status = 'active'
+               JOIN (
+                    SELECT upload_id, COUNT(*) AS replica_count
+                      FROM upload_replicas
+                     WHERE status = 'active'
+                     GROUP BY upload_id
+                    HAVING replica_count = 1
+               ) single ON single.upload_id = u.id
               WHERE u.status = 'active' AND u.data_lost = 0 AND u.scope = 'drive'
-              GROUP BY u.id
-              HAVING replica_count = 1
               ORDER BY u.updated_at DESC
               LIMIT " . self::RECONCILE_LIMIT
         )->fetchAll();
@@ -339,14 +344,17 @@ final class SpacePatrol
         return false;
     }
 
-    /** 标记文件数据丢失（幂等）。 */
+    /** 标记文件数据丢失（幂等）；仅在首次从 0→1 时记录并告警，避免重复下载触发重复邮件。 */
     public static function markLost(int $uploadId, string $reason = ''): void
     {
         if ($uploadId <= 0) {
             return;
         }
-        Database::connection()->prepare('UPDATE uploads SET data_lost = 1 WHERE id = :id AND data_lost = 0')
-            ->execute(['id' => $uploadId]);
+        $statement = Database::connection()->prepare('UPDATE uploads SET data_lost = 1 WHERE id = :id AND data_lost = 0');
+        $statement->execute(['id' => $uploadId]);
+        if ($statement->rowCount() < 1) {
+            return; // 此前已标记，不重复记日志、不重复发告警
+        }
         Logger::error('patrol', '文件全部副本失效，标记为数据丢失。', [
             'upload_id' => $uploadId,
             'reason' => $reason,

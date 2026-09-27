@@ -62,7 +62,7 @@ $levelLabels = ['ALL' => '全部级别', 'ERROR' => '仅 ERROR', 'WARNING' => '�
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('运行日志') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=51"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('运行日志') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=52"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
@@ -122,5 +122,5 @@ $levelLabels = ['ALL' => '全部级别', 'ERROR' => '仅 ERROR', 'WARNING' => '�
         <?php endif; ?>
     </main>
     <?= siteCreditHtml() ?>
-    <div id="toast" class="toast"></div><script src="assets/app.js?v=26" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <div id="toast" class="toast"></div><script src="assets/app.js?v=27" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body></html>
