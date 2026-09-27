@@ -14,6 +14,7 @@ use NotionDrive\NotionApiException;
 use NotionDrive\NotionClient;
 use NotionDrive\Restore\RestoreService;
 use NotionDrive\Security;
+use NotionDrive\Space\SpacePatrol;
 use NotionDrive\Tickets\TicketBanService;
 use NotionDrive\Tickets\TicketService;
 
@@ -989,6 +990,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'operator' => (string) $currentUser['username'],
             ]);
             flash('success', "文件预览设置已保存（图片" . ($imageOn ? '开' : '关') . ' / PDF ' . ($pdfOn ? '开' : '关') . ' / 音视频 ' . ($avOn ? '开' : '关') . "，体积提醒阈值 {$warnMb} MB）。");
+        } elseif ($action === 'save_space_patrol') {
+            // R13 空间巡检开关：默认开启，关闭后不再每天懒触发（CLI 脚本仍可手动执行）
+            $patrolOn = (string) ($_POST['space_patrol_enabled'] ?? '') === '1';
+            SpacePatrol::savePatrolEnabled($patrolOn);
+            Logger::info('patrol', '更新空间巡检开关。', [
+                'enabled' => $patrolOn ? 'on' : 'off',
+                'operator' => (string) $currentUser['username'],
+            ]);
+            flash('success', $patrolOn
+                ? '空间自动巡检已开启：每天 12:00 后首次访问时自动恢复归档页面、重建丢失页面并补齐副本。'
+                : '空间自动巡检已关闭（仍可用 CLI 脚本 bin/scan-space.php 手动执行）。');
+        } elseif ($action === 'run_space_patrol') {
+            // R13 手动立即巡检一次（真实写 Notion：恢复 / 重建 / 补副本），并刷新当日已执行标记
+            $patrolStats = SpacePatrol::run();
+            Logger::warning('patrol', '管理员手动执行空间巡检。', [
+                'operator' => (string) $currentUser['username'],
+                'stats' => $patrolStats,
+            ]);
+            flash('success', sprintf(
+                '巡检完成：扫描空间 %d 个，恢复归档页面 %d，重建丢失页面 %d，补齐副本 %d 份，标记数据丢失 %d 个，失败 %d。',
+                $patrolStats['spaces'],
+                $patrolStats['restored'],
+                $patrolStats['recreated'],
+                $patrolStats['filled'],
+                $patrolStats['lost'],
+                $patrolStats['failed']
+            ));
         } elseif ($action === 'restore_personalization') {
             // 还原个性化设置：只重置站点名称 / logo / favicon，不涉及用户数据与密钥
             $restore = RestoreService::create();
@@ -1211,7 +1239,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('管理后台') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=50"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('管理后台') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=51"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
@@ -1494,6 +1522,24 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         <?php endif; ?>
 
         <?php if ($activeTab === 'system'): ?>
+        <?php $patrolLastDate = SpacePatrol::lastRunDate(); ?>
+        <section class="admin-panel connection-panel">
+            <div class="panel-title"><div><h2>Notion 空间自动巡检与修复</h2><p>开启后，系统每天 <b>12:00（东八区）之后的首次页面访问</b>自动巡检一次（当天只跑一次）：把被移入回收站的空间页<b>恢复</b>、把被彻底删除（404）的空间页按原父页<b>重建</b>；文件只剩一份副本时自动用幸存副本<b>补齐为两份</b>。若文件所有副本都已失效且补不回，会标记为「数据已丢失」（该文件此后只能删除，下载 / 预览 / 重命名都会提示重新上传），并通过管理员告警通知。也可用计划任务执行 <code>php bin/scan-space.php</code> 准点巡检。</p></div><span class="status-badge <?= SpacePatrol::patrolEnabled() ? '' : 'closed' ?>"><?= SpacePatrol::patrolEnabled() ? '已开启' : '已关闭' ?></span></div>
+            <form method="post" class="connection-form">
+                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_space_patrol">
+                <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="space_patrol_enabled" value="1" <?= SpacePatrol::patrolEnabled() ? 'checked' : '' ?>>开启空间自动巡检与修复（默认开启）</label></div>
+                <div class="form-actions">
+                    <button class="primary-button compact" data-confirm="确认保存空间巡检开关？">保存设置</button>
+                </div>
+            </form>
+            <form method="post" class="connection-form" style="margin-top:10px;">
+                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="run_space_patrol">
+                <div class="checkbox-row"><span>最近一次巡检日期：<?= $patrolLastDate !== '' ? e($patrolLastDate) : '尚未执行' ?></span></div>
+                <div class="form-actions">
+                    <button class="secondary-button compact" data-confirm="立即巡检会真实访问并写入 Notion（恢复/重建/补副本，可能消耗接口配额）。确认现在执行？">立即巡检一次</button>
+                </div>
+            </form>
+        </section>
         <section class="admin-panel connection-panel">
             <div class="panel-title"><div><h2>注册与邮箱</h2><p>未配置 SMTP 时无法开启强制绑定邮箱；验证码 6 位数字，10 分钟内有效。</p></div><span class="status-badge"><?= smtpConfigured() ? 'SMTP 已配置' : 'SMTP 未配置' ?></span></div>
             <form method="post" class="connection-form">

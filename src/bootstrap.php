@@ -50,6 +50,24 @@ if (is_file(dirname(__DIR__) . '/storage/installed.lock')) {
             'exception' => $exception::class,
         ]);
     }
+
+    // R13 每日 12:00 后由「已登录用户访问 HTML 页面」懒触发一次空间巡检（当天只跑一次）。
+    // 刻意避开 api/* 与二进制资源接口，避免给上传/下载等关键路径增加额外 Notion 往返延迟。
+    if (PHP_SAPI !== 'cli' && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET') {
+        $entryScript = basename((string) ($_SERVER['SCRIPT_NAME'] ?? ''));
+        $patrolPages = ['dashboard.php', 'admin.php', 'admin_orders.php', 'account.php', 'tickets.php', 'bans.php', 'logs.php', 'pay.php'];
+        if (in_array($entryScript, $patrolPages, true)) {
+            try {
+                if (NotionDrive\Auth::user() !== null) {
+                    NotionDrive\Space\SpacePatrol::runIfDue();
+                }
+            } catch (Throwable $exception) {
+                NotionDrive\Logger::error('patrol', '空间巡检懒触发调度失败：' . $exception->getMessage(), [
+                    'exception' => $exception::class,
+                ]);
+            }
+        }
+    }
 }
 
 header('X-Content-Type-Options: nosniff');

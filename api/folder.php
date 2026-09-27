@@ -55,11 +55,16 @@ try {
             throw new RuntimeException('目标文件夹不存在。');
         }
         $statement = $connection->prepare(
-            "SELECT id FROM uploads WHERE id = :id AND user_id = :user_id AND scope = 'drive' AND status = 'active' LIMIT 1"
+            "SELECT id, data_lost FROM uploads WHERE id = :id AND user_id = :user_id AND scope = 'drive' AND status = 'active' LIMIT 1"
         );
         $statement->execute(['id' => $fileId, 'user_id' => $userId]);
-        if (!$statement->fetch()) {
+        $upload = $statement->fetch();
+        if (!$upload) {
             jsonResponse(['ok' => false, 'message' => '文件不存在或无权访问。'], 404);
+        }
+        // R13 数据已丢失的文件只能删除，不允许移动
+        if ((int) ($upload['data_lost'] ?? 0) === 1) {
+            jsonResponse(['ok' => false, 'message' => \NotionDrive\Space\SpacePatrol::LOST_MESSAGE, 'code' => 'data_lost'], 410);
         }
         $connection->prepare('UPDATE uploads SET folder_id = :folder_id WHERE id = :id')
             ->execute(['folder_id' => $targetId > 0 ? $targetId : null, 'id' => $fileId]);

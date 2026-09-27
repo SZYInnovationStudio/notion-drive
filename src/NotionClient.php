@@ -109,6 +109,43 @@ final class NotionClient
         return $url;
     }
 
+    /**
+     * 把指定文件块的真实内容下载到本地路径（用于在账户之间补副本：先取幸存副本字节，再重新上传到另一账户）。
+     * 目标地址来自 Notion 返回的可信文件域名，写入失败或 HTTP 非 2xx 时抛异常。
+     */
+    public function downloadBlockToFile(string $blockId, string $destinationPath): void
+    {
+        $url = $this->downloadUrl($blockId);
+
+        $handle = fopen($destinationPath, 'wb');
+        if ($handle === false) {
+            throw new RuntimeException('无法写入临时文件以下载副本。');
+        }
+
+        $curl = curl_init($url);
+        curl_setopt_array($curl, [
+            CURLOPT_FILE => $handle,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_CONNECTTIMEOUT => 15,
+            CURLOPT_TIMEOUT => 600,
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        ]);
+
+        try {
+            $ok = curl_exec($curl);
+            $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+            $error = curl_error($curl);
+        } finally {
+            fclose($handle);
+            curl_close($curl);
+        }
+
+        if ($ok === false || $status < 200 || $status >= 300) {
+            @unlink($destinationPath);
+            throw new NotionApiException('下载 Notion 文件内容失败（HTTP ' . $status . '）' . ($error !== '' ? '：' . $error : ''), $status);
+        }
+    }
+
     public function archiveBlock(string $blockId): void
     {
         $this->jsonRequest('DELETE', self::API_BASE . '/blocks/' . rawurlencode($blockId), null);

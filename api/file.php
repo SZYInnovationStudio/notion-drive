@@ -7,8 +7,10 @@ require dirname(__DIR__) . '/src/bootstrap.php';
 use NotionDrive\Auth;
 use NotionDrive\Database;
 use NotionDrive\Logger;
+use NotionDrive\NotionApiException;
 use NotionDrive\NotionClient;
 use NotionDrive\Security;
+use NotionDrive\Space\SpacePatrol;
 
 $user = Auth::requireLogin($_SERVER['REQUEST_METHOD'] !== 'GET');
 $id = (int) ($_GET['id'] ?? $_POST['id'] ?? 0);
@@ -65,6 +67,17 @@ if (userActiveBan($user) !== null && !$allowedTicketDownload) {
     jsonResponse(['ok' => false, 'message' => banNoticeText($user), 'code' => 'account_banned'], 403);
 }
 
+// R13 数据丢失：全部 Notion 副本都失效的文件只允许删除，下载 / 预览 / 重命名一律拦截
+$postAction = (string) ($_POST['action'] ?? '');
+if ((int) ($file['data_lost'] ?? 0) === 1 && $postAction !== 'delete') {
+    if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+        http_response_code(410);
+        header('Content-Type: text/plain; charset=utf-8');
+        exit(SpacePatrol::LOST_MESSAGE);
+    }
+    jsonResponse(['ok' => false, 'message' => SpacePatrol::LOST_MESSAGE, 'code' => 'data_lost'], 410);
+}
+
 try {
     if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         // 预览：仅当请求带 inline=1、文件类型在预览白名单内、且后台已开启对应开关时，才内联输出；
@@ -103,12 +116,17 @@ try {
 
         $lastError = '';
         $fellBack = false;
+        // 统计有多少副本是「块已不存在（404）」：全部都 404 才判定数据丢失，网络错误/Token 失效不计入
+        $missingBlocks = 0;
         foreach ($targets as $target) {
             try {
                 $url = (new NotionClient((string) $target['token']))->downloadUrl((string) $target['block_id']);
             } catch (Throwable $exception) {
                 $lastError = $exception->getMessage();
                 $fellBack = true;
+                if ($exception instanceof NotionApiException && $exception->status() === 404) {
+                    $missingBlocks++;
+                }
                 Logger::warning('download', '取得副本下载地址失败，尝试下一份副本。', [
                     'file_id' => $id,
                     'replica_id' => $target['replica_id'],
@@ -227,6 +245,14 @@ try {
                 'account_id' => $target['account_id'],
                 'reason' => $lastError,
             ]);
+        }
+
+        // 所有副本的文件块都返回 404：内容确实已从 Notion 消失，标记 data_lost 并提示重新上传
+        if ($missingBlocks >= count($targets)) {
+            SpacePatrol::markLost($id, '下载时探测到全部副本块均返回 404。');
+            http_response_code(410);
+            header('Content-Type: text/plain; charset=utf-8');
+            exit(SpacePatrol::LOST_MESSAGE);
         }
 
         throw new RuntimeException('全部副本均不可用：' . $lastError);

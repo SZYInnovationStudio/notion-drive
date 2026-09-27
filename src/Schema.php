@@ -8,7 +8,7 @@ use PDO;
 
 final class Schema
 {
-    public const CURRENT_VERSION = 20;
+    public const CURRENT_VERSION = 21;
 
     /** 内置权限组：名称、组容量、单文件上限、是否管理员、等级。首个必须保持为管理员组。 */
     public const BUILTIN_GROUPS = [
@@ -238,6 +238,14 @@ final class Schema
             // 当前分数仍以实时口径统计（被打回的审核记录数 + 手动加分净额），
             // 这样管理员「清除违规记录」后分数会同步下降，不会与留痕打架
             self::createUserViolationsTable($pdo);
+        }
+
+        if ($version < 21) {
+            // R13 文件数据丢失标记：当一个文件在 Notion 的全部副本都失效（空间页被彻底删除、
+            // 块被删除且补副本失败）时置 1。置位后该文件仅允许删除，下载/预览/重命名一律拦截
+            // 并提示「数据已丢失，请重新上传」，避免每次操作都去实时探测 Notion。
+            self::addColumn($pdo, 'uploads', 'data_lost', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER status');
+            self::addIndex($pdo, 'uploads', 'idx_uploads_data_lost', '`data_lost`');
         }
 
         Database::setConfig('schema_version', (string) self::CURRENT_VERSION);

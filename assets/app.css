@@ -722,6 +722,11 @@ video.preview-media { width: 100%; background: #000; }
 .preview-loading, .preview-error { margin: 0; padding: 28px 18px; font-size: .9rem; color: var(--muted); text-align: center; }
 .preview-error { color: var(--danger); font-weight: 600; }
 
+/* R13 数据已丢失文件：整行置灰 + 红色角标，仅保留删除操作 */
+tr.file-lost { opacity: .68; }
+tr.file-lost .display-name { text-decoration: line-through; }
+.lost-badge { margin-left: 8px; padding: 1px 8px; border-radius: 999px; background: var(--danger-soft); color: var(--danger); border: 1px solid #f0caca; font-size: .68rem; font-weight: 650; white-space: nowrap; align-self: center; }
+
 @media (max-width: 640px) {
     .preview-overlay { padding: 0; }
     .preview-dialog { width: 100%; max-height: 100vh; height: 100%; border-radius: 0; }

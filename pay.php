@@ -131,7 +131,7 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('会员套餐') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=50"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('会员套餐') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=51"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>"<?= $checkoutUrl !== '' ? ' data-checkout-url="' . e($checkoutUrl) . '"' : '' ?>>
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>

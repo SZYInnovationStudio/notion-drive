@@ -116,7 +116,7 @@ $page = min(max(1, (int) ($_GET['page'] ?? 1)), $totalPages);
 $offset = ($page - 1) * $perPage;
 // LIMIT/OFFSET 用内联整数：原生预处理把占位符当字符串绑定，会触发 SQL 语法错误
 $statement = Database::connection()->prepare(
-    "SELECT id, filename, display_name, file_size, mime_type, created_at, updated_at
+    "SELECT id, filename, display_name, file_size, mime_type, data_lost, created_at, updated_at
      FROM uploads WHERE user_id = :user_id AND scope = 'drive' AND status = 'active' AND folder_id <=> :folder_id
      ORDER BY id DESC LIMIT $perPage OFFSET $offset"
 );
@@ -131,7 +131,7 @@ $premiumNotice = premiumNotice($user);
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <?= siteTitleTag('我的文件') ?>
     <?= siteFaviconTag() ?>
-    <link rel="stylesheet" href="assets/app.css?v=50">
+    <link rel="stylesheet" href="assets/app.css?v=51">
 </head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>" data-limit="<?= $singleLimit ?>" data-remaining="<?= $remainingBytes === null ? '' : $remainingBytes ?>" data-folder="<?= $currentFolderId ?>">
     <aside class="drive-sidebar">
@@ -321,13 +321,17 @@ $premiumNotice = premiumNotice($user);
                             }
                         }
                         $storageLabel = $sources === [] ? '已安全存储' : sprintf('%s · %d 份副本', $origin, count($sources));
+                        $isLost = (int) ($file['data_lost'] ?? 0) === 1;
+                        if ($isLost) {
+                            $storageLabel = '数据已丢失，请重新上传';
+                        }
                     ?>
-                        <tr data-file-id="<?= (int) $file['id'] ?>" data-file-name="<?= e(mb_strtolower($name)) ?>">
-                            <td><div class="file-name"><span class="file-kind"><?= e(strtoupper(pathinfo($name, PATHINFO_EXTENSION) ?: 'FILE')) ?></span><div><strong class="display-name"><?= e($name) ?></strong><small><?= e($storageLabel) ?></small></div></div></td>
+                        <tr data-file-id="<?= (int) $file['id'] ?>" data-file-name="<?= e(mb_strtolower($name)) ?>"<?= $isLost ? ' class="file-lost"' : '' ?>>
+                            <td><div class="file-name"><span class="file-kind"><?= e(strtoupper(pathinfo($name, PATHINFO_EXTENSION) ?: 'FILE')) ?></span><div><strong class="display-name"><?= e($name) ?></strong><small><?= e($storageLabel) ?></small></div></div><?php if ($isLost): ?><span class="lost-badge">数据已丢失</span><?php endif; ?></td>
                             <td data-label="类型"><?= e(explode('/', (string) $file['mime_type'])[0]) ?></td>
                             <td data-label="大小"><?= e(formatBytes((int) $file['file_size'])) ?></td>
                             <td data-label="更新时间"><?= e(date('Y-m-d H:i', strtotime((string) $file['updated_at']))) ?></td>
-                            <td><div class="file-actions"><?php if (filePreviewable($file)): ?><button data-action="preview" data-preview-kind="<?= e(previewKind($file)) ?>" data-preview-size="<?= (int) $file['file_size'] ?>" data-preview-name="<?= e($name) ?>">预览</button><?php endif; ?><a href="api/file.php?id=<?= (int) $file['id'] ?>" title="下载">下载</a><button data-action="rename">重命名</button><button data-action="move">移动</button><button class="danger" data-action="delete">删除</button></div></td>
+                            <td><div class="file-actions"><?php if (!$isLost && filePreviewable($file)): ?><button data-action="preview" data-preview-kind="<?= e(previewKind($file)) ?>" data-preview-size="<?= (int) $file['file_size'] ?>" data-preview-name="<?= e($name) ?>">预览</button><?php endif; ?><?php if (!$isLost): ?><a href="api/file.php?id=<?= (int) $file['id'] ?>" title="下载">下载</a><button data-action="rename">重命名</button><button data-action="move">移动</button><?php endif; ?><button class="danger" data-action="delete">删除</button></div></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
