@@ -12,6 +12,9 @@ use NotionDrive\Security;
 
 $user = Auth::requireLogin($_SERVER['REQUEST_METHOD'] !== 'GET');
 $id = (int) ($_GET['id'] ?? $_POST['id'] ?? 0);
+// 预览模式：内联输出（inline），仅对白名单内、且后台已开启对应类型的文件生效；其余一律按下载处理
+$inlineRequested = (string) ($_GET['inline'] ?? '') === '1';
+$previewMode = false;
 $statement = Database::connection()->prepare(
     "SELECT up.*, u.username, u.notion_token_encrypted, u.notion_account_source
      FROM uploads up JOIN users u ON u.id = up.user_id
@@ -20,7 +23,23 @@ $statement = Database::connection()->prepare(
 $statement->execute(['id' => $id]);
 $file = $statement->fetch();
 
-if (!$file || ((int) $file['user_id'] !== (int) $user['id'] && !isAdmin($user))) {
+if (!$file) {
+    if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+        http_response_code(404);
+        exit('文件不存在。');
+    }
+    jsonResponse(['ok' => false, 'message' => '文件不存在或无权访问。'], 404);
+}
+
+// 工单附件：上传者本人、工单归属者与管理员都可下载；改名/删除仍限上传者本人与管理员
+$allowedTicketDownload = false;
+if ((string) ($file['scope'] ?? 'drive') === 'ticket' && $_SERVER['REQUEST_METHOD'] === 'GET' && (int) ($file['ticket_id'] ?? 0) > 0) {
+    $ownerStatement = Database::connection()->prepare('SELECT user_id FROM tickets WHERE id = :id LIMIT 1');
+    $ownerStatement->execute(['id' => (int) $file['ticket_id']]);
+    $allowedTicketDownload = (int) $ownerStatement->fetchColumn() === (int) $user['id'];
+}
+
+if ((int) $file['user_id'] !== (int) $user['id'] && !isAdmin($user) && !$allowedTicketDownload) {
     if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         http_response_code(404);
         exit('文件不存在。');
@@ -35,8 +54,29 @@ $owner = [
     'notion_account_source' => $file['notion_account_source'] ?? null,
 ];
 
+// 封禁期间禁止下载、修改与重命名；管理员代管他人文件不受影响（此处判断的是当前操作者）
+// 工单附件是申诉通道（封禁提示本身引导用户走工单申诉），工单归属者仍可下载自己工单内的附件
+// 下载是浏览器直接跳转的链接，无法弹前端的提示，因此这里回后台配置的封禁模板文案
+if (userActiveBan($user) !== null && !$allowedTicketDownload) {
+    if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+        http_response_code(403);
+        exit(banNoticeText($user));
+    }
+    jsonResponse(['ok' => false, 'message' => banNoticeText($user), 'code' => 'account_banned'], 403);
+}
+
 try {
     if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+        // 预览：仅当请求带 inline=1、文件类型在预览白名单内、且后台已开启对应开关时，才内联输出；
+        // 否则退化为普通下载（避免被当作任意文件的内联挂载点）
+        if ($inlineRequested) {
+            if (previewKind($file) === '' || !filePreviewable($file)) {
+                http_response_code(404);
+                exit('该类型不支持预览。');
+            }
+            $previewMode = true;
+        }
+
         // 按副本顺序逐个尝试：某个账户不可用时自动回退到下一份
         $targets = uploadReplicaTargets($file, $owner);
         if ($targets === []) {
@@ -51,7 +91,13 @@ try {
             $asciiName = 'download' . ($extension !== '' ? '.' . $extension : '');
         }
         header('Content-Type: ' . (string) $file['mime_type']);
-        header('Content-Disposition: attachment; filename="' . $asciiName . '"; filename*=UTF-8\'\'' . rawurlencode($filename));
+        if ($previewMode) {
+            // 内联预览：不触发下载；nosniff 防止浏览器把内容猜成可执行类型
+            header('Content-Disposition: inline; filename="' . $asciiName . '"; filename*=UTF-8\'\'' . rawurlencode($filename));
+            header('X-Content-Type-Options: nosniff');
+        } else {
+            header('Content-Disposition: attachment; filename="' . $asciiName . '"; filename*=UTF-8\'\'' . rawurlencode($filename));
+        }
         header('Accept-Ranges: bytes');
         header('X-Accel-Buffering: no');
 

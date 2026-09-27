@@ -134,14 +134,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <html lang="zh-CN">
 <head>
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <title>注册 · Notion Drive</title>
-    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <link rel="stylesheet" href="assets/app.css?v=31">
+    <?= siteTitleTag('注册') ?>
+    <?= siteFaviconTag() ?>
+    <link rel="stylesheet" href="assets/app.css?v=50">
 </head>
 <body class="login-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <main class="login-layout">
         <section class="login-copy">
-            <a class="brand" href="index.php"><span class="brand-mark">N</span><span>Notion Drive</span></a>
+            <?= brandHtml('index.php') ?>
             <div><span class="eyebrow">Workspace gateway</span><h1>创建账号，<br><em>开始上传</em></h1><p>注册后即可拥有独立的个人文件空间。</p></div>
         </section>
         <section class="glass-card login-card">
@@ -180,7 +180,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </section>
     </main>
     <?= siteCreditHtml() ?>
-    <script src="assets/app.js?v=15" defer></script>
+    <script src="assets/app.js?v=26" defer></script>
     <?php if ($emailRequired): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>
 </html>

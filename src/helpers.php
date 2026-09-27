@@ -2,12 +2,14 @@
 
 declare(strict_types=1);
 
+use NotionDrive\Bans\BanService;
 use NotionDrive\Database;
 use NotionDrive\Epay;
 use NotionDrive\Logger;
 use NotionDrive\Mailer;
 use NotionDrive\NotionApiException;
 use NotionDrive\NotionClient;
+use NotionDrive\NotionSpaceRepair;
 use NotionDrive\Schema;
 use NotionDrive\Security;
 
@@ -36,6 +38,232 @@ function policeLicense(): string
     }
 
     return trim((string) Database::config('police_license', ''));
+}
+
+/** 站点名称：同时用作页面内站点名与浏览器标签标题，留空回落「Notion Drive」。 */
+function siteName(): string
+{
+    // 安装向导阶段还没有 config 表（installed.lock 未生成），此时用默认名称
+    if (!is_file(dirname(__DIR__) . '/storage/installed.lock')) {
+        return 'Notion Drive';
+    }
+
+    $name = trim((string) Database::config('site_name', ''));
+
+    return $name === '' ? 'Notion Drive' : $name;
+}
+
+/** 浏览器标签标题：页面名 · 站点名称。 */
+function siteTitleTag(string $page): string
+{
+    return '<title>' . e($page . ' · ' . siteName()) . '</title>';
+}
+
+/** 管理员上传的 favicon 文件路径（相对站点根），未上传或文件不存在返回空串。 */
+function siteFaviconPath(): string
+{
+    if (!is_file(dirname(__DIR__) . '/storage/installed.lock')) {
+        return '';
+    }
+
+    $path = trim((string) Database::config('site_favicon', ''));
+
+    return $path !== '' && is_file(dirname(__DIR__) . '/' . $path) ? $path : '';
+}
+
+/** 站点资源（logo/favicon）的对外访问地址：storage 受 .htaccess 保护，须经 site-asset.php 代理输出。 */
+function siteAssetUrl(string $kind): string
+{
+    $path = $kind === 'favicon' ? siteFaviconPath() : siteLogoPath();
+    if ($path === '') {
+        return '';
+    }
+
+    return 'site-asset.php?k=' . $kind . '&amp;v=' . e(substr(md5(basename($path)), 0, 8));
+}
+
+/** favicon 标签：已上传 ico 用服务器文件，否则回落内置 SVG。 */
+function siteFaviconTag(): string
+{
+    $url = siteAssetUrl('favicon');
+
+    return $url === ''
+        ? '<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">'
+        : '<link rel="icon" type="image/x-icon" href="' . $url . '">';
+}
+
+/** 管理员上传的站点 logo 文件路径（相对站点根），未上传或文件不存在返回空串。 */
+function siteLogoPath(): string
+{
+    if (!is_file(dirname(__DIR__) . '/storage/installed.lock')) {
+        return '';
+    }
+
+    $path = trim((string) Database::config('site_logo', ''));
+
+    return $path !== '' && is_file(dirname(__DIR__) . '/' . $path) ? $path : '';
+}
+
+/** 品牌标识：已上传 logo 用图片，否则用站点名首字母方块。 */
+function brandMarkHtml(): string
+{
+    $url = siteAssetUrl('logo');
+    if ($url !== '') {
+        return '<img class="brand-logo" src="' . $url . '" alt="">';
+    }
+
+    return '<span class="brand-mark">' . e(mb_strtoupper(mb_substr(siteName(), 0, 1))) . '</span>';
+}
+
+/** 全站品牌链接（logo + 站点名称）。 */
+function brandHtml(string $href): string
+{
+    return '<a class="brand" href="' . e($href) . '">' . brandMarkHtml() . '<span>' . e(siteName()) . '</span></a>';
+}
+
+/** 公告正文 Markdown 渲染：仅支持标题、无序/有序列表、段落、粗体、斜体、行内代码、链接与站内图片。 */
+function renderMarkdown(string $text): string
+{
+    $lines = explode("\n", str_replace("\r\n", "\n", $text));
+    $html = '';
+    $listType = '';
+    $paragraph = [];
+
+    $flushParagraph = static function () use (&$paragraph, &$html): void {
+        if ($paragraph !== []) {
+            $html .= '<p>' . implode('<br>', array_map('renderMarkdownInline', $paragraph)) . '</p>';
+            $paragraph = [];
+        }
+    };
+    $closeList = static function () use (&$listType, &$html): void {
+        if ($listType !== '') {
+            $html .= '</' . $listType . '>';
+            $listType = '';
+        }
+    };
+
+    foreach ($lines as $line) {
+        $line = rtrim($line);
+        if (trim($line) === '') {
+            $flushParagraph();
+            $closeList();
+            continue;
+        }
+
+        if (preg_match('/^(#{1,6})\s+(.*)$/', $line, $m) === 1) {
+            $flushParagraph();
+            $closeList();
+            $level = (string) min(strlen($m[1]) + 3, 6); // 正文标题降级，避免与页面 h1/h2 冲突
+            $html .= '<h' . $level . '>' . renderMarkdownInline($m[2]) . '</h' . $level . '>';
+            continue;
+        }
+
+        if (preg_match('/^\s*[-*+]\s+(.*)$/', $line, $m) === 1) {
+            $flushParagraph();
+            if ($listType !== 'ul') {
+                $closeList();
+                $html .= '<ul>';
+                $listType = 'ul';
+            }
+            $html .= '<li>' . renderMarkdownInline($m[1]) . '</li>';
+            continue;
+        }
+
+        if (preg_match('/^\s*\d+[.)]\s+(.*)$/', $line, $m) === 1) {
+            $flushParagraph();
+            if ($listType !== 'ol') {
+                $closeList();
+                $html .= '<ol>';
+                $listType = 'ol';
+            }
+            $html .= '<li>' . renderMarkdownInline($m[1]) . '</li>';
+            continue;
+        }
+
+        $closeList();
+        $paragraph[] = $line;
+    }
+
+    $flushParagraph();
+    $closeList();
+
+    return $html;
+}
+
+/** Markdown 行内渲染：先转义 HTML，再识别图片/链接/强调；图片与站内链接仅接受 site-asset.php 代理地址。 */
+function renderMarkdownInline(string $text): string
+{
+    // 行内代码先抽出占位，避免其内容被后续规则改写
+    $code = [];
+    $text = (string) preg_replace_callback(
+        '/`([^`]+)`/',
+        static function (array $m) use (&$code): string {
+            $code[] = $m[1];
+
+            return "\x02" . (count($code) - 1) . "\x03";
+        },
+        $text
+    );
+
+    $text = e($text);
+
+    $text = (string) preg_replace_callback(
+        '/!\[([^\]]*)\]\((site-asset\.php\?k=media&amp;f=[A-Za-z0-9._-]+)\)/',
+        static fn (array $m): string => '<img src="' . $m[2] . '" alt="' . $m[1] . '" loading="lazy">',
+        $text
+    );
+
+    $text = (string) preg_replace_callback(
+        '/\[([^\]]+)\]\((https?:\/\/[^\s)]+|site-asset\.php\?k=media&amp;f=[A-Za-z0-9._-]+)\)/',
+        static fn (array $m): string => '<a href="' . $m[2] . '" target="_blank" rel="noopener noreferrer">' . $m[1] . '</a>',
+        $text
+    );
+
+    $text = (string) preg_replace('/\*\*([^*]+)\*\*/', '<strong>$1</strong>', $text);
+    $text = (string) preg_replace('/(?<!\*)\*([^*]+)\*(?!\*)/', '<em>$1</em>', $text);
+
+    $text = (string) preg_replace_callback(
+        '/\x02(\d+)\x03/',
+        static fn (array $m): string => '<code>' . e($code[(int) $m[1]] ?? '') . '</code>',
+        $text
+    );
+
+    return $text;
+}
+
+/** 公告图片在正文中的 Markdown 片段（图片统一经 site-asset.php 代理输出，避免 storage 直读被拦）。 */
+function announcementImageMarkdown(string $filename): string
+{
+    return '![](site-asset.php?k=media&f=' . $filename . ')';
+}
+
+/** 当前生效的公告列表（按更新时间倒序）；每条附内容指纹 sig，供前台判断公告是否已更新。 */
+function announcementList(): array
+{
+    if (!is_file(dirname(__DIR__) . '/storage/installed.lock')) {
+        return [];
+    }
+
+    try {
+        $rows = Database::connection()->query(
+            'SELECT id, title, body, updated_at FROM announcements WHERE is_active = 1 ORDER BY updated_at DESC, id DESC'
+        )->fetchAll();
+    } catch (Throwable) {
+        return [];
+    }
+
+    $list = [];
+    foreach ($rows ?: [] as $row) {
+        $list[] = [
+            'id'         => (int) $row['id'],
+            'title'      => (string) $row['title'],
+            'body'       => (string) $row['body'],
+            'updated_at' => (string) $row['updated_at'],
+            'sig'        => substr(md5($row['id'] . '|' . $row['updated_at']), 0, 16),
+        ];
+    }
+
+    return $list;
 }
 
 /** 侧边栏底部的 ICP 备案号（用量信息下侧，点击跳转工信部备案系统）；未填写返回空串。移动端由 CSS 隐藏并改由页脚展示。 */
@@ -136,6 +364,84 @@ function formatBytes(int $bytes): string
     return number_format($size, $index === 0 ? 0 : 1) . ' ' . $units[$index];
 }
 
+/** 预览设置：图片 / PDF / 音视频 三类开关的配置键。 */
+const PREVIEW_IMAGE_KEY = 'preview_image_enabled';
+const PREVIEW_PDF_KEY   = 'preview_pdf_enabled';
+const PREVIEW_AV_KEY    = 'preview_av_enabled';
+/** 预览体积提醒阈值（字节）配置键与默认值（20 MB）。 */
+const PREVIEW_WARN_BYTES_KEY = 'preview_warn_bytes';
+const PREVIEW_WARN_BYTES_DEFAULT = 20 * 1024 * 1024;
+
+/**
+ * 预览分类：返回 'image' / 'pdf' / 'av' / ''（不支持预览）。
+ * 以存库 mime_type 为主、扩展名兜底；不含 SVG（避免脚本型 SVG 的 XSS 风险）。
+ */
+function previewKind(array $file): string
+{
+    $mime = strtolower(trim((string) ($file['mime_type'] ?? '')));
+    $name = (string) ($file['display_name'] ?: ($file['filename'] ?? ''));
+    $ext = strtolower((string) pathinfo($name, PATHINFO_EXTENSION));
+
+    // 图片：排除 svg
+    if (str_starts_with($mime, 'image/')) {
+        return $mime === 'image/svg+xml' ? '' : 'image';
+    }
+    if (in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'avif'], true)) {
+        return 'image';
+    }
+
+    // PDF
+    if ($mime === 'application/pdf' || $ext === 'pdf') {
+        return 'pdf';
+    }
+
+    // 音视频（含 mp3 等小音频，统一归入此大类）
+    if (str_starts_with($mime, 'video/') || str_starts_with($mime, 'audio/')) {
+        return 'av';
+    }
+    if (in_array($ext, ['mp4', 'mov', 'webm', 'm4v', 'ogv', 'mp3', 'm4a', 'wav', 'ogg', 'oga', 'flac', 'aac'], true)) {
+        return 'av';
+    }
+
+    return '';
+}
+
+/** 某预览大类是否开启（管理员可在后台「预览设置」页签分别开关）。 */
+function previewKindEnabled(string $kind): bool
+{
+    $key = match ($kind) {
+        'image' => PREVIEW_IMAGE_KEY,
+        'pdf'   => PREVIEW_PDF_KEY,
+        'av'    => PREVIEW_AV_KEY,
+        default => '',
+    };
+    if ($key === '') {
+        return false;
+    }
+
+    // 默认全部开启
+    return trim((string) Database::config($key, '1')) !== '0';
+}
+
+/** 预览体积提醒阈值（字节）：达到或超过时前端弹二次确认。 */
+function previewWarnBytes(): int
+{
+    $bytes = (int) trim((string) Database::config(PREVIEW_WARN_BYTES_KEY, (string) PREVIEW_WARN_BYTES_DEFAULT));
+
+    return $bytes > 0 ? $bytes : PREVIEW_WARN_BYTES_DEFAULT;
+}
+
+/** 该文件是否可预览（分类受支持且对应开关已开启）。 */
+function filePreviewable(array $file): bool
+{
+    $kind = previewKind($file);
+    if ($kind === '') {
+        return false;
+    }
+
+    return previewKindEnabled($kind);
+}
+
 /** 自有 Notion 账户的单文件上限：Notion 官方对自有账户的硬限制为 5 MB。 */
 function ownFileLimitBytes(): int
 {
@@ -196,8 +502,10 @@ function uploadChunkSizeBytes(): int
 
 function userUsedBytes(int $userId): int
 {
+    // 隔离（quarantined）文件仍占服务器与 Notion 空间，因此同样计入已用容量；
+    // 工单附件（scope = ticket）不计入个人容量配额
     $statement = Database::connection()->prepare(
-        "SELECT COALESCE(SUM(file_size), 0) FROM uploads WHERE user_id = :user_id AND status = 'active'"
+        "SELECT COALESCE(SUM(file_size), 0) FROM uploads WHERE user_id = :user_id AND scope = 'drive' AND status IN ('active', 'quarantined')"
     );
     $statement->execute(['user_id' => $userId]);
     return (int) $statement->fetchColumn();
@@ -303,6 +611,90 @@ function userUploadLimit(array $user): int
     return min($singleFileLimit, $remaining);
 }
 
+/** 被管理员豁免的用户上传时跳过关键词与 AI 识别。 */
+function userModerationExempt(?array $user): bool
+{
+    return (int) ($user['moderation_exempt'] ?? 0) === 1;
+}
+
+/**
+ * 用户当前生效中的封禁记录；未被封禁返回 null。
+ * 封禁期间禁止上传、下载、修改与重命名，只保留工单申诉入口。
+ *
+ * @return array<string, mixed>|null
+ */
+function userActiveBan(?array $user): ?array
+{
+    if (!is_array($user) || (int) ($user['id'] ?? 0) <= 0) {
+        return null;
+    }
+
+    return BanService::create()->activeBan((int) $user['id']);
+}
+
+/**
+ * 账户封禁提示条：在所有页面顶端统一输出，替代以往只在上传/下载时报错的做法。
+ * 展示样式由后台「封禁管理」的 ban_notice_mode 决定：
+ *   plain  = 仅一句「您的账户已被封禁」；
+ *   link   = 文案 + 工单申诉入口；
+ *   detail = 文案 + 封禁原因与时间 + 工单申诉入口。
+ * 未被封禁时返回空字符串，页面直接输出即可。
+ */
+function banNoticeHtml(?array $user): string
+{
+    $ban = userActiveBan($user);
+    if ($ban === null) {
+        return '';
+    }
+
+    $mode = (string) Database::config('ban_notice_mode', 'link');
+    $html = '<div class="alert error" id="banNotice" role="alert">' . e(banNoticeMessage($ban, $mode));
+
+    if ($mode === 'plain') {
+        return $html . '</div>';
+    }
+
+    return $html . '如有疑问请 <a href="tickets.php?appeal=1">提交申诉</a>。</div>';
+}
+
+/**
+ * 封禁提示文案的正文（不含申诉入口）：由 ban_notice_mode 决定是否展开封禁原因与时间。
+ * 页面提示条、前端弹提示、接口错误响应都从这里取词，保证后台改了样式后三处同步变化。
+ */
+function banNoticeMessage(array $ban, string $mode): string
+{
+    $message = '您的账户已被封禁';
+    if ($mode !== 'detail') {
+        return $message . '。';
+    }
+
+    // 封禁原因由管理员手填，可能自带句尾标点（如「管理员手动封禁。」）；
+    // 直接拼「，封禁时间」会出现「。，」这类重复标点，故先剥掉尾部的标点再拼接
+    $reason = trim((string) ($ban['reason'] ?? ''));
+    $reason = trim((string) preg_replace('/[。．.，,、；;：:！!？?]+$/u', '', $reason));
+    $bannedAt = (string) ($ban['banned_at'] ?? '');
+
+    return $message . '（原因：' . ($reason !== '' ? $reason : '未说明')
+        . '，封禁时间：' . ($bannedAt !== '' ? date('Y-m-d H:i', (int) strtotime($bannedAt)) : '未知') . '）。';
+}
+
+/**
+ * 封禁提示的纯文本版本：供接口错误响应使用（下载链接被直接访问时只能返回文本，不能回 HTML）。
+ * 未封禁时返回空字符串。
+ */
+function banNoticeText(?array $user): string
+{
+    $ban = userActiveBan($user);
+    if ($ban === null) {
+        return '';
+    }
+
+    $mode = (string) Database::config('ban_notice_mode', 'link');
+    $message = banNoticeMessage($ban, $mode);
+
+    return $mode === 'plain' ? $message : $message . '如有疑问请通过工单提交申诉。';
+}
+
 function registrationEnabled(): bool
 {
     return Database::config('registration_enabled', '0') === '1';
@@ -382,7 +774,7 @@ function findActiveUploadByName(int $userId, string $name): ?array
 {
     $statement = Database::connection()->prepare(
         "SELECT id, filename, display_name, file_size, notion_block_id FROM uploads
-         WHERE user_id = :user_id AND status = 'active'
+         WHERE user_id = :user_id AND scope = 'drive' AND status = 'active'
            AND COALESCE(NULLIF(display_name, ''), filename) = :name
          ORDER BY id DESC LIMIT 1"
     );
@@ -967,8 +1359,29 @@ function uploadTargets(array $user): array
         return [];
     }
 
-    $targets = [];
+    // 官方账户池是全体付费用户共享的资源：管理员指定的主备账户优先，未分配或分配不足时按池内优先级
+    // 补齐。这样「池里有启用账户但该用户没有分配记录」也能正常上传，不会误报「池内没有可用账户」。
+    $pool = [];
+    $seen = [];
     foreach (userOfficialAccounts((int) $user['id']) as $account) {
+        $seen[(int) $account['id']] = true;
+        $pool[] = $account;
+    }
+    foreach (activeOfficialAccounts() as $account) {
+        if (isset($seen[(int) $account['id']])) {
+            continue;
+        }
+        // 池内补充账户此时还没有用户空间页面，留空由 ensureUserSpacePage 首次上传时创建并回写
+        $account['user_page_id'] = '';
+        $pool[] = $account;
+    }
+
+    $targets = [];
+    foreach ($pool as $account) {
+        // 与原有的主备冗余一致：最多主 + 备两份，避免向整池重复写入放大 Notion 调用
+        if (count($targets) >= 2) {
+            break;
+        }
         if ((int) ($account['is_enabled'] ?? 0) !== 1) {
             continue;
         }
@@ -988,6 +1401,30 @@ function uploadTargets(array $user): array
     }
 
     return $targets;
+}
+
+/** 记录用户在某个官方账户下的空间页面。用户此前没有分配记录时补建一行（共享账户池下按需取用），避免每次上传重复创建页面。 */
+function rememberUserSpacePage(int $userId, int $accountId, string $pageId): void
+{
+    $pdo = Database::connection();
+
+    // INSERT IGNORE 兼容并发首次上传（槽位唯一索引冲突时静默跳过），随后统一按账户更新页面缓存
+    $slotStatement = $pdo->prepare('SELECT COALESCE(MAX(slot), 0) + 1 FROM user_official_accounts WHERE user_id = :user_id');
+    $slotStatement->execute(['user_id' => $userId]);
+    $pdo->prepare(
+        'INSERT IGNORE INTO user_official_accounts (user_id, account_id, slot, notion_page_id)
+         VALUES (:user_id, :account_id, :slot, :page_id)'
+    )->execute([
+        'user_id' => $userId,
+        'account_id' => $accountId,
+        'slot' => (int) $slotStatement->fetchColumn(),
+        'page_id' => $pageId,
+    ]);
+
+    $pdo->prepare(
+        'UPDATE user_official_accounts SET notion_page_id = :page_id
+         WHERE user_id = :user_id AND account_id = :account_id'
+    )->execute(['page_id' => $pageId, 'user_id' => $userId, 'account_id' => $accountId]);
 }
 
 function ensureUserSpacePage(array $user, array $target, NotionClient $client): string
@@ -1015,13 +1452,55 @@ function ensureUserSpacePage(array $user, array $target, NotionClient $client): 
         Database::connection()->prepare('UPDATE users SET notion_page_id = :page_id WHERE id = :id')
             ->execute(['page_id' => $pageId, 'id' => $userId]);
     } else {
-        Database::connection()->prepare(
-            'UPDATE user_official_accounts SET notion_page_id = :page_id
-             WHERE user_id = :user_id AND account_id = :account_id'
-        )->execute(['page_id' => $pageId, 'user_id' => $userId, 'account_id' => $accountId]);
+        rememberUserSpacePage($userId, $accountId, $pageId);
     }
 
     return $pageId;
+}
+
+/**
+ * 执行一次 Notion 写入操作；若因页面/块被归档而失败，先尝试自愈（恢复被归档的空间页面）再重试一次。
+ *
+ * 只有错误文案命中可修复特征时才尝试修复，其余错误原样抛出；修复未成功时也抛出原始异常，
+ * 由调用方按既有逻辑记录日志与告警，行为与修复前保持一致。
+ *
+ * @param callable():mixed    $operation
+ * @param array<string,mixed> $user
+ * @param array<string,mixed> $target
+ * @param array<string,mixed> $logContext
+ *
+ * @return mixed
+ */
+function notionWriteWithRepair(callable $operation, array $user, array $target, array $logContext)
+{
+    try {
+        return $operation();
+    } catch (Throwable $exception) {
+        if (!NotionSpaceRepair::isRepairable($exception->getMessage())) {
+            throw $exception;
+        }
+
+        $result = (new NotionSpaceRepair())->repair(
+            $user,
+            (string) $target['type'],
+            $target['account_id'] === null ? null : (int) $target['account_id'],
+            new NotionClient((string) $target['token'])
+        );
+
+        Logger::warning('notion', '检测到 Notion 页面被归档，已尝试自动修复。', $logContext + [
+            'reason' => $exception->getMessage(),
+            'repaired' => $result['repaired'],
+            'action' => $result['action'],
+            'page_id' => $result['page_id'],
+            'detail' => $result['detail'],
+        ]);
+
+        if (!$result['repaired']) {
+            throw $exception;
+        }
+
+        return $operation();
+    }
 }
 
 /** 双写：把临时文件写入用户的全部目标账户，至少一份成功即视为成功；全部失败时对外只提示「存储服务暂时不可用」，不透露账户信息。 */
@@ -1037,21 +1516,35 @@ function writeNotionReplicas(array $user, string $temporaryPath, string $filenam
     $replicas = [];
 
     foreach ($targets as $target) {
+        $role = count($replicas) + 1;
         try {
-            $client = new NotionClient((string) $target['token']);
-            $pageId = ensureUserSpacePage($user, $target, $client);
-            $result = $client->uploadAndAttach($temporaryPath, $storageName, $mime, $size, $pageId);
-            $blockId = (string) ($result['block']['results'][0]['id'] ?? '');
-            if ($blockId === '') {
-                throw new RuntimeException('Notion 未返回文件块。');
-            }
-            $replicas[] = [
-                'role' => count($replicas) + 1,
-                'account_type' => (string) $target['type'],
-                'official_account_id' => $target['account_id'],
-                'notion_file_upload_id' => (string) ($result['file_upload_id'] ?? ''),
-                'notion_block_id' => $blockId,
-            ];
+            $replicas[] = notionWriteWithRepair(
+                static function () use ($user, $target, $temporaryPath, $storageName, $mime, $size, $role): array {
+                    $client = new NotionClient((string) $target['token']);
+                    $pageId = ensureUserSpacePage($user, $target, $client);
+                    $result = $client->uploadAndAttach($temporaryPath, $storageName, $mime, $size, $pageId);
+                    $blockId = (string) ($result['block']['results'][0]['id'] ?? '');
+                    if ($blockId === '') {
+                        throw new RuntimeException('Notion 未返回文件块。');
+                    }
+
+                    return [
+                        'role' => $role,
+                        'account_type' => (string) $target['type'],
+                        'official_account_id' => $target['account_id'],
+                        'notion_file_upload_id' => (string) ($result['file_upload_id'] ?? ''),
+                        'notion_block_id' => $blockId,
+                    ];
+                },
+                $user,
+                $target,
+                [
+                    'stage' => 'upload',
+                    'user_id' => (int) $user['id'],
+                    'account_type' => $target['type'],
+                    'account_id' => $target['account_id'],
+                ]
+            );
         } catch (Throwable $exception) {
             Logger::warning('upload', 'Notion 副本写入失败。', [
                 'user_id' => (int) $user['id'],
@@ -1131,7 +1624,20 @@ function archiveUploadReplicas(array $upload, array $owner): void
 {
     foreach (uploadReplicaTargets($upload, $owner) as $target) {
         try {
-            (new NotionClient((string) $target['token']))->archiveBlock((string) $target['block_id']);
+            notionWriteWithRepair(
+                static function () use ($target): void {
+                    (new NotionClient((string) $target['token']))->archiveBlock((string) $target['block_id']);
+                },
+                $owner,
+                $target,
+                [
+                    'stage' => 'delete',
+                    'user_id' => (int) ($owner['id'] ?? 0),
+                    'upload_id' => (int) $upload['id'],
+                    'account_type' => $target['type'],
+                    'account_id' => $target['account_id'],
+                ]
+            );
         } catch (Throwable $exception) {
             Logger::warning('file', '归档 Notion 文件块失败。', [
                 'user_id' => (int) ($owner['id'] ?? 0),
@@ -1186,6 +1692,126 @@ function uploadReplicaSources(array $uploadIds): array
     }
 
     return $sources;
+}
+
+// ---------------------------------------------------------------------------
+// 站内文件夹
+// ---------------------------------------------------------------------------
+
+/** 读取属于该用户的文件夹行；不存在或不属于该用户时返回 null（越权访问一律按不存在处理）。 */
+function folderRow(int $userId, int $folderId): ?array
+{
+    if ($folderId <= 0) {
+        return null;
+    }
+    $statement = Database::connection()->prepare(
+        'SELECT id, parent_id, name, created_at FROM folders WHERE id = :id AND user_id = :user_id LIMIT 1'
+    );
+    $statement->execute(['id' => $folderId, 'user_id' => $userId]);
+    $row = $statement->fetch();
+
+    return $row === false ? null : $row;
+}
+
+/** 从根目录到指定文件夹的完整路径，用于面包屑；文件夹被移动/删除导致断链时自动截断。 */
+function folderAncestors(int $userId, int $folderId): array
+{
+    $chain = [];
+    $current = folderRow($userId, $folderId);
+    while ($current !== null) {
+        array_unshift($chain, $current);
+        $current = folderRow($userId, (int) ($current['parent_id'] ?? 0));
+    }
+
+    return $chain;
+}
+
+/** 某个文件夹下的直接子文件夹，按名称排序。 */
+function folderChildren(int $userId, int $parentId): array
+{
+    $statement = Database::connection()->prepare(
+        'SELECT id, name, created_at, updated_at FROM folders
+         WHERE user_id = :user_id AND parent_id <=> :parent_id
+         ORDER BY name ASC'
+    );
+    $statement->execute(['user_id' => $userId, 'parent_id' => $parentId > 0 ? $parentId : null]);
+
+    return $statement->fetchAll();
+}
+
+/** 该用户全部文件夹的扁平树（含缩进层级），用于「移动到文件夹」选择器。 */
+function folderTree(int $userId): array
+{
+    $statement = Database::connection()->prepare(
+        'SELECT id, parent_id, name FROM folders WHERE user_id = :user_id ORDER BY name ASC'
+    );
+    $statement->execute(['user_id' => $userId]);
+    $byParent = [];
+    foreach ($statement->fetchAll() as $row) {
+        $byParent[(int) ($row['parent_id'] ?? 0)][] = $row;
+    }
+
+    $flat = [];
+    $walk = static function (int $parentId, int $depth) use (&$walk, &$flat, $byParent): void {
+        foreach ($byParent[$parentId] ?? [] as $row) {
+            $flat[] = [
+                'id' => (int) $row['id'],
+                'parent_id' => (int) ($row['parent_id'] ?? 0),
+                'name' => (string) $row['name'],
+                'depth' => $depth,
+            ];
+            $walk((int) $row['id'], $depth + 1);
+        }
+    };
+    $walk(0, 0);
+
+    return $flat;
+}
+
+/** 每个文件夹子树下的在用文件总数（含嵌套子文件夹），用于删除前的风险提示。 */
+function folderFileCountMap(int $userId): array
+{
+    $statement = Database::connection()->prepare(
+        "SELECT folder_id, COUNT(*) AS total FROM uploads
+         WHERE user_id = :user_id AND scope = 'drive' AND status = 'active' AND folder_id IS NOT NULL
+         GROUP BY folder_id"
+    );
+    $statement->execute(['user_id' => $userId]);
+    $totals = [];
+    foreach ($statement->fetchAll() as $row) {
+        $totals[(int) $row['folder_id']] = (int) $row['total'];
+    }
+
+    // folderTree 是先序（父在前），倒序处理即可保证子文件夹先汇总到父级
+    foreach (array_reverse(folderTree($userId)) as $item) {
+        $childTotal = $totals[$item['id']] ?? 0;
+        if ($item['parent_id'] > 0) {
+            $totals[$item['parent_id']] = ($totals[$item['parent_id']] ?? 0) + $childTotal;
+        }
+    }
+
+    return $totals;
+}
+
+/** 指定文件夹自身及其全部子孙文件夹的 ID，用于递归删除。 */
+function folderDescendantIds(int $userId, int $folderId): array
+{
+    $statement = Database::connection()->prepare(
+        'SELECT id FROM folders WHERE user_id = :user_id AND parent_id = :parent_id'
+    );
+    $ids = [$folderId];
+    $pending = [$folderId];
+    while ($pending !== []) {
+        $parentId = (int) array_shift($pending);
+        $statement->execute(['user_id' => $userId, 'parent_id' => $parentId]);
+        foreach ($statement->fetchAll() as $row) {
+            $childId = (int) $row['id'];
+            $ids[] = $childId;
+            $pending[] = $childId;
+        }
+    }
+
+    return $ids;
 }
 
 // ---------------------------------------------------------------------------

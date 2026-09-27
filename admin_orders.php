@@ -261,17 +261,18 @@ $statusLabels = ['' => '全部状态', 'pending' => '待支付', 'paid' => '已�
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>订单管理 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=31"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('订单管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=50"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
-        <a class="brand" href="dashboard.php"><span class="brand-mark">N</span><span>Notion Drive</span></a>
-        <nav class="drive-nav"><a href="dashboard.php"><span>▣</span>我的文件</a><a href="admin.php"><span>⚙</span>管理后台</a><a class="active" href="admin_orders.php"><span>¥</span>订单管理</a><a href="logs.php"><span>☰</span>运行日志</a><a href="account.php"><span>◍</span>账户管理</a></nav>
+        <?= brandHtml('dashboard.php') ?>
+        <nav class="drive-nav"><a href="dashboard.php"><span>▣</span>我的文件</a><a href="tickets.php"><span>✉</span>工单管理</a><a href="admin.php"><span>⚙</span>管理后台</a><a class="active" href="admin_orders.php"><span>¥</span>订单管理</a><a href="bans.php"><span>⛔</span>封禁管理</a><a href="logs.php"><span>☰</span>运行日志</a><a href="account.php"><span>◍</span>账户管理</a></nav>
         <?= sidebarStorageHtml($currentUser) ?>
         <?= sidebarIcpHtml() ?>
         <?= sidebarPoliceHtml() ?>
         <div class="account-menu"><?= avatarHtml($currentUser) ?><div><strong><?= e($currentUser['username']) ?></strong><small>管理员</small></div><form method="post" action="logout.php"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><button>退出</button></form></div>
     </aside>
     <main class="drive-main admin-main">
+        <?= banNoticeHtml($currentUser) ?>
         <header class="drive-header"><div><p>付费系统</p><h1>订单管理</h1></div><a class="secondary-button" href="admin.php">返回管理后台</a></header>
         <?php if ($flash): ?><div class="alert <?= e($flash['type']) ?>"><?= e($flash['message']) ?></div><?php endif; ?>
         <?php if ($error !== ''): ?><div class="alert error" role="alert"><?= e($error) ?></div><?php endif; ?>
@@ -350,6 +351,6 @@ $statusLabels = ['' => '全部状态', 'pending' => '待支付', 'paid' => '已�
     </main>
     <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=15" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <script src="assets/app.js?v=26" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body>
 </html>

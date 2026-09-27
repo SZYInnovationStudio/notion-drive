@@ -52,15 +52,15 @@ $captchaRequired = $throttle['captcha'];
 <html lang="zh-CN">
 <head>
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <title>登录 · Notion Drive</title>
-    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <link rel="stylesheet" href="assets/app.css?v=31">
+    <?= siteTitleTag('登录') ?>
+    <?= siteFaviconTag() ?>
+    <link rel="stylesheet" href="assets/app.css?v=50">
 </head>
 <body class="login-shell">
     <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
     <main class="login-layout">
         <section class="login-copy">
-            <a class="brand" href="index.php"><span class="brand-mark">N</span><span>Notion Drive</span></a>
+            <?= brandHtml('index.php') ?>
             <div class="orbital-art" aria-hidden="true"><span></span><i></i><b>ND</b></div>
             <div><span class="eyebrow">Workspace gateway</span><h1>文件，从这里<br><em>流向 Notion</em></h1><p>一个专注、安全的团队上传空间。</p></div>
         </section>
@@ -80,6 +80,6 @@ $captchaRequired = $throttle['captcha'];
         </section>
     </main>
     <?= siteCreditHtml() ?>
-    <script src="assets/app.js?v=15" defer></script>
+    <script src="assets/app.js?v=26" defer></script>
 </body>
 </html>

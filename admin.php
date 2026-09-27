@@ -29,6 +29,7 @@ function adminTabs(): array
         'risk' => ['group' => '管理后台', 'label' => '内容风控', 'desc' => '关键词拦截、AI 识别、豁免免审核上传与申诉复核'],
         'files' => ['group' => '管理后台', 'label' => '文件管理', 'desc' => '查看与管理各用户的文件'],
         'tickets' => ['group' => '管理后台', 'label' => '工单设置', 'desc' => '工单过期、重开、评价与批量管理'],
+        'preview' => ['group' => '管理后台', 'label' => '预览设置', 'desc' => '图片 / PDF / 音视频在线预览的开关与体积提醒阈值'],
         'reviews' => ['group' => '管理后台', 'label' => '评价统计', 'desc' => '工单评价的平均分、分布与最近明细'],
         'system' => ['group' => '管理后台', 'label' => '系统设置', 'desc' => '站点信息、注册与邮箱、上传与支付'],
         'restore' => ['group' => '管理后台', 'label' => '还原/恢复', 'desc' => '站点还原与恢复出厂设置'],
@@ -967,6 +968,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             flash('success', $enabled
                 ? '工单评价已开启，已结束的工单会展示评价区块。'
                 : '工单评价已关闭，工单详情页不再展示评价与外部调研入口（历史评价仍可在「评价统计」查看）。');
+        } elseif ($action === 'save_preview_settings') {
+            // R11 文件预览：图片 / PDF / 音视频 三个大类开关 + 大文件体积提醒阈值（MB，1~10240）
+            $imageOn = (string) ($_POST['preview_image'] ?? '') === '1';
+            $pdfOn   = (string) ($_POST['preview_pdf'] ?? '') === '1';
+            $avOn    = (string) ($_POST['preview_av'] ?? '') === '1';
+            $warnMb  = (int) ($_POST['preview_warn_mb'] ?? 20);
+            if ($warnMb < 1 || $warnMb > 10240) {
+                throw new RuntimeException('预览体积提醒阈值需为 1 ~ 10240 MB 之间的整数。');
+            }
+            Database::setConfig(\PREVIEW_IMAGE_KEY, $imageOn ? '1' : '0');
+            Database::setConfig(\PREVIEW_PDF_KEY, $pdfOn ? '1' : '0');
+            Database::setConfig(\PREVIEW_AV_KEY, $avOn ? '1' : '0');
+            Database::setConfig(\PREVIEW_WARN_BYTES_KEY, (string) ($warnMb * 1024 * 1024));
+            Logger::info('preview', '更新文件预览设置。', [
+                'image'   => $imageOn ? 'on' : 'off',
+                'pdf'     => $pdfOn ? 'on' : 'off',
+                'av'      => $avOn ? 'on' : 'off',
+                'warn_mb' => $warnMb,
+                'operator' => (string) $currentUser['username'],
+            ]);
+            flash('success', "文件预览设置已保存（图片" . ($imageOn ? '开' : '关') . ' / PDF ' . ($pdfOn ? '开' : '关') . ' / 音视频 ' . ($avOn ? '开' : '关') . "，体积提醒阈值 {$warnMb} MB）。");
         } elseif ($action === 'restore_personalization') {
             // 还原个性化设置：只重置站点名称 / logo / favicon，不涉及用户数据与密钥
             $restore = RestoreService::create();
@@ -1189,7 +1211,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('管理后台') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=49"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('管理后台') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=50"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
@@ -1682,6 +1704,21 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         </section>
         <?php endif; ?>
 
+        <?php if ($activeTab === 'preview'): ?>
+        <?php $previewWarnMb = (int) max(1, round(previewWarnBytes() / 1024 / 1024)); ?>
+        <section class="admin-panel connection-panel">
+            <div class="panel-title"><div><h2>文件在线预览</h2><p>控制用户在「我的文件」里能否直接预览文件。预览走站内同源接口，复用登录、封禁与文件归属校验，不会把文件地址交给任何第三方。可按<b>图片 / PDF / 音视频</b>三个大类分别开关（MP3 等小音频归入「音视频」，不单独设项）。关闭某类后，该类文件列表不再显示「预览」按钮，只能下载。</p></div></div>
+            <form method="post" class="connection-form">
+                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_preview_settings">
+                <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="preview_image" value="1" <?= previewKindEnabled('image') ? 'checked' : '' ?>>允许预览图片（jpg / png / gif / webp 等，不含 SVG）</label></div>
+                <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="preview_pdf" value="1" <?= previewKindEnabled('pdf') ? 'checked' : '' ?>>允许预览 PDF（浏览器内置阅读器，部分手机浏览器可能转为下载）</label></div>
+                <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="preview_av" value="1" <?= previewKindEnabled('av') ? 'checked' : '' ?>>允许预览音视频（mp4 / mov / webm 及 mp3 / m4a / wav 等，支持边下边播）</label></div>
+                <label><span>大文件预览提醒阈值（MB）</span><input type="number" name="preview_warn_mb" min="1" max="10240" step="1" inputmode="numeric" value="<?= (int) $previewWarnMb ?>" required><small>文件达到该体积时，先弹窗提示会消耗较多流量，用户确认后才预览。默认 20 MB，范围 1 ~ 10240 MB。</small></label>
+                <div class="form-actions"><button class="primary-button compact" data-confirm="确认保存文件预览设置？">保存设置</button></div>
+            </form>
+        </section>
+        <?php endif; ?>
+
         <?php if ($activeTab === 'reviews'): ?>
         <?php
         $reviewService = TicketService::create();
@@ -1774,5 +1811,5 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         <?php endif; ?>
     </main>
     <?= siteCreditHtml() ?>
-    <div id="toast" class="toast"></div><script src="assets/app.js?v=25" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <div id="toast" class="toast"></div><script src="assets/app.js?v=26" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body></html>

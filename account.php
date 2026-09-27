@@ -5,6 +5,7 @@ declare(strict_types=1);
 require __DIR__ . '/src/bootstrap.php';
 
 use NotionDrive\Auth;
+use NotionDrive\Bans\BanService;
 use NotionDrive\Database;
 use NotionDrive\Logger;
 use NotionDrive\Security;
@@ -183,16 +184,19 @@ $ownNotionBound = hasOwnNotionAccount($user);
 $notionSourceUsable = notionSourceUsable($user);
 $officialAccountsUsable = canUseOfficialSource($user);
 $assignedOfficialAccounts = $notionSource === 'official' ? userOfficialAccounts((int) $user['id']) : [];
+// R10 可信度（违规次数）：普通用户展示；管理员账户不受违规分约束，无需展示
+$trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user['id']);
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>账户管理 · Notion Drive</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><link rel="stylesheet" href="assets/app.css?v=31"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('账户管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=50"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
-        <a class="brand" href="dashboard.php"><span class="brand-mark">N</span><span>Notion Drive</span></a>
+        <?= brandHtml('dashboard.php') ?>
         <nav class="drive-nav" aria-label="主导航">
             <a href="dashboard.php"><span>▣</span>我的文件</a>
-            <?php if (isAdmin($user)): ?><a href="admin.php"><span>⚙</span>管理后台</a><a href="admin_orders.php"><span>¥</span>订单管理</a><a href="logs.php"><span>☰</span>运行日志</a><?php endif; ?>
+            <a href="tickets.php"><span>✉</span><?= isAdmin($user) ? '工单管理' : '我的工单' ?></a>
+            <?php if (isAdmin($user)): ?><a href="admin.php"><span>⚙</span>管理后台</a><a href="admin_orders.php"><span>¥</span>订单管理</a><a href="bans.php"><span>⛔</span>封禁管理</a><a href="logs.php"><span>☰</span>运行日志</a><?php endif; ?>
             <a class="active" href="account.php"><span>◍</span>账户管理</a>
             <?php if (!isAdmin($user)): ?><a href="pay.php"><span>★</span>会员套餐</a><?php endif; ?>
         </nav>
@@ -207,6 +211,7 @@ $assignedOfficialAccounts = $notionSource === 'official' ? userOfficialAccounts(
     </aside>
 
     <main class="drive-main">
+        <?= banNoticeHtml($user) ?>
         <header class="drive-header">
             <div><p>个人设置</p><h1>账户管理</h1></div>
             <a class="secondary-button" href="dashboard.php">返回我的文件</a>
@@ -224,6 +229,45 @@ $assignedOfficialAccounts = $notionSource === 'official' ? userOfficialAccounts(
                 <button class="primary-button compact">保存用户名</button>
             </form>
         </section>
+
+        <?php if ($trust !== null): ?>
+        <section class="admin-panel">
+            <?php $trustPoints = (int) $trust['points']; $trustMax = max(1, (int) $trust['threshold']); ?>
+            <div class="panel-title">
+                <div><h2>可信度</h2><p>违规次数累计到 <?= $trustMax ?> 次会自动封禁（禁止上传、下载与文件操作，工单申诉入口保留），封禁 30 天后自动解封并清零。</p></div>
+                <span class="status-badge <?= $trust['tone'] === 'good' ? 'granted' : ($trust['tone'] === 'warn' ? 'pending' : 'void') ?>"><?= e((string) $trust['label']) ?></span>
+            </div>
+            <div class="trust-card tone-<?= e((string) $trust['tone']) ?>">
+                <div class="trust-score">
+                    <strong><?= $trustPoints ?><span>/<?= $trustMax ?></span></strong>
+                    <small><?= $trustPoints === 0 ? '无违规记录，请继续保持' : '当前违规次数，等级：' . e((string) $trust['label']) ?></small>
+                </div>
+                <div class="trust-progress" role="progressbar" aria-valuemin="0" aria-valuemax="<?= $trustMax ?>" aria-valuenow="<?= $trustPoints ?>" aria-label="违规次数">
+                    <?php for ($slot = 1; $slot <= $trustMax; $slot++): ?><i class="<?= $slot <= $trustPoints ? 'filled' : '' ?>"></i><?php endfor; ?>
+                </div>
+            </div>
+            <?php if ((bool) $trust['banned']): ?>
+            <div class="alert error">你的账户当前处于封禁状态<?= (string) $trust['ban_until'] === '' ? '。' : '，预计 ' . e(date('Y-m-d H:i', (int) strtotime((string) $trust['ban_until']))) . ' 自动解封。' ?>如有疑问请 <a href="tickets.php?appeal=1">提交申诉</a>。</div>
+            <?php endif; ?>
+            <?php
+            // 去重：打回记录已在上方按文件展示，这里只列管理员手动加计的留痕
+            $manualHistory = array_values(array_filter($trust['history'], static fn (array $row): bool => (string) ($row['source'] ?? '') === 'manual'));
+            ?>
+            <?php if ($trust['recent'] || $manualHistory): ?>
+            <details class="trust-history">
+                <summary>历史违规记录（<?= count($trust['recent']) + count($manualHistory) ?> 条）</summary>
+                <ul>
+                    <?php foreach ($trust['recent'] as $violation): ?>
+                    <li><span class="status-badge void">违规文件</span><span><?= e((string) $violation['filename']) ?></span><small><?= e((string) ($violation['reason'] ?? '') !== '' ? (string) $violation['reason'] : '未通过内容审核') ?><?= (string) ($violation['appeal_no'] ?? '') === '' ? '' : ' · 申诉号 ' . e((string) $violation['appeal_no']) ?> · <?= e(date('Y-m-d H:i', (int) strtotime((string) $violation['occurred_at']))) ?></small></li>
+                    <?php endforeach; ?>
+                    <?php foreach ($manualHistory as $violation): ?>
+                    <li><span class="status-badge pending">管理员加计</span><span><?= (int) $violation['points'] > 0 ? '+' . (int) $violation['points'] . ' 次' : '留痕' ?></span><small><?= e((string) ($violation['reason'] ?? '') !== '' ? (string) $violation['reason'] : '未说明') ?> · <?= e(date('Y-m-d H:i', (int) strtotime((string) $violation['created_at']))) ?></small></li>
+                    <?php endforeach; ?>
+                </ul>
+            </details>
+            <?php endif; ?>
+        </section>
+        <?php endif; ?>
 
         <?php if (!isAdmin($user)): ?>
         <section class="admin-panel">
@@ -272,7 +316,7 @@ $assignedOfficialAccounts = $notionSource === 'official' ? userOfficialAccounts(
                     <?php endif; ?>
                 <?php else: ?>
                     <form method="post" class="inline-form"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="switch_notion_source"><input type="hidden" name="source" value="own"><button class="secondary-button" <?= $ownNotionBound ? '' : 'disabled' ?>>切换为自有账户</button></form>
-                    <p class="source-note">已固定分配 <?= count($assignedOfficialAccounts) ?> 个官方账户（按负载选取，主账户优先，失败时自动顺延下一个）。<?= $ownNotionBound ? '' : '需先绑定自有账户才能切回。' ?></p>
+                    <p class="source-note">官方账户池为全体付费用户共享：优先使用这里分配的 <?= count($assignedOfficialAccounts) ?> 个账户，池内其他启用账户在需要时自动顺延（最多主备两个）。<?= $ownNotionBound ? '' : '需先绑定自有账户才能切回。' ?></p>
                 <?php endif; ?>
             </div>
 
@@ -337,7 +381,7 @@ $assignedOfficialAccounts = $notionSource === 'official' ? userOfficialAccounts(
     </main>
     <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=15" defer></script>
+    <script src="assets/app.js?v=26" defer></script>
     <script src="assets/admin.js?v=9" defer></script>
     <?php if ($canBindEmail): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>
