@@ -202,8 +202,10 @@
                 announceModal.hidden = true;
                 document.body.classList.remove('has-overlay');
             };
-            (reminder || ackButton).focus();
-            ackButton.addEventListener('click', closeAnnounce);
+            if (ackButton) {
+                (reminder || ackButton).focus();
+                ackButton.addEventListener('click', closeAnnounce);
+            }
         }
     }
 
@@ -278,7 +280,8 @@
         fileSearch.addEventListener('input', () => {
             const value = fileSearch.value.trim().toLocaleLowerCase();
             document.querySelectorAll('#fileTable tbody tr').forEach(row => {
-                row.hidden = value !== '' && !row.dataset.fileName.includes(value);
+                const name = (row.dataset.fileName || '').toLowerCase();
+                row.hidden = value !== '' && !name.includes(value);
             });
         });
     }
@@ -323,9 +326,12 @@
         }
 
         const url = `api/file.php?id=${encodeURIComponent(id)}&inline=1`;
-        document.getElementById('previewHeading').textContent = name;
-        previewDownload.href = `api/file.php?id=${encodeURIComponent(id)}`;
-        previewDownload.setAttribute('download', name);
+        const heading = document.getElementById('previewHeading');
+        if (heading) heading.textContent = name;
+        if (previewDownload) {
+            previewDownload.href = `api/file.php?id=${encodeURIComponent(id)}`;
+            previewDownload.setAttribute('download', name);
+        }
         previewBody.innerHTML = '<p class="preview-loading">正在加载预览…</p>';
         previewModal.hidden = false;
         document.body.classList.add('has-overlay');

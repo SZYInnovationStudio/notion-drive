@@ -385,6 +385,9 @@ body.drive-shell .site-credit .icp-license, body.drive-shell .site-credit .polic
 .delete-action { color: var(--danger); border-color: #f0caca; }
 .row-actions { display: inline-flex; align-items: center; gap: 6px; justify-self: start; }
 .connection-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px 14px; align-items: end; }
+/* 表单内含多行文本域/文件域等高度差异大的字段时使用：逐行堆叠，避免同行字段高矮错落 */
+.connection-form.stack-form { grid-template-columns: 1fr; align-items: start; }
+.connection-form-next { margin-top: 10px; }
 .status-badge { padding: 4px 8px; border-radius: 999px; color: var(--success) !important; background: #edf8f1; }
 .compact-empty { padding: 30px; color: var(--muted); font-size: .78rem; }
 .create-user-row.create-group-row { grid-template-columns: 1fr .8fr .8fr .6fr auto auto; }
@@ -652,6 +655,32 @@ body.has-overlay { overflow: hidden; }
     .ticket-bulk-actions > * { flex: 1 1 100%; }
     .ticket-bulk-actions select { width: 100%; min-width: 0; }
     .ticket-bulk-actions button { min-height: 44px; }
+
+    /* 工单对话与表单：窄屏铺满整行 */
+    .ticket-thread { gap: 10px; }
+    .ticket-msg { max-width: 100%; }
+    .ticket-form, .review-form { max-width: 100%; }
+    .ticket-form label span { font-size: .8rem; }
+    .ticket-form > button, .review-form > button { width: 100%; min-height: 44px; }
+    .ticket-status-actions { gap: 10px; }
+    .ticket-status-actions > * { flex: 1 1 calc(50% - 5px); min-height: 44px; }
+    .review-readonly { max-width: 100%; }
+    .review-summary { gap: 18px; }
+    .review-average strong { font-size: 2rem; }
+    .review-distribution { flex: 1 1 100%; min-width: 0; }
+    .review-bar-row { grid-template-columns: 44px minmax(0, 1fr) 34px; gap: 8px; }
+    .survey-invite { font-size: .8rem; }
+
+    /* 审核提示面板：窄屏纵向铺满 */
+    .notice-bulk { flex-wrap: wrap; gap: 8px 12px; }
+    .notice-bulk .text-action { min-height: 40px; }
+    .appeal-form { max-width: 100%; }
+    .appeal-form textarea { font-size: 16px; }
+    .alert-list .appeal-form button { min-height: 40px; padding: 0 14px; }
+    .alert-list li { gap: 8px; }
+    .moderation-review input { height: 40px; font-size: .82rem; }
+    .group-member-list { grid-template-columns: 1fr; }
+
     .empty-state { padding: 40px 16px; }
 
     .create-user-row, .connection-form { grid-template-columns: 1fr; }
@@ -733,5 +762,17 @@ tr.file-lost .display-name { text-decoration: line-through; }
     .preview-dialog { width: 100%; max-height: 100vh; height: 100%; border-radius: 0; }
     .preview-media { max-height: 64vh; }
     .preview-frame { height: 68vh; }
+
+    /* 星级选择器：缩字号与字距，保证 5 颗星在极窄屏不横向溢出 */
+    .star-rating { font-size: 1.4rem; }
+    .star-rating-stars { letter-spacing: 2px; }
+
+    /* 公告弹窗：贴边全宽，操作区纵向铺满 */
+    .announce-overlay { padding: 12px; }
+    .announce-dialog { padding: 18px 16px; max-height: 90vh; }
+    .announce-actions { flex-direction: column; align-items: stretch; gap: 10px; }
+    .announce-remind { margin-right: 0; justify-content: space-between; }
+    .announce-remind select { flex: 1 1 auto; min-width: 0; }
+    .announce-actions .primary-button { width: 100%; min-height: 44px; }
 }
 

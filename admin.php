@@ -1239,7 +1239,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('管理后台') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=52"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('管理后台') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=54"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
@@ -1416,7 +1416,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         <?php if ($activeTab === 'risk'): ?>
         <section class="admin-panel connection-panel">
             <div class="panel-title"><div><h2>内容风控</h2><p>关键词在上传开始前直接拦截；AI 识别在上传完成后执行，判定违规即隔离文件并生成申诉号。未配置接口地址或 API Key 时只跑关键词。</p></div><span class="status-badge <?= $moderationSettings['enabled'] ? 'granted' : 'closed' ?>"><?= $moderationSettings['enabled'] ? '已启用' : '未启用' ?></span></div>
-            <form method="post" class="connection-form">
+            <form method="post" class="connection-form stack-form">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_moderation">
                 <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="enabled" value="1" <?= $moderationSettings['enabled'] ? 'checked' : '' ?>>启用内容风控</label></div>
                 <label><span>违禁关键词</span><textarea name="keywords" rows="4" placeholder="每行一个，也可用逗号分隔"><?= e($moderationSettings['keywords']) ?></textarea><small>命中关键词的文件会在上传前被拒绝，并分配唯一申诉号。</small></label>
@@ -1532,7 +1532,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
                     <button class="primary-button compact" data-confirm="确认保存空间巡检开关？">保存设置</button>
                 </div>
             </form>
-            <form method="post" class="connection-form" style="margin-top:10px;">
+            <form method="post" class="connection-form connection-form-next">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="run_space_patrol">
                 <div class="checkbox-row"><span>最近一次巡检日期：<?= $patrolLastDate !== '' ? e($patrolLastDate) : '尚未执行' ?></span></div>
                 <div class="form-actions">
@@ -1542,7 +1542,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         </section>
         <section class="admin-panel connection-panel">
             <div class="panel-title"><div><h2>注册与邮箱</h2><p>未配置 SMTP 时无法开启强制绑定邮箱；验证码 6 位数字，10 分钟内有效。</p></div><span class="status-badge"><?= smtpConfigured() ? 'SMTP 已配置' : 'SMTP 未配置' ?></span></div>
-            <form method="post" class="connection-form">
+            <form method="post" class="connection-form stack-form">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_access">
                 <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="registration_enabled" <?= $registrationEnabled ? 'checked' : '' ?>>开放新账号注册</label>
                 <label class="checkbox"><input type="checkbox" name="email_required" <?= $emailRequired ? 'checked' : '' ?>>强制所有用户绑定邮箱</label></div>
@@ -1561,7 +1561,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
 
         <section class="admin-panel connection-panel">
             <div class="panel-title"><div><h2>上传与容量</h2><p>分块大小决定浏览器每次提交的数据量，实际生效值受服务器 PHP 上传限制约束：upload_max_filesize = <?= e((string) ini_get('upload_max_filesize')) ?>，post_max_size = <?= e((string) ini_get('post_max_size')) ?>。官方账户单文件上限仅在「套餐」为付费版时生效，免费版仍为 5 MB。</p></div><span class="status-badge">实际单块 <?= e(formatBytes($effectiveChunkBytes)) ?></span></div>
-            <form method="post" class="connection-form">
+            <form method="post" class="connection-form stack-form">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_limits">
                 <label><span>官方账户单文件上限（MB）</span><input name="official_single_file_limit_mb" inputmode="numeric" value="<?= $officialLimitMb ?>" required></label>
                 <label><span>上传分块大小（MB）</span><input name="upload_chunk_size_mb" inputmode="numeric" value="<?= $chunkSizeMb ?>" required></label>
@@ -1572,7 +1572,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
 
         <section class="admin-panel connection-panel">
             <div class="panel-title"><div><h2>支付设置</h2><p>对接易支付（页面跳转收款）。商户密钥加密保存、不会回显；接口地址留空即暂停在线支付。套餐价格修改后立即对新订单生效，不影响已支付的订单。</p></div><span class="status-badge"><?= $epayConfigured ? '已配置' : '未配置' ?></span></div>
-            <form method="post" class="connection-form">
+            <form method="post" class="connection-form stack-form">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_payment">
                 <label><span>易支付接口地址</span><input name="epay_gateway" value="<?= e($payment['gateway']) ?>" maxlength="255" placeholder="https://spay.example.com/plugin/EpayApi/GatewayV1/"></label>
                 <label><span>商户 ID</span><input name="epay_pid" value="<?= e($payment['pid']) ?>" maxlength="64" autocomplete="off"></label>
@@ -1595,7 +1595,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
 
         <section class="admin-panel connection-panel">
             <div class="panel-title"><div><h2>站点信息</h2><p>站点名称同时用作浏览器标签标题；favicon 仅支持 .ico（≤1 MB），站点 logo 支持 JPG/PNG/GIF/WebP（≤2 MB），留空则回落「Notion Drive」与内置标识。备案号将显示在登录页与各页面侧边栏（用量信息下侧），留空则不显示。技术支持署名由 SZY创新工作室 固定提供，不可修改。</p></div></div>
-            <form method="post" class="connection-form" enctype="multipart/form-data">
+            <form method="post" class="connection-form stack-form" enctype="multipart/form-data">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_site">
                 <label><span>站点名称</span><input name="site_name" value="<?= e((string) Database::config('site_name', '')) ?>" maxlength="64" placeholder="留空则显示 Notion Drive"></label>
                 <label><span>ICP 备案号</span><input name="icp_license" value="<?= e(icpLicense()) ?>" maxlength="64" placeholder="如 京ICP备2024000000号-1，留空则不显示"></label>
@@ -1637,7 +1637,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
             <div class="empty-state compact-empty">还没有公告，可在下方创建。</div>
             <?php endif; ?>
 
-            <form method="post" class="connection-form" enctype="multipart/form-data">
+            <form method="post" class="connection-form stack-form" enctype="multipart/form-data">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_announcement">
                 <input type="hidden" name="announcement_id" value="<?= (int) ($editingAnnouncement['id'] ?? 0) ?>">
                 <label><span>标题</span><input name="title" maxlength="200" required value="<?= e((string) ($editingAnnouncement['title'] ?? '')) ?>" placeholder="公告标题（≤200 字）"></label>
@@ -1658,7 +1658,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         ?>
         <section class="admin-panel connection-panel">
             <div class="panel-title"><div><h2>工单过期设置</h2><p>全局一个档位。计时规则：只在「客服已回复、等用户回复」时计时——客服回复后用户超过该天数未回应，工单自动置为「已过期」。过期后对话仍可查看，但不可再回复、不可重开，工单内附件会立即从 Notion 删除且不可恢复。</p></div><span class="status-badge <?= $ticketExpireDays > 0 ? '' : 'closed' ?>"><?= $ticketExpireDays > 0 ? $ticketExpireDays . ' 天' : '不过期' ?></span></div>
-            <form method="post" class="connection-form">
+            <form method="post" class="connection-form stack-form">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_ticket_settings">
                 <label><span>过期天数</span>
                     <input name="ticket_expire_days" inputmode="numeric" list="ticketExpirePresets" value="<?= (int) $ticketExpireDays ?>" placeholder="0 表示不过期" required>
@@ -1684,7 +1684,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
 
         <section class="admin-panel connection-panel">
             <div class="panel-title"><div><h2>外部调研链接</h2><p>工单评价只在站内统计，不会共享到外部渠道。若需要在第三方渠道（如问卷平台）收集用户反馈，可在此配置调研链接：配置后会在「已结束工单」的详情页展示「为了提升我们的服务，邀请您参加调研 → 点我参加」，点击新窗口打开。留空表示不展示该入口。注意：站内评价开关关闭时，该入口同样不展示。</p></div><span class="status-badge <?= TicketService::surveyUrl() !== '' ? '' : 'closed' ?>"><?= TicketService::surveyUrl() !== '' ? '已启用' : '未配置' ?></span></div>
-            <form method="post" class="connection-form">
+            <form method="post" class="connection-form stack-form">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_survey_url">
                 <label><span>调研链接</span>
                     <input type="url" name="ticket_survey_url" maxlength="500" value="<?= e(TicketService::surveyUrl()) ?>" placeholder="https://…（留空表示不展示调研入口）">
@@ -1696,7 +1696,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
 
         <section class="admin-panel connection-panel">
             <div class="panel-title"><div><h2>禁止提交工单</h2><p>被禁止的用户无法新建工单（含文件被拦截后的快捷申诉），但可继续查看与回复已有工单；上传、下载、重命名与新建文件夹均不受影响。与「封禁管理」的账户封禁相互独立。</p></div><span class="status-badge <?= $ticketBans ? 'void' : 'closed' ?>"><?= count($ticketBans) ?> 位已禁止</span></div>
-            <form method="post" class="connection-form">
+            <form method="post" class="connection-form stack-form">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="ban_ticket_user">
                 <label><span>选择用户</span>
                     <select name="ticket_ban_user_id" required>
@@ -1754,7 +1754,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         <?php $previewWarnMb = (int) max(1, round(previewWarnBytes() / 1024 / 1024)); ?>
         <section class="admin-panel connection-panel">
             <div class="panel-title"><div><h2>文件在线预览</h2><p>控制用户在「我的文件」里能否直接预览文件。预览走站内同源接口，复用登录、封禁与文件归属校验，不会把文件地址交给任何第三方。可按<b>图片 / PDF / 音视频</b>三个大类分别开关（MP3 等小音频归入「音视频」，不单独设项）。关闭某类后，该类文件列表不再显示「预览」按钮，只能下载。</p></div></div>
-            <form method="post" class="connection-form">
+            <form method="post" class="connection-form stack-form">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_preview_settings">
                 <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="preview_image" value="1" <?= previewKindEnabled('image') ? 'checked' : '' ?>>允许预览图片（jpg / png / gif / webp 等，不含 SVG）</label></div>
                 <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="preview_pdf" value="1" <?= previewKindEnabled('pdf') ? 'checked' : '' ?>>允许预览 PDF（浏览器内置阅读器，部分手机浏览器可能转为下载）</label></div>
@@ -1832,7 +1832,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         <?php if ($activeTab === 'restore'): ?>
         <section class="admin-panel">
             <div class="panel-title"><div><h2>还原个性化设置</h2><p>把站点名称、站点 logo、favicon 恢复为内置默认（站点名回「Notion Drive」，logo / favicon 回内置标识）。不涉及任何用户、文件、工单与密钥。</p></div></div>
-            <form method="post" class="connection-form">
+            <form method="post" class="connection-form stack-form">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="restore_personalization">
                 <label><span>管理员密码</span><input type="password" name="admin_password" autocomplete="current-password" placeholder="请输入当前管理员登录密码"></label>
                 <label><span>确认短语</span><input name="confirm_phrase" autocomplete="off" placeholder="请输入：<?= e(RestoreService::PHRASE_PERSONALIZATION) ?>"></label>
@@ -1847,7 +1847,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
                 <li>已上传的文件会在 Notion 侧尽力归档，本地头像、站点 logo / favicon、公告图片一并删除。</li>
                 <li>执行后站点回到未安装状态并跳转安装向导，需要重新填写数据库、Notion Token 与管理员账号。</li>
             </ul>
-            <form method="post" class="connection-form">
+            <form method="post" class="connection-form stack-form">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="factory_reset">
                 <label><span>管理员密码</span><input type="password" name="admin_password" autocomplete="current-password" placeholder="请输入当前管理员登录密码"></label>
                 <label><span>确认短语</span><input name="confirm_phrase" autocomplete="off" placeholder="请输入：<?= e(RestoreService::PHRASE_FACTORY_RESET) ?>"></label>
@@ -1857,5 +1857,5 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         <?php endif; ?>
     </main>
     <?= siteCreditHtml() ?>
-    <div id="toast" class="toast"></div><script src="assets/app.js?v=27" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <div id="toast" class="toast"></div><script src="assets/app.js?v=28" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body></html>

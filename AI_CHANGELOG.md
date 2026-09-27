@@ -28,6 +28,41 @@
 
 ---
 
+### [2026-09-28 01:05:00] ND-2 全局审查收尾：后台表单 stack-form 补全 + 工单/评价/公告移动端优化 + JS 空值加固
+
+- 目的：延续上一轮公告表单错乱修复，做一次全局样式/功能审查。①后台仍有多处 `connection-form` 复用 auto-fit 多列网格（`repeat(auto-fit, minmax(230px,1fr))` + `align-items:end`），当表单含 label 堆叠、`readonly`、`file`、多行文本时同样会出现字段高矮错落与按钮错位——统一补 `stack-form`；②对工单评价区、对话、附件、审核提示面板、公告弹窗等新增内容做移动端深度适配（窄屏铺满、触摸目标≥44px、星级不溢出）；③修 JS 两处未加空值守卫的潜在崩溃点。全程未加说明性注释，仅保留功能性注释。
+- 验证：`php -l`（admin/tickets/dashboard/account/pay/bans/logs/admin_orders/register/index/install/SpacePatrol/TicketService）全部 `No syntax errors detected`；`node --check` app.js/admin.js/verify.js 退出码 0；版本号统计一致：`assets/app.css?v=54`（11 页）、`assets/app.js?v=28`（9 页）、`admin.js?v=9`、`verify.js?v=1`。**未做任何功能/HTTP 测试**（遵守「触发即还原/清库」红线）。
+- 改动明细：
+  - `admin.php` L1535 — 空间巡检「立即巡检」表单去掉内联 `style="margin-top:10px;"`，改 `class="connection-form connection-form-next"`。
+  - `admin.php` L1545（注册与邮箱）、L1564（上传与容量）、L1575（支付设置）、L1598（站点信息）、L1661（工单过期）、L1687（外部调研）、L1699（禁止提交工单）、L1835（还原个性化）、L1850（恢复出厂）— 九处含 label 堆叠 / readonly / file 字段的表单 `class="connection-form"` 改为 `class="connection-form stack-form"`，与公告表单同一修复口径。
+  - `assets/app.css` L389 — 新增 `.connection-form-next { margin-top: 10px; }` 取代内联样式。
+  - `assets/app.css` L659-L682（`@media max-width:760px`）— 新增工单对话/表单/评价/审核面板移动端适配：`.ticket-msg` 与 `.ticket-form`/`.review-form` 铺满整行、`>button` 满宽 44px；`.review-summary`/`.review-bar-row` 收窄列宽；`.notice-bulk` 换行、`.appeal-form` 满宽且 textarea 16px 防 iOS 缩放；`.moderation-review input`/`.group-member-list` 单列。
+  - `assets/app.css` L766-L776（`@media max-width:640px`）— 星级选择器缩至 1.4rem/字距 2px，保证 5 星在极窄屏不横向溢出；公告弹窗贴边全宽、操作区纵向铺满、主按钮满宽 44px。
+  - `assets/app.js` L281 — `row.dataset.fileName.includes()` 改为 `(row.dataset.fileName || '').toLowerCase().includes()`：搜索框过滤时遇到无 `data-file-name` 的行会抛 `TypeError` 中断整表过滤，加固后不再崩。
+  - `assets/app.js` L205 — 公告弹窗 `ackButton.addEventListener` 前补 `if (ackButton)` 守卫，避免 `#announceAck` 缺失时解引用 null。
+  - `src/Space/SpacePatrol.php` L285 — `$upload['storage_name'] ?: $upload['filename']` 改为 `(($upload['storage_name'] ?? '') ?: ($upload['filename'] ?? ''))`，消除键缺失时 PHP 8 undefined array key 警告并避免空文件名上传。
+  - `assets/app.css` 版本号 `?v=53` → `?v=54`（11 页）；`assets/app.js` `?v=27` → `?v=28`（9 页）。
+- 审查结论（未改动，已核对为无问题）：SMTP 表单字段名与 `saveSmtpSettings()` 的 `$_POST` 键完全一致（`smtp_username`/`smtp_password` 等）；`TicketService::scoreOptions()` 用 `$score += 0.5` + `round()` 生成，浮点严格比较安全；`SpacePatrol::fillMissingReplica()` 每次调用最多补一份副本（成功即 `return true`），`$survivors[0]` 取值稳定；前端各模块 DOM 引用均有空值守卫，`data-confirm` 破坏性操作全部位于表单内并拦截；CSRF 令牌在全部分支齐全。
+
+---
+
+### [2026-09-28 00:17:34] ND-2 后续修复：公告/风控/预览表单错乱（stack-form）+ 下载重定向加固 + R11 边界加固
+
+- 目的：用户反馈「系统设置里公告那部分公告栏样式出现问题，输入框和按钮大小位置错乱」。根因是这些后台表单复用了 `.connection-form`（`grid-template-columns: repeat(auto-fit, minmax(230px, 1fr))` + `align-items: end`），当表单内同时含单行 `input` 与 `rows=10` 的多行 `textarea` / `file` 域时，各字段被排成多列且底部对齐，导致高矮错落、按钮位置错乱。同类问题还存在于「内容风控」与「文件在线预览」两个表单（均含多行/多类字段）。顺带完成 R11/R13 新增功能的边界复查并加固。
+- 验证：`php -l admin.php / src/helpers.php / src/Space/SpacePatrol.php` 全部 `No syntax errors detected`；`node --check assets/app.js` 退出码 0；版本号统计 `assets/app.css?v=53`（11 页一致）。**未做任何功能/HTTP 测试**（遵守「触发即还原/清库」红线）。
+- 改动明细：
+  - `assets/app.css` L387-L389 — `.connection-form` 后新增 `.connection-form.stack-form { grid-template-columns: 1fr; align-items: start; }`：表单含多行文本域/文件域等高度差异大的字段时逐行堆叠，避免同行字段高矮错落。
+  - `admin.php` L1419（内容风控）、L1640（公告发布/编辑）、L1757（文件在线预览设置）— 三处表单 `class="connection-form"` 改为 `class="connection-form stack-form"`，修复输入框/文本域/按钮的大小与位置错乱。
+  - `assets/app.css` 版本号 `?v=52` → `?v=53`，同步 11 个 php 页面（account/admin/admin_orders/bans/dashboard/index/install/logs/pay/register/tickets）。
+  - `src/NotionClient.php` `downloadBlockToFile()` — 下载副本字节时补 `CURLOPT_MAXREDIRS => 3` 与 `CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS`：原 `CURLOPT_FOLLOWLOCATION => true` 未限制重定向次数与协议，存在被降级到 http/内网地址的风险（SSRF 加固）。`api/file.php` 下载流的 curl 已有同款限制。
+  - `src/helpers.php` L382 `previewKind()` — `$file['display_name'] ?: ($file['filename'] ?? '')` 改为 `($file['display_name'] ?? '') ?: ($file['filename'] ?? '')`，消除 `display_name` 键缺失时的 PHP 8 undefined array key 警告。
+  - `assets/app.js` L326-L331 `openPreview()` — `#previewHeading` / `#previewDownload` 访问补 null 保护（与同函数对 `previewModal` / `previewBody` 的判断保持一致），避免元素缺失时抛错中断预览。
+- 复查确认无误（本轮全量检查 R11/R12/R13）：R12 服务端 `submitReview()` 拦截 / `tickets.php` 整块条件渲染（关闭时管理员只读视图与调研入口一并隐藏）/ `admin.php save_review_enabled` 取值口径一致；R11 `previewKind()`（mime 优先、扩展名兜底、排除 SVG）/ `previewKindEnabled()`（默认开，match 映射 default false）/ `filePreviewable()`、`api/file.php` inline 白名单+开关双校验 + `nosniff`、`dashboard.php` 模态框与 `data-warn-bytes` 前后端一致（`previewWarnBytes()` 换算 MB 后回写）；R13 `SpacePatrol` 全文（懒触发 12:00 判定/`reconcileReplicas` 子查询规避 `ONLY_FULL_GROUP_BY`/`fillMissingReplica` target 与 covered 键 `type|account_id` 匹配一致/`markLost` 用 `rowCount()<1` 去重避免重复告警/`api/file.php` 全部副本 404 才 `markLost`+410、POST 非 delete 一律 410）；新增 CSS（`.preview-*` / `tr.file-lost` / `.lost-badge` / `.display-name`）均成对定义且含移动端适配。
+- 数据库结构影响：**无**。
+- 遗留提醒：`assertAccessible()` 当前未被调用（拦截改在 `api/file.php` / `api/folder.php` 内联实现），保留作后续统一入口，非缺陷。
+
+---
+
 ### [2026-09-27 22:36:34] ND-2 新需求三连做：R12 工单评价可选开关 / R11 文件在线预览 / R13 Notion 空间巡检与数据丢失提示
 
 - 目的：实现 ND-2 两张需求卡（与用户逐条问答定稿）。R12 工单评价改为后台可选（默认开，关闭时评价区块+外部调研入口一并隐藏、服务端拒绝提交，历史评价在「评价统计」保留）；R11 文档/图片/视频预览落地为**图片 / PDF / 音视频三大类**（MP3 等小音频并入音视频，不单列），后台各一个开关 + 大文件预览体积提醒阈值（默认 20MB，1~10240MB），列表行「预览」按钮 + 站内模态框，PDF 用同源 iframe，音视频走 Range 边下边播，预览失败统一提示「很抱歉，该文件数据已丢失，请重新上传」；R13 每天 12:00 巡检 Notion 空间，**优先自动修复**（恢复回收站页面 / 重建彻底 404 的空间页 / 单副本自动补齐为两份），全部副本失效且补不回则标记数据丢失（仅允许删除，下载/预览/重命名/移动全部拦截提示），后台开关默认开启，巡检结果走管理员告警（会发邮件）。

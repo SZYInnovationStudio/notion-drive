@@ -379,7 +379,7 @@ const PREVIEW_WARN_BYTES_DEFAULT = 20 * 1024 * 1024;
 function previewKind(array $file): string
 {
     $mime = strtolower(trim((string) ($file['mime_type'] ?? '')));
-    $name = (string) ($file['display_name'] ?: ($file['filename'] ?? ''));
+    $name = (string) (($file['display_name'] ?? '') ?: ($file['filename'] ?? ''));
     $ext = strtolower((string) pathinfo($name, PATHINFO_EXTENSION));
 
     // 图片：排除 svg

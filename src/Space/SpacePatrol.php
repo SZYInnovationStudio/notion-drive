@@ -282,7 +282,7 @@ final class SpacePatrol
                     ->downloadBlockToFile((string) $source['block_id'], $temporaryPath);
 
                 $size = (int) filesize($temporaryPath);
-                $storageName = (string) ($upload['storage_name'] ?: $upload['filename']);
+                $storageName = (string) (($upload['storage_name'] ?? '') ?: ($upload['filename'] ?? ''));
                 $result = \notionWriteWithRepair(
                     static function () use ($owner, $target, $temporaryPath, $storageName, $upload, $size): array {
                         $client = new NotionClient((string) $target['token']);

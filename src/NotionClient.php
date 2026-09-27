@@ -126,6 +126,9 @@ final class NotionClient
         curl_setopt_array($curl, [
             CURLOPT_FILE => $handle,
             CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 3,
+            // 仅允许跟随 https 跳转，避免被重定向到 http 或内网地址
+            CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
             CURLOPT_CONNECTTIMEOUT => 15,
             CURLOPT_TIMEOUT => 600,
             CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
