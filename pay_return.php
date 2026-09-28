@@ -47,7 +47,9 @@ if ($target === null) {
     exit;
 }
 
-if ((string) $target['status'] === 'pending') {
+// 待支付与「已关闭」都尝试主动查单对账：已关闭多是被新单顶掉的旧单，若其实已在网关付款成功，
+// 回调/回跳都应能把它开通回来，否则用户的钱会白付
+if (in_array((string) $target['status'], ['pending', 'closed'], true)) {
     $result = reconcileOrder($target);
     flash($result['paid'] ? 'success' : 'error', $result['message']);
 } elseif ((string) $target['status'] === 'paid') {

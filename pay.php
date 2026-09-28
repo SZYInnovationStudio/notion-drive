@@ -237,7 +237,7 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
                     <div class="order-amount">¥<?= e(number_format((float) $order['amount'], 2)) ?></div>
                     <span class="status-badge <?= e(orderDisplayClass($order)) ?>"><?= e(orderDisplayLabel($order)) ?></span>
                     <div class="order-actions">
-                        <?php if ($status === 'pending'): ?>
+                        <?php if (in_array($status, ['pending', 'closed'], true)): ?>
                         <form method="post" class="inline-form">
                             <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="sync_order"><input type="hidden" name="order_no" value="<?= e((string) $order['order_no']) ?>">
                             <button class="secondary-button">刷新状态</button>
@@ -254,6 +254,6 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
     </main>
     <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=28" defer></script>
+    <script src="assets/app.js?v=29" defer></script>
 </body>
 </html>

@@ -74,7 +74,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'user_id'  => $userId,
                 'admin_id' => (int) $currentUser['id'],
             ]);
-            flash('success', '已解除该用户的封禁，上传与下载恢复可用。');
+            flash('success', '已解除该用户的封禁，上传与下载恢复可用；违规次数已清零并重新开始累计周期。');
             header('Location: bans.php');
             exit;
         }

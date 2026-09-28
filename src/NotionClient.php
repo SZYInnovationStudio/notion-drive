@@ -102,7 +102,7 @@ final class NotionClient
         $type = (string) ($block['type'] ?? '');
         $fileObject = $block[$type] ?? null;
         $url = is_array($fileObject) ? (string) ($fileObject['file']['url'] ?? '') : '';
-        if ($url === '' || !$this->isTrustedUrl($url, self::TRUSTED_DOWNLOAD_DOMAINS)) {
+        if ($url === '' || !self::isTrustedDownloadUrl($url)) {
             throw new NotionApiException('Notion 未返回有效的文件下载地址。');
         }
 
@@ -137,10 +137,17 @@ final class NotionClient
         try {
             $ok = curl_exec($curl);
             $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+            // 跟随跳转后的最终地址：必须仍落在 Notion 可信文件域名内，否则可能已经被引导到任意地址
+            $effective = (string) curl_getinfo($curl, CURLINFO_EFFECTIVE_URL);
             $error = curl_error($curl);
         } finally {
             fclose($handle);
             curl_close($curl);
+        }
+
+        if ($effective !== '' && !self::isTrustedDownloadUrl($effective)) {
+            @unlink($destinationPath);
+            throw new NotionApiException('下载地址被重定向到不可信域名，已中止。');
         }
 
         if ($ok === false || $status < 200 || $status >= 300) {
@@ -354,11 +361,10 @@ final class NotionClient
     }
 
     /**
-     * 校验地址以 https 访问且主机位于给定域名之下，避免把服务端当作任意地址的下载/上传代理。
-     *
-     * @param list<string> $domains
+     * 校验地址以 https 访问且主机位于 Notion 可信文件域名之下，避免把服务端当作任意地址的下载代理。
+     * 下载（含跟随跳转后的最终地址）与预览直出都复用此判定。
      */
-    private function isTrustedUrl(string $url, array $domains): bool
+    public static function isTrustedDownloadUrl(string $url): bool
     {
         $parts = parse_url($url);
         if (!is_array($parts) || ($parts['scheme'] ?? '') !== 'https') {
@@ -366,7 +372,7 @@ final class NotionClient
         }
 
         $host = strtolower((string) ($parts['host'] ?? ''));
-        foreach ($domains as $domain) {
+        foreach (self::TRUSTED_DOWNLOAD_DOMAINS as $domain) {
             if ($host === $domain || str_ends_with($host, '.' . $domain)) {
                 return true;
             }

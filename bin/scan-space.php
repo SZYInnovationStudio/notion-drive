@@ -2,6 +2,12 @@
 
 declare(strict_types=1);
 
+// 仅允许命令行调用：防止被 Web 直接触发（无鉴权执行全量巡检）
+if (PHP_SAPI !== 'cli') {
+    http_response_code(404);
+    exit;
+}
+
 /**
  * R13 空间巡检 CLI 入口：供服务器计划任务（如每天 12:00）显式调用，不依赖网页懒触发。
  *

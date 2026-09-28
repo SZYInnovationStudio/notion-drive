@@ -193,7 +193,10 @@ final class ModerationService
             return Verdict::approved('', 'disabled');
         }
 
-        $keyword = (new KeywordModerator($this->keywords()))->review(['filename' => $filename]);
+        $keyword = (new KeywordModerator($this->keywords()))->review([
+            'filename' => $filename,
+            'text'     => str_starts_with($mime, 'text/') ? self::readTextSample($path) : '',
+        ]);
         if ($keyword->isFlagged()) {
             return $keyword;
         }
@@ -209,6 +212,40 @@ final class ModerationService
                 'path'     => $path,
                 'size'     => $size,
             ]);
+    }
+
+    /**
+     * 「通过」结论是否来自真实执行的审核判断（用于决定能否写入全站白名单）。
+     * 未配置 AI、审核范围不含任何载荷（skipped）、风控关闭时均为未实际审核，返回 false，
+     * 避免把未经审核的内容登记为「已通过」而长期免审（指纹投毒）。
+     */
+    public static function isScanned(Verdict $verdict): bool
+    {
+        return !in_array($verdict->detail, ['unconfigured', 'disabled', 'skipped'], true);
+    }
+
+    /**
+     * 读取文本类文件的开头片段用于关键词内容侧匹配（二进制 / 非 UTF-8 文件返回空串）。
+     */
+    private static function readTextSample(string $path): string
+    {
+        if ($path === '' || !is_file($path)) {
+            return '';
+        }
+
+        $handle = @fopen($path, 'rb');
+        if ($handle === false) {
+            return '';
+        }
+
+        $raw = (string) fread($handle, 6000);
+        fclose($handle);
+
+        if ($raw === '' || str_contains($raw, "\0") || !mb_check_encoding($raw, 'UTF-8')) {
+            return '';
+        }
+
+        return trim($raw);
     }
 
     /**
@@ -303,12 +340,29 @@ final class ModerationService
     }
 
     /**
-     * 撤销内容指纹：管理员放行重传时调用，让该内容下次上传重新进入审核，而不是被指纹直接拦截。
+     * 撤销内容指纹：管理员放行重传 / 清除记录时调用，让该内容下次上传重新进入审核，
+     * 而不是被指纹直接拦截。
+     *
+     * 同一内容可能被多个用户先后上传并分别被判违规。仅当没有「其它仍处于已打回状态的记录」
+     * 引用同一指纹时才可删除，否则会因单条记录的放行而误将全站仍属违规的内容解除拦截。
      */
-    public function forgetHash(string $contentHash): void
+    public function forgetHash(string $contentHash, int $exceptRecordId = 0): void
     {
         $contentHash = self::normalizeHash($contentHash);
         if ($contentHash === '') {
+            return;
+        }
+
+        $statement = Database::connection()->prepare(
+            'SELECT COUNT(*) FROM moderation_records
+             WHERE content_hash = :content_hash AND status = :status AND id <> :except_id'
+        );
+        $statement->execute([
+            'content_hash' => $contentHash,
+            'status'       => self::STATUS_REJECTED,
+            'except_id'    => $exceptRecordId,
+        ]);
+        if ((int) $statement->fetchColumn() > 0) {
             return;
         }
 
@@ -378,7 +432,7 @@ final class ModerationService
         $record = $this->requireRecord($recordId);
         $this->closeRecord($recordId, self::STATUS_RESUBMIT, $adminId, $note);
         // 放行重传：撤销该内容指纹，让重传内容重新进入审核而不是被指纹直接拦截
-        $this->forgetHash((string) ($record['content_hash'] ?? ''));
+        $this->forgetHash((string) ($record['content_hash'] ?? ''), $recordId);
 
         return [
             'appeal_no' => (string) $record['appeal_no'],
@@ -397,8 +451,13 @@ final class ModerationService
     public function clearRecord(int $recordId, int $adminId, string $note): array
     {
         $record = $this->requireRecord($recordId);
+        // 仅「已打回」的记录可清除：避免把待复核 / 已放行重传 / 已清除的记录改成清除态，
+        // 从而错误地扣减违规计数或撤销全站指纹
+        if ((string) $record['status'] !== self::STATUS_REJECTED) {
+            throw new \RuntimeException('仅可清除「已打回」状态的违规记录。');
+        }
         $this->closeRecord($recordId, self::STATUS_CLEARED, $adminId, $note);
-        $this->forgetHash((string) ($record['content_hash'] ?? ''));
+        $this->forgetHash((string) ($record['content_hash'] ?? ''), $recordId);
 
         return [
             'appeal_no' => (string) $record['appeal_no'],
@@ -518,10 +577,20 @@ final class ModerationService
 
     private function noticeExists(int $recordId, int $userId): bool
     {
+        // 与 dismissNotice() 的 UPDATE 条件同口径：只有「未通过审核且仍在处理中」的提示才算存在。
+        // 已被管理员复核（打回 / 放行 / 清除）的记录不应再回「已清除」，避免误导用户以为是自己清掉的
         $statement = Database::connection()->prepare(
-            'SELECT COUNT(*) FROM moderation_records WHERE id = :id AND user_id = :user_id'
+            'SELECT COUNT(*) FROM moderation_records
+             WHERE id = :id AND user_id = :user_id AND decision = :decision
+                   AND status IN (:status_open, :status_resubmit)'
         );
-        $statement->execute(['id' => $recordId, 'user_id' => $userId]);
+        $statement->execute([
+            'id'              => $recordId,
+            'user_id'         => $userId,
+            'decision'        => Verdict::FLAGGED,
+            'status_open'     => self::STATUS_OPEN,
+            'status_resubmit' => self::STATUS_RESUBMIT,
+        ]);
 
         return (int) $statement->fetchColumn() > 0;
     }
@@ -750,13 +819,66 @@ final class ModerationService
     private static function isPrivateHost(string $url): bool
     {
         $host = (string) (parse_url($url, PHP_URL_HOST) ?? '');
-        if ($host === '' || $host === 'localhost') {
+        if ($host === '') {
             return true;
         }
-        if (filter_var($host, FILTER_VALIDATE_IP) === false) {
-            return false;
+
+        return self::isPrivateAddress($host);
+    }
+
+    /** 判断主机名指向的地址是否属于内网/保留网段（覆盖 IPv6、十进制整型 IPv4 与域名解析结果）。 */
+    private static function isPrivateAddress(string $host): bool
+    {
+        $host = strtolower(trim($host, "[] \t\n\r\0\x0B"));
+        if ($host === '' || $host === 'localhost' || str_ends_with($host, '.localhost') || $host === 'localhost.localdomain') {
+            return true;
         }
 
-        return filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
+        // PHP 的 FILTER_VALIDATE_IP 不认「十进制整型 IPv4」（如 2130706433 即 127.0.0.1），先归一化
+        if (preg_match('/^[0-9]+$/', $host) === 1 && (int) $host <= 4294967295) {
+            $host = long2ip((int) $host);
+        }
+
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            return self::ipIsPrivate($host);
+        }
+
+        // 域名：解析成 IP 再判定，避免「公网域名指向内网地址」绕过字面量检查
+        $addresses = [];
+        $resolved = @gethostbynamel($host);
+        if (is_array($resolved)) {
+            $addresses = $resolved;
+        }
+        $records = @dns_get_record($host, DNS_AAAA);
+        if (is_array($records)) {
+            foreach ($records as $record) {
+                if (isset($record['ipv6']) && $record['ipv6'] !== '') {
+                    $addresses[] = (string) $record['ipv6'];
+                }
+            }
+        }
+
+        foreach ($addresses as $address) {
+            if (self::ipIsPrivate($address)) {
+                return true;
+            }
+        }
+
+        // 无法解析时不阻断（域名可能稍后才生效），但也不因此认定其为公网
+        return false;
+    }
+
+    private static function ipIsPrivate(string $ip): bool
+    {
+        // 先把 IPv4 映射的 IPv6（如 ::ffff:127.0.0.1）还原成 IPv4，再统一判定
+        $packed = @inet_pton($ip);
+        if (is_string($packed) && strlen($packed) === 16 && str_starts_with($packed, "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xFF\xFF")) {
+            $mapped = @inet_ntop(substr($packed, 12));
+            if (is_string($mapped)) {
+                $ip = $mapped;
+            }
+        }
+
+        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
     }
 }

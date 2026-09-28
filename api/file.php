@@ -87,6 +87,12 @@ try {
                 http_response_code(404);
                 exit('该类型不支持预览。');
             }
+            // 预览必须能用与预览大类一致的安全 Content-Type 输出，否则拒绝内联
+            // （防止「文件名 a.png、内容为 HTML」被以 text/html + inline 渲染成同源 HTML 注入）
+            if (previewContentType($file, previewKind($file)) === null) {
+                http_response_code(404);
+                exit('该类型不支持预览。');
+            }
             $previewMode = true;
         }
 
@@ -103,7 +109,10 @@ try {
             $extension = preg_replace('/[^A-Za-z0-9]/', '', pathinfo($filename, PATHINFO_EXTENSION)) ?? '';
             $asciiName = 'download' . ($extension !== '' ? '.' . $extension : '');
         }
-        header('Content-Type: ' . (string) $file['mime_type']);
+        $responseType = $previewMode
+            ? (previewContentType($file, previewKind($file)) ?: 'application/octet-stream')
+            : (string) $file['mime_type'];
+        header('Content-Type: ' . ($responseType !== '' ? $responseType : 'application/octet-stream'));
         if ($previewMode) {
             // 内联预览：不触发下载；nosniff 防止浏览器把内容猜成可执行类型
             header('Content-Disposition: inline; filename="' . $asciiName . '"; filename*=UTF-8\'\'' . rawurlencode($filename));
@@ -173,6 +182,10 @@ try {
                 },
                 CURLOPT_WRITEFUNCTION => static function ($curl, string $data) use (&$pendingHeaders, &$status, &$started, &$written): int {
                     if (!$started) {
+                        // 跟随跳转后的最终地址必须仍是 Notion 可信文件域名，否则不输出任何内容并回退
+                        if (!NotionClient::isTrustedDownloadUrl((string) curl_getinfo($curl, CURLINFO_EFFECTIVE_URL))) {
+                            return 0;
+                        }
                         // 远端返回错误状态：不输出任何内容，交由外层回退到下一份副本
                         if ($status >= 400) {
                             return 0;

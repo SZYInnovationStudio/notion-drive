@@ -12,6 +12,16 @@
     }
     const allowed = new Set(['aac','adts','mid','midi','mp3','mpga','m4a','m4b','mp4','oga','ogg','opus','wav','wma','weba','flac','pdf','txt','csv','json','js','ts','tsx','py','doc','dot','docx','dotx','xls','xlt','xla','xlsx','xltx','ppt','pot','pps','ppa','pptx','potx','rtf','md','markdown','html','htm','epub','xml','css','odt','ods','odp','ics','yaml','yml','tsv','zip','gz','gzip','tar','7z','bz2','rar','gif','heic','jpeg','jpg','png','svg','tif','tiff','webp','ico','bmp','avif','apng','amv','asf','wmv','avi','f4v','flv','gifv','m4v','mkv','webm','mov','qt','mpeg','ogv','3gp','3g2','dwg','dxf','dwf','rvt','rfa','fbx','3dm','step','stp','iges','igs','stl','obj','3mf','gltf','glb','dae','usdz']);
 
+    // CSP 的 style-src 未放开 'unsafe-inline'，HTML 里直接写 style="..." 会被浏览器丢弃。
+    // 进度条宽度、评分百分比这类动态数值改用 data-* 承载，再由 JS 经 CSSOM 写入（CSSOM 不受 CSP 限制）。
+    // 脚本以 defer 加载，执行时 DOM 已解析完毕，可直接查询。
+    document.querySelectorAll('[data-style-width]').forEach(node => {
+        node.style.width = node.dataset.styleWidth;
+    });
+    document.querySelectorAll('[data-style-pct]').forEach(node => {
+        node.style.setProperty('--pct', node.dataset.stylePct);
+    });
+
     const notify = (message, type = 'success') => {
         if (!toast) return;
         toast.textContent = message;
@@ -546,6 +556,26 @@
         if (image) image.src = `captcha.php?t=${Date.now()}`;
     });
 
+    // 二次确认通过后的统一提交。临时关闭浏览器校验（表单常混有无关 required 字段会静默拦下提交，
+    // 确认弹窗已承担确认职责），提交发起后立即恢复，避免该表单后续提交永久失去原生校验。
+    const submitConfirmed = (form, trigger) => {
+        form.noValidate = true;
+        if (typeof form.requestSubmit === 'function') {
+            form.requestSubmit(trigger);
+        } else {
+            // 旧浏览器兜底：把按钮的 name/value 复制成隐藏域再提交
+            if (trigger.name) {
+                const hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.name = trigger.name;
+                hidden.value = trigger.value;
+                form.append(hidden);
+            }
+            form.submit();
+        }
+        form.noValidate = false;
+    };
+
     document.addEventListener('click', async event => {
         const trigger = event.target.closest('[data-confirm]');
         if (!trigger) return;
@@ -555,21 +585,28 @@
 
         const form = trigger.form;
         if (!form) return;
-        if (typeof form.requestSubmit === 'function') {
-            // 关闭浏览器校验：表单常混有无关的 required 字段，会静默拦下提交，确认弹窗已承担确认职责
-            form.noValidate = true;
-            form.requestSubmit(trigger);
+        // 标记本次提交已过确认，交给下面的 submit 委托放行，避免被重复确认
+        form.dataset.confirmPassed = '1';
+        submitConfirmed(form, trigger);
+    });
+
+    // 键盘隐式提交（光标停在表单里按 Enter）不经过 click 委托，会被浏览器直接提交而绕过二次确认。
+    // 这里在 submit 阶段兜底：凡含 [data-confirm] 按钮的表单，任何来源的提交都要先过确认弹窗。
+    document.addEventListener('submit', async event => {
+        const form = event.target;
+        if (form.dataset.confirmPassed === '1') {
+            delete form.dataset.confirmPassed;
             return;
         }
-        // 旧浏览器兜底：把按钮的 name/value 复制成隐藏域再提交
-        if (trigger.name) {
-            const hidden = document.createElement('input');
-            hidden.type = 'hidden';
-            hidden.name = trigger.name;
-            hidden.value = trigger.value;
-            form.append(hidden);
-        }
-        form.submit();
+        const trigger = (event.submitter && event.submitter.matches('[data-confirm]'))
+            ? event.submitter
+            : form.querySelector('[data-confirm]');
+        if (!trigger) return;
+        event.preventDefault();
+        if (document.querySelector('.confirm-overlay')) return;
+        if (!(await askConfirm(trigger.dataset.confirm))) return;
+        form.dataset.confirmPassed = '1';
+        submitConfirmed(form, trigger);
     });
 
     const failureText = (statusCode, data) => {

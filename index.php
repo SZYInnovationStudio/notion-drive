@@ -41,7 +41,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: dashboard.php');
         exit;
     } catch (Throwable $exception) {
-        $error = $exception->getMessage();
+        // 数据库原始报错可能含 SQL 与服务器绝对路径，不直接回显；RuntimeException 的提示需继续展示给用户
+        $error = match (true) {
+            $exception instanceof PDOException => '数据库操作失败，请稍后重试。',
+            $exception instanceof RuntimeException => $exception->getMessage(),
+            default => '服务器处理请求时发生未知错误，请稍后重试。',
+        };
         $throttle = loginThrottle($usernameInput);
     }
 }
@@ -75,11 +80,11 @@ $captchaRequired = $throttle['captcha'];
                 <?php if ($captchaRequired): ?><?= captchaField() ?><?php endif; ?>
                 <button class="primary-button" type="submit"><span>进入工作区</span><b>→</b></button>
             </form>
-            <p class="login-note"><span>◆</span> 使用管理员分配的账号登录</p>
+            <p class="login-note"><span>◆</span> 使用管理员分配的账号登录<?php if (smtpConfigured()): ?> · <a href="forgot.php">忘记密码？</a><?php endif; ?></p>
             <?php if (registrationEnabled()): ?><p class="login-note"><span>◆</span> 还没有账号？<a href="register.php">注册新账号</a></p><?php endif; ?>
         </section>
     </main>
     <?= siteCreditHtml() ?>
-    <script src="assets/app.js?v=28" defer></script>
+    <script src="assets/app.js?v=29" defer></script>
 </body>
 </html>

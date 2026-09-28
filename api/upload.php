@@ -581,45 +581,71 @@ try {
         $stored = writeNotionReplicas($user, $partPath, $filename, $mime, $size);
 
         $pdo = Database::connection();
-        $pdo->beginTransaction();
         try {
-            $pdo->prepare(
-                'INSERT INTO uploads (user_id, scope, folder_id, ticket_id, filename, display_name, storage_name, file_size, mime_type, notion_file_upload_id, notion_block_id)
-                 VALUES (:user_id, :scope, :folder_id, :ticket_id, :filename, :display_name, :storage_name, :file_size, :mime_type, :notion_file_upload_id, :notion_block_id)'
-            )->execute([
-                'user_id' => $user['id'],
-                'scope' => $scope,
-                'folder_id' => $folderId > 0 ? $folderId : null,
-                'ticket_id' => $scope === 'ticket' ? $ticketId : null,
-                'filename' => $filename,
-                'display_name' => $filename,
-                'storage_name' => $stored['storage_name'],
-                'file_size' => $size,
-                'mime_type' => $mime,
-                'notion_file_upload_id' => (string) ($stored['replicas'][0]['notion_file_upload_id'] ?? ''),
-                'notion_block_id' => (string) ($stored['replicas'][0]['notion_block_id'] ?? ''),
-            ]);
-            $uploadId = (int) $pdo->lastInsertId();
+            $pdo->beginTransaction();
+            try {
+                // 锁定该用户行，串行化同一用户的并发落库：配额与重名判定若只在上传前读一次，
+                // 同一用户的两次并发上传会各自读到未含对方的状态而同时通过（TOCTOU 超卖 / 同名重复）
+                $pdo->prepare('SELECT id FROM users WHERE id = :id FOR UPDATE')->execute(['id' => (int) $user['id']]);
+                if ($scope === 'drive') {
+                    // 持锁后以原始文件名重新裁决重名，避免并发同名上传各写一条可用文件
+                    $resolved = $resolveDuplicate((string) $meta['filename'], (string) ($meta['duplicate_action'] ?? ''));
+                    $filename = $resolved['filename'];
+                    if ($resolved['handled'] !== '') {
+                        $context['duplicate'] = $resolved['handled'];
+                    }
+                    $context['renamed_to'] = $resolved['renamed_to'];
+                    $context['file']['name'] = $filename;
 
-            $replicaInsert = $pdo->prepare(
-                'INSERT INTO upload_replicas (upload_id, role, account_type, official_account_id, notion_file_upload_id, notion_block_id)
-                 VALUES (:upload_id, :role, :account_type, :official_account_id, :notion_file_upload_id, :notion_block_id)'
-            );
-            foreach ($stored['replicas'] as $replica) {
-                $replicaInsert->execute([
-                    'upload_id' => $uploadId,
-                    'role' => (int) $replica['role'],
-                    'account_type' => (string) $replica['account_type'],
-                    'official_account_id' => $replica['official_account_id'],
-                    'notion_file_upload_id' => (string) $replica['notion_file_upload_id'],
-                    'notion_block_id' => (string) $replica['notion_block_id'],
+                    $quotaBytes = userQuotaBytes($user);
+                    $usedBytes = userUsedBytes((int) $user['id']);
+                    if ($quotaBytes !== null && $usedBytes - $resolved['freed_bytes'] + $size > $quotaBytes) {
+                        throw new RuntimeException('个人空间不足：并发上传占用了剩余空间，本次上传已取消，请稍后重试。');
+                    }
+                }
+
+                $pdo->prepare(
+                    'INSERT INTO uploads (user_id, scope, folder_id, ticket_id, filename, display_name, storage_name, file_size, mime_type, notion_file_upload_id, notion_block_id)
+                     VALUES (:user_id, :scope, :folder_id, :ticket_id, :filename, :display_name, :storage_name, :file_size, :mime_type, :notion_file_upload_id, :notion_block_id)'
+                )->execute([
+                    'user_id' => $user['id'],
+                    'scope' => $scope,
+                    'folder_id' => $folderId > 0 ? $folderId : null,
+                    'ticket_id' => $scope === 'ticket' ? $ticketId : null,
+                    'filename' => $filename,
+                    'display_name' => $filename,
+                    'storage_name' => $stored['storage_name'],
+                    'file_size' => $size,
+                    'mime_type' => $mime,
+                    'notion_file_upload_id' => (string) ($stored['replicas'][0]['notion_file_upload_id'] ?? ''),
+                    'notion_block_id' => (string) ($stored['replicas'][0]['notion_block_id'] ?? ''),
                 ]);
+                $uploadId = (int) $pdo->lastInsertId();
+
+                $replicaInsert = $pdo->prepare(
+                    'INSERT INTO upload_replicas (upload_id, role, account_type, official_account_id, notion_file_upload_id, notion_block_id)
+                     VALUES (:upload_id, :role, :account_type, :official_account_id, :notion_file_upload_id, :notion_block_id)'
+                );
+                foreach ($stored['replicas'] as $replica) {
+                    $replicaInsert->execute([
+                        'upload_id' => $uploadId,
+                        'role' => (int) $replica['role'],
+                        'account_type' => (string) $replica['account_type'],
+                        'official_account_id' => $replica['official_account_id'],
+                        'notion_file_upload_id' => (string) $replica['notion_file_upload_id'],
+                        'notion_block_id' => (string) $replica['notion_block_id'],
+                    ]);
+                }
+                $pdo->commit();
+            } catch (Throwable $exception) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                throw $exception;
             }
-            $pdo->commit();
         } catch (Throwable $exception) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
+            // 落库失败：Notion 文件块已写入但本地没有记录，若不清理将永远无法通过应用删除（孤儿副本）
+            archiveWrittenReplicas($user, $stored['replicas']);
             throw $exception;
         }
 
@@ -726,8 +752,12 @@ try {
                             'reason' => $verdict->reason,
                         ]);
                     } else {
-                        // 审核通过：登记内容指纹，全站再次上传同哈希内容时免重复审核
-                        $moderationService->rememberHash($contentHash, Verdict::APPROVED);
+                        // 审核通过：仅当审核确实执行过才登记内容指纹，全站再次上传同哈希内容时免重复审核。
+                        // 若 AI 未配置 / 审核范围不含任何载荷（skipped），内容实际未被审核，
+                        // 此时写白名单会把未经审核的内容永久登记为「已通过」（指纹投毒）
+                        if (ModerationService::isScanned($verdict)) {
+                            $moderationService->rememberHash($contentHash, Verdict::APPROVED);
+                        }
                     }
                 }
             }

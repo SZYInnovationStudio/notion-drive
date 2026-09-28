@@ -275,7 +275,7 @@ final class TicketService
             if ($status === self::STATUS_CLOSED) {
                 [$canReopen] = $this->reopenState($ticket);
                 if ($canReopen) {
-                    $this->reopenTicket($ticketId);
+                    $this->reopenTicket($ticketId, $userId);
                 } else {
                     return $this->openTicket(
                         $userId,
@@ -334,6 +334,9 @@ final class TicketService
         $ticket = $this->find($ticketId);
         if ($ticket === null) {
             throw new \RuntimeException('工单不存在。');
+        }
+        if (self::isEnded((string) $ticket['status'])) {
+            throw new \RuntimeException('工单已结束，无法继续回复。');
         }
 
         $this->appendMessage($ticketId, self::ROLE_ADMIN, $adminId, $body);
@@ -549,17 +552,29 @@ final class TicketService
         $changed = 0;
         if (self::isEnded($status)) {
             foreach ($ids as $id) {
-                $this->closeTicket($id, null, $status);
-                $changed++;
+                if ($this->closeTicket($id, null, $status)) {
+                    $changed++;
+                }
             }
 
             return $changed;
         }
 
         $pdo = Database::connection();
-        $statement = $pdo->prepare('UPDATE tickets SET status = :status WHERE id = :id AND status <> :status_check');
+        // 非结束态互转只允许发生在「待处理 / 处理中」之间：终态工单不可经此路径复活，
+        // 否则会绕过 reopenState() 的「过期不可重开」与重开次数上限校验。
+        $statement = $pdo->prepare(
+            'UPDATE tickets SET status = :status
+             WHERE id = :id AND status <> :target_check AND status NOT IN (:closed, :expired)'
+        );
         foreach ($ids as $id) {
-            $statement->execute(['status' => $status, 'id' => $id, 'status_check' => $status]);
+            $statement->execute([
+                'status'       => $status,
+                'id'           => $id,
+                'target_check' => $status,
+                'closed'       => self::STATUS_CLOSED,
+                'expired'      => self::STATUS_EXPIRED,
+            ]);
             $changed += $statement->rowCount();
         }
 
@@ -656,8 +671,9 @@ final class TicketService
      * 结束工单：已关闭 / 已过期都是终态，用户与管理员都可以结束。
      * 传入 $userId 时校验归属（普通用户只能结束自己的工单）。
      * 同时记录关闭时间（closed_at）或过期时间（expired_at），供重开窗口与统计使用。
+     * 已处于终态的工单不再处理，返回 false，避免重复关闭刷新时间字段而无限推迟重开窗口与自动过期。
      */
-    public function closeTicket(int $ticketId, ?int $userId = null, string $status = self::STATUS_CLOSED): void
+    public function closeTicket(int $ticketId, ?int $userId = null, string $status = self::STATUS_CLOSED): bool
     {
         if ($userId !== null) {
             if ($this->findForUser($ticketId, $userId) === null) {
@@ -672,12 +688,24 @@ final class TicketService
         }
 
         $timeColumn = $status === self::STATUS_EXPIRED ? 'expired_at' : 'closed_at';
-        Database::connection()
-            ->prepare("UPDATE tickets SET status = :status, {$timeColumn} = NOW() WHERE id = :id")
-            ->execute(['status' => $status, 'id' => $ticketId]);
+        $statement = Database::connection()->prepare(
+            "UPDATE tickets SET status = :status, {$timeColumn} = NOW()
+             WHERE id = :id AND status NOT IN (:closed, :expired)"
+        );
+        $statement->execute([
+            'status'  => $status,
+            'id'      => $ticketId,
+            'closed'  => self::STATUS_CLOSED,
+            'expired' => self::STATUS_EXPIRED,
+        ]);
+        if ($statement->rowCount() === 0) {
+            return false;
+        }
 
         // 结束即失效：把该工单的附件从 Notion 删除并本地标记为已删除（不可恢复）
         $this->purgeAttachments($ticketId);
+
+        return true;
     }
 
     /**

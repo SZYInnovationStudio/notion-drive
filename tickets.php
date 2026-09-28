@@ -65,8 +65,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($action === 'close_ticket') {
             // 已关闭是终态，管理员可关闭任意工单，普通用户只能关闭自己的工单
-            $service->closeTicket($ticketId, $isAdmin ? null : $userId);
-            flash('success', '工单已关闭。');
+            $closed = $service->closeTicket($ticketId, $isAdmin ? null : $userId);
+            flash($closed ? 'success' : 'warning', $closed ? '工单已关闭。' : '该工单已处于结束状态，无需重复关闭。');
             header('Location: tickets.php?id=' . $ticketId);
             exit;
         }
@@ -559,7 +559,7 @@ if ($ticketId > 0) {
                     <input type="hidden" name="action" value="submit_review">
                     <input type="hidden" name="ticket_id" value="<?= (int) $ticket['id'] ?>">
                     <label><span>你的评分</span>
-                        <div class="star-rating" role="radiogroup" aria-label="服务评分" style="--pct: <?= e(number_format($reviewScore / TicketService::MAX_SCORE * 100, 2)) ?>%">
+                        <div class="star-rating" role="radiogroup" aria-label="服务评分" data-style-pct="<?= e(number_format($reviewScore / TicketService::MAX_SCORE * 100, 2)) ?>%">
                             <div class="star-rating-stars" aria-hidden="true"><span class="star-rating-fg">★★★★★</span>★★★★★</div>
                             <div class="star-rating-inputs">
                                 <?php foreach (TicketService::scoreOptions() as $option): ?>
@@ -585,6 +585,6 @@ if ($ticketId > 0) {
         <?php endif; ?>
     </main>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=28" defer></script>
+    <script src="assets/app.js?v=29" defer></script>
 </body>
 </html>

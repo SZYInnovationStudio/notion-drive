@@ -408,24 +408,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             Database::setConfig('icp_license', trim((string) ($_POST['icp_license'] ?? '')));
             Database::setConfig('police_license', trim((string) ($_POST['police_license'] ?? '')));
 
-            // favicon：可单独删除或替换，替换前先清理旧文件，避免 storage/site 残留
+            // favicon：可单独删除或替换。替换时先落盘新文件、写库成功后再删旧文件，
+            // 避免新图校验失败（超限 / 格式不符）时旧图已被删除、配置却仍指向不存在的文件
             if (isset($_POST['remove_favicon'])) {
                 removeSiteAsset(siteFaviconPath());
                 Database::setConfig('site_favicon', '');
             }
             if (isset($_FILES['site_favicon']) && (int) ($_FILES['site_favicon']['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
-                removeSiteAsset(siteFaviconPath());
+                $previousFavicon = siteFaviconPath();
                 Database::setConfig('site_favicon', storeSiteImage($_FILES['site_favicon'], 'favicon'));
+                removeSiteAsset($previousFavicon);
             }
 
-            // 站点 logo：同 favicon，允许删除或替换
+            // 站点 logo：同 favicon，允许删除或替换，同样先存新后删旧
             if (isset($_POST['remove_logo'])) {
                 removeSiteAsset(siteLogoPath());
                 Database::setConfig('site_logo', '');
             }
             if (isset($_FILES['site_logo']) && (int) ($_FILES['site_logo']['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
-                removeSiteAsset(siteLogoPath());
+                $previousLogo = siteLogoPath();
                 Database::setConfig('site_logo', storeSiteImage($_FILES['site_logo'], 'logo'));
+                removeSiteAsset($previousLogo);
             }
 
             flash('success', '站点信息已保存。');
@@ -449,6 +452,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             if ($id > 0) {
+                // 取旧正文：既做存在性校验，也用于比对图片引用差集，清理被移除的旧图
+                $previousStatement = $pdo->prepare('SELECT body FROM announcements WHERE id = :id');
+                $previousStatement->execute(['id' => $id]);
+                $previousRow = $previousStatement->fetch();
+                if ($previousRow === false) {
+                    throw new RuntimeException('该公告不存在或已被删除。');
+                }
                 // 显式刷新 updated_at：公告内容/状态变化后指纹随之改变，前台弹窗会重新提醒所有用户
                 $pdo->prepare('UPDATE announcements SET title = :title, body = :body, is_active = :is_active, updated_at = NOW() WHERE id = :id')
                     ->execute([
@@ -457,6 +467,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'is_active' => isset($_POST['is_active']) ? 1 : 0,
                         'id'        => $id,
                     ]);
+                // 旧正文里被删除的图片引用一并清理，避免 storage/announcements 残留孤儿文件
+                $orphanImages = array_diff(
+                    announcementImagesInBody((string) $previousRow['body']),
+                    announcementImagesInBody($body)
+                );
+                foreach ($orphanImages as $orphan) {
+                    removeAnnouncementImage($orphan);
+                }
                 flash('success', '公告已更新，前台弹窗将重新提醒所有用户。');
             } else {
                 $pdo->prepare('INSERT INTO announcements (title, body, is_active) VALUES (:title, :body, :is_active)')
@@ -470,20 +488,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($action === 'toggle_announcement') {
             $id = (int) ($_POST['announcement_id'] ?? 0);
             // 启用/停用同样刷新 updated_at：重新启用后前台会再次提醒
-            $pdo->prepare('UPDATE announcements SET is_active = 1 - is_active, updated_at = NOW() WHERE id = :id')->execute(['id' => $id]);
+            $toggleStatement = $pdo->prepare('UPDATE announcements SET is_active = 1 - is_active, updated_at = NOW() WHERE id = :id');
+            $toggleStatement->execute(['id' => $id]);
+            // is_active 必然翻转，影响行数为 0 只可能是该公告不存在
+            if ($toggleStatement->rowCount() === 0) {
+                throw new RuntimeException('该公告不存在或已被删除。');
+            }
             flash('success', '公告状态已切换。');
         } elseif ($action === 'delete_announcement') {
             $id = (int) ($_POST['announcement_id'] ?? 0);
             $statement = $pdo->prepare('SELECT body FROM announcements WHERE id = :id');
             $statement->execute(['id' => $id]);
             $row = $statement->fetch();
-            if ($row !== false) {
-                // 正文里引用的图片一并清理，避免 storage/announcements 残留孤儿文件
-                foreach (announcementImagesInBody((string) $row['body']) as $filename) {
-                    removeAnnouncementImage($filename);
-                }
-                $pdo->prepare('DELETE FROM announcements WHERE id = :id')->execute(['id' => $id]);
+            if ($row === false) {
+                throw new RuntimeException('该公告不存在或已被删除。');
             }
+            // 正文里引用的图片一并清理，避免 storage/announcements 残留孤儿文件
+            foreach (announcementImagesInBody((string) $row['body']) as $filename) {
+                removeAnnouncementImage($filename);
+            }
+            $pdo->prepare('DELETE FROM announcements WHERE id = :id')->execute(['id' => $id]);
             flash('success', '公告已删除。');
         } elseif ($action === 'delete_user') {
             $id = (int) ($_POST['user_id'] ?? 0);
@@ -1784,7 +1808,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
                 <div class="review-average">
                     <strong><?= e(number_format((float) $reviewStats['average'], 2)) ?></strong>
                     <div class="star-rating static" aria-hidden="true">
-                        <div class="star-rating-stars"><span class="star-rating-fg" style="width: <?= e(number_format((float) $reviewStats['average'] / TicketService::MAX_SCORE * 100, 2)) ?>%">★★★★★</span>★★★★★</div>
+                        <div class="star-rating-stars"><span class="star-rating-fg" data-style-width="<?= e(number_format((float) $reviewStats['average'] / TicketService::MAX_SCORE * 100, 2)) ?>%">★★★★★</span>★★★★★</div>
                     </div>
                     <small>平均分（满分 <?= e(number_format(TicketService::MAX_SCORE, 1)) ?>）</small>
                 </div>
@@ -1792,7 +1816,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
                     <?php foreach (array_reverse($reviewStats['distribution'], true) as $scoreLabel => $scoreCount): ?>
                     <div class="review-bar-row">
                         <span class="review-bar-label"><?= e($scoreLabel) ?> 分</span>
-                        <span class="review-bar"><i style="width: <?= $reviewMaxCount > 0 ? e(number_format($scoreCount / $reviewMaxCount * 100, 2)) : '0' ?>%"></i></span>
+                        <span class="review-bar"><i data-style-width="<?= $reviewMaxCount > 0 ? e(number_format($scoreCount / $reviewMaxCount * 100, 2)) : '0' ?>%"></i></span>
                         <span class="review-bar-count"><?= (int) $scoreCount ?></span>
                     </div>
                     <?php endforeach; ?>
@@ -1857,5 +1881,5 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         <?php endif; ?>
     </main>
     <?= siteCreditHtml() ?>
-    <div id="toast" class="toast"></div><script src="assets/app.js?v=28" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <div id="toast" class="toast"></div><script src="assets/app.js?v=29" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body></html>

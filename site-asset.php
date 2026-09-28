@@ -36,9 +36,15 @@ if ($base === false || $file === false || !str_starts_with($file, $base . DIRECT
 }
 
 $mime = (string) (new finfo(FILEINFO_MIME_TYPE))->file($file);
+// 站点 logo / favicon / 公告图片都只应是图片；探测结果不是 image/* 时一律回退为不可执行类型并禁止嗅探，
+// 避免 storage 目录混入其它文件时被当成可执行内容直出（与 avatar.php 的白名单校验保持一致）
+if (!str_starts_with($mime, 'image/')) {
+    $mime = 'application/octet-stream';
+}
 
 header_remove('Cache-Control');
 header('Cache-Control: public, max-age=86400');
+header('X-Content-Type-Options: nosniff');
 header('Content-Type: ' . $mime);
 header('Content-Length: ' . (string) filesize($file));
 readfile($file);

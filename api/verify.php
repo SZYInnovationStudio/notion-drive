@@ -25,7 +25,7 @@ $purpose = (string) ($_POST['purpose'] ?? '');
 $email = strtolower(trim((string) ($_POST['email'] ?? '')));
 
 try {
-    if (!in_array($purpose, ['register', 'bind'], true)) {
+    if (!in_array($purpose, ['register', 'bind', 'reset'], true)) {
         throw new RuntimeException('验证码用途无效。');
     }
     if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 191) {
@@ -45,6 +45,14 @@ try {
         $occupied = Database::connection()->prepare('SELECT 1 FROM users WHERE email = :email LIMIT 1');
         $occupied->execute(['email' => $email]);
         $shouldSend = $occupied->fetch() === false;
+    } elseif ($purpose === 'reset') {
+        // 找回密码：未登录也可请求。账号不存在时同样回统一成功文案，避免本接口沦为邮箱枚举入口
+        if (!smtpConfigured()) {
+            throw new RuntimeException('系统未配置邮件服务，无法发送验证码。');
+        }
+        $exists = Database::connection()->prepare('SELECT 1 FROM users WHERE email = :email LIMIT 1');
+        $exists->execute(['email' => $email]);
+        $shouldSend = $exists->fetch() !== false;
     } else {
         if ($user === null) {
             jsonResponse(['ok' => false, 'message' => '登录已过期，请重新登录。'], 401);

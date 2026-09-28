@@ -144,8 +144,20 @@ final class Epay
         }
 
         $decoded = json_decode($body, true);
+        if (!is_array($decoded)) {
+            return null;
+        }
 
-        return is_array($decoded) ? $decoded : null;
+        // 响应必须与本次查询的订单/商户绑定：网关返回了不匹配的单号或商户号时一律视为无效，
+        // 避免被伪造或串单的响应误导对账而错误结算
+        if (isset($decoded['out_trade_no']) && (string) $decoded['out_trade_no'] !== $outTradeNo) {
+            return null;
+        }
+        if (isset($decoded['pid']) && (string) $decoded['pid'] !== $this->pid) {
+            return null;
+        }
+
+        return $decoded;
     }
 
     /**
@@ -190,6 +202,8 @@ final class Epay
             CURLOPT_CONNECTTIMEOUT => 5,
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
+            // 查单地址由本站按配置拼装，不跟随跳转，避免被网关（或被劫持的网关）引导到任意地址
+            CURLOPT_FOLLOWLOCATION => false,
         ]);
 
         $body = curl_exec($handle);

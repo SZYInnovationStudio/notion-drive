@@ -86,19 +86,21 @@ try {
 
     if ($action === 'delete') {
         // 递归删除：该文件夹及全部子孙文件夹一并移除，其中的文件按删除文件处理（本地标记 + 归档 Notion 副本）
+        // 含被内容审核隔离（quarantined）的文件：它们不在「我的文件」中显示，若不在此一并清除，
+        // 会变成既看不到、也无法删除的孤儿记录，永久占用用户容量。
         $folderIds = folderDescendantIds($userId, $folderId);
         $placeholders = implode(',', array_fill(0, count($folderIds), '?'));
 
         $statement = $connection->prepare(
             "SELECT up.*, u.username, u.notion_token_encrypted, u.notion_account_source
              FROM uploads up JOIN users u ON u.id = up.user_id
-             WHERE up.folder_id IN ({$placeholders}) AND up.status = 'active'"
+             WHERE up.folder_id IN ({$placeholders}) AND up.status IN ('active', 'quarantined')"
         );
         $statement->execute($folderIds);
         $files = $statement->fetchAll();
 
         // 先落库再归档：Notion 归档失败时用户在应用内也已看不到这些文件，避免出现「远端已删、本地仍在」的死状态
-        $connection->prepare("UPDATE uploads SET status = 'deleted' WHERE folder_id IN ({$placeholders}) AND status = 'active'")
+        $connection->prepare("UPDATE uploads SET status = 'deleted' WHERE folder_id IN ({$placeholders}) AND status IN ('active', 'quarantined')")
             ->execute($folderIds);
         foreach ($files as $file) {
             archiveUploadReplicas($file, [

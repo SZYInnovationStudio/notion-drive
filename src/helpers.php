@@ -442,6 +442,52 @@ function filePreviewable(array $file): bool
     return previewKindEnabled($kind);
 }
 
+/**
+ * 预览输出的安全 Content-Type：仅当存库 mime 与预览大类一致（或可由白名单扩展名确定）时返回，
+ * 否则返回 null 表示不得内联输出。避免「文件名 a.png、内容为 HTML」被以 text/html + inline 渲染（同源 HTML 注入）。
+ */
+function previewContentType(array $file, string $kind): ?string
+{
+    $mime = strtolower(trim((string) ($file['mime_type'] ?? '')));
+    $name = (string) (($file['display_name'] ?? '') ?: ($file['filename'] ?? ''));
+    $ext  = strtolower((string) pathinfo($name, PATHINFO_EXTENSION));
+
+    $extMimes = [
+        'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'gif' => 'image/gif',
+        'webp' => 'image/webp', 'bmp' => 'image/bmp', 'avif' => 'image/avif',
+        'pdf' => 'application/pdf',
+        'mp4' => 'video/mp4', 'mov' => 'video/quicktime', 'webm' => 'video/webm', 'm4v' => 'video/x-m4v',
+        'ogv' => 'video/ogg', 'mp3' => 'audio/mpeg', 'm4a' => 'audio/mp4', 'wav' => 'audio/wav',
+        'ogg' => 'audio/ogg', 'oga' => 'audio/ogg', 'flac' => 'audio/flac', 'aac' => 'audio/aac',
+    ];
+
+    if ($kind === 'image') {
+        if (str_starts_with($mime, 'image/') && $mime !== 'image/svg+xml') {
+            return $mime;
+        }
+
+        return $extMimes[$ext] ?? null;
+    }
+
+    if ($kind === 'pdf') {
+        if ($mime === 'application/pdf') {
+            return $mime;
+        }
+
+        return $ext === 'pdf' ? 'application/pdf' : null;
+    }
+
+    if ($kind === 'av') {
+        if (str_starts_with($mime, 'video/') || str_starts_with($mime, 'audio/')) {
+            return $mime;
+        }
+
+        return $extMimes[$ext] ?? null;
+    }
+
+    return null;
+}
+
 /** 自有 Notion 账户的单文件上限：Notion 官方对自有账户的硬限制为 5 MB。 */
 function ownFileLimitBytes(): int
 {
@@ -829,7 +875,24 @@ function clientIp(): string
     return $ip === '' ? '0.0.0.0' : substr($ip, 0, 45);
 }
 
-/** 判断当前请求是否走 HTTPS（反向代理终止 TLS 时需看 X-Forwarded-Proto，否则 Cookie 的 Secure 标记会失效）。 */
+/** 直连对端是否为本机/内网地址：仅此情形才可能位于受信任的反向代理之后。 */
+function remoteAddrIsTrustedProxy(): bool
+{
+    $ip = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+    if ($ip === '' || filter_var($ip, FILTER_VALIDATE_IP) === false) {
+        return false;
+    }
+
+    return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
+}
+
+/**
+ * 判断当前请求是否走 HTTPS。
+ *
+ * 反向代理终止 TLS 时需看 X-Forwarded-Proto，才能让 Cookie 的 Secure 标记与回调地址协议正确；
+ * 但该头完全由客户端提供、可被伪造，因此仅当直连对端是反向代理（本机/内网地址）时才采信，
+ * 公网直连请求一律以 Web 服务器给出的 HTTPS 变量为准。
+ */
 function requestIsHttps(): bool
 {
     $https = (string) ($_SERVER['HTTPS'] ?? '');
@@ -837,12 +900,20 @@ function requestIsHttps(): bool
         return true;
     }
 
+    if (!remoteAddrIsTrustedProxy()) {
+        return false;
+    }
+
     $forwarded = explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''))[0] ?? '';
 
     return strtolower(trim($forwarded)) === 'https';
 }
 
-/** 登录限流状态：15 分钟内同一 IP 失败 20 次即锁定；账号维度不直接锁定，否则可被故意输错密码锁号（DoS）。 */
+/**
+ * 登录限流状态：15 分钟内同一 IP 或同一账号失败 20 次即锁定。
+ * 叠加账号维度这道防线，是因为仅靠 IP 阈值时攻击者轮换 IP 即可对同一账号持续撞库；
+ * 账号锁定 15 分钟自动解锁，且失败 3 次起就要求图形验证码，可缓解「故意输错密码锁号」的 DoS。
+ */
 function loginThrottle(string $username): array
 {
     $pdo = Database::connection();
@@ -866,14 +937,22 @@ function loginThrottle(string $username): array
 
     $accountFailures = (int) $accountRow['failures'];
     $ipFailures = (int) $ipRow['failures'];
-    $locked = $ipFailures >= 20;
+    $accountLocked = $accountFailures >= 20;
+    $ipLocked = $ipFailures >= 20;
+    $locked = $accountLocked || $ipLocked;
+    $retryAfter = $locked
+        ? max(
+            $accountLocked ? (int) $accountRow['retry_after'] : 0,
+            $ipLocked ? (int) $ipRow['retry_after'] : 0
+        )
+        : 0;
 
     return [
         'locked' => $locked,
         'failures' => $accountFailures,
         'ip_failures' => $ipFailures,
         'captcha' => $accountFailures >= 3 || $ipFailures >= 3,
-        'retry_after' => $locked ? (int) $ipRow['retry_after'] : 0,
+        'retry_after' => $retryAfter,
     ];
 }
 
@@ -1656,6 +1735,70 @@ function archiveUploadReplicas(array $upload, array $owner): void
         ->execute(['upload_id' => (int) $upload['id']]);
 }
 
+/**
+ * 补偿：数据库落库失败时，把刚写入 Notion、但未成功登记进库的副本逐个归档，
+ * 避免留下既不在「我的文件」里、又无法通过应用删除的孤儿文件块。
+ *
+ * @param array<int, array<string, mixed>> $replicas writeNotionReplicas() 返回的副本列表
+ */
+function archiveWrittenReplicas(array $user, array $replicas): void
+{
+    foreach ($replicas as $replica) {
+        $blockId = (string) ($replica['notion_block_id'] ?? '');
+        if ($blockId === '') {
+            continue;
+        }
+
+        $type = (string) ($replica['account_type'] ?? '');
+        if ($type === 'own') {
+            $token = userNotionToken($user);
+            $accountId = null;
+            $label = '自有账户';
+        } else {
+            $accountId = (int) ($replica['official_account_id'] ?? 0);
+            $statement = Database::connection()->prepare(
+                'SELECT id, label, token_encrypted FROM official_accounts WHERE id = :id LIMIT 1'
+            );
+            $statement->execute(['id' => $accountId]);
+            $account = $statement->fetch();
+            if (!is_array($account)) {
+                continue;
+            }
+            $token = officialAccountToken($account);
+            $label = (string) ($account['label'] ?? '官方账户');
+        }
+        if ($token === '') {
+            continue;
+        }
+
+        try {
+            notionWriteWithRepair(
+                static function () use ($token, $blockId): void {
+                    (new NotionClient($token))->archiveBlock($blockId);
+                },
+                $user,
+                ['type' => $type, 'account_id' => $accountId, 'label' => $label, 'token' => $token],
+                [
+                    'stage' => 'delete',
+                    'user_id' => (int) ($user['id'] ?? 0),
+                    'account_type' => $type,
+                    'account_id' => $accountId,
+                ]
+            );
+        } catch (Throwable $exception) {
+            Logger::warning('upload', '落库失败后归档 Notion 副本失败。', [
+                'user_id' => (int) ($user['id'] ?? 0),
+                'account_id' => $accountId,
+                'reason' => $exception->getMessage(),
+            ]);
+            raiseAdminAlert('warning', sprintf('账户「%s」清理孤儿副本失败：%s', $label, $exception->getMessage()), [
+                'stage' => 'delete',
+                'account_id' => $accountId,
+            ]);
+        }
+    }
+}
+
 /** 批量读取文件的副本来源，用于文件列表标记来源与副本数。 */
 function uploadReplicaSources(array $uploadIds): array
 {
@@ -1826,8 +1969,12 @@ function siteUrl(): string
     }
 
     $host = trim((string) ($_SERVER['HTTP_HOST'] ?? ''));
-    // Host 头由客户端提供，会出现在回调地址里，格式不合法时宁可不识别
-    if ($host === '' || !preg_match('/^(?:\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.\-]+)(?::\d{1,5})?$/', $host)) {
+    // Host 头由客户端提供，会出现在回调地址与邮件正文里：格式不合法、端口越界时宁可不识别，
+    // 避免被伪造成任意域名。生产环境建议在后台显式填写「站点地址」，即可完全绕开该回退分支。
+    if ($host === '' || !preg_match('/^(?:\[[0-9A-Fa-f:]+\]|[A-Za-z0-9](?:[A-Za-z0-9.\-]*[A-Za-z0-9])?)(?::([0-9]{1,5}))?$/', $host, $hostMatch)) {
+        return '';
+    }
+    if (isset($hostMatch[1]) && $hostMatch[1] !== '' && ((int) $hostMatch[1] < 1 || (int) $hostMatch[1] > 65535)) {
         return '';
     }
 
@@ -2607,8 +2754,19 @@ function reconcileOrder(array $order): array
 
     $settled = settleOrderPayment($order, (string) ($result['trade_no'] ?? ''), $result);
 
-    return [
-        'paid' => true,
-        'message' => $settled ? '支付成功，高级用户已开通。' : '该订单已完成支付。',
-    ];
+    if ($settled) {
+        return ['paid' => true, 'message' => '支付成功，高级用户已开通。'];
+    }
+
+    // 网关已确认收款但本地未开通：多为已作废订单（管理员已精确回滚时长、绝不复活），
+    // 或并发下已被其它回调抢先结算。必须按订单真实状态给出提示，不能笼统回「已完成支付」误导用户
+    $statusStatement = Database::connection()->prepare('SELECT status FROM orders WHERE id = :id LIMIT 1');
+    $statusStatement->execute(['id' => (int) $order['id']]);
+    $status = (string) $statusStatement->fetchColumn();
+
+    return match ($status) {
+        'paid' => ['paid' => true, 'message' => '该订单已完成支付。'],
+        'void' => ['paid' => false, 'message' => '该订单已被作废，若已付款请联系管理员核对。'],
+        default => ['paid' => false, 'message' => '订单状态异常，请联系管理员核对后再试。'],
+    };
 }

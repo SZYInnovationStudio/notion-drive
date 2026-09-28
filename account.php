@@ -255,7 +255,7 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
             ?>
             <?php if ($trust['recent'] || $manualHistory): ?>
             <details class="trust-history">
-                <summary>历史违规记录（<?= count($trust['recent']) + count($manualHistory) ?> 条）</summary>
+                <summary>历史违规记录（<?= (int) ($trust['total'] ?? 0) ?> 条）</summary>
                 <ul>
                     <?php foreach ($trust['recent'] as $violation): ?>
                     <li><span class="status-badge void">违规文件</span><span><?= e((string) $violation['filename']) ?></span><small><?= e((string) ($violation['reason'] ?? '') !== '' ? (string) $violation['reason'] : '未通过内容审核') ?><?= (string) ($violation['appeal_no'] ?? '') === '' ? '' : ' · 申诉号 ' . e((string) $violation['appeal_no']) ?> · <?= e(date('Y-m-d H:i', (int) strtotime((string) $violation['occurred_at']))) ?></small></li>
@@ -381,7 +381,7 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
     </main>
     <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=28" defer></script>
+    <script src="assets/app.js?v=29" defer></script>
     <script src="assets/admin.js?v=9" defer></script>
     <?php if ($canBindEmail): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>

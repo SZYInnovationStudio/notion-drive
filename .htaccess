@@ -2,7 +2,7 @@ Options -Indexes
 
 <IfModule mod_rewrite.c>
     RewriteEngine On
-    RewriteRule ^(?:config|src|storage|scripts|\.dev|\.git)(?:/|$) - [F,L]
+    RewriteRule ^(?:config|src|storage|scripts|bin|\.dev|\.git)(?:/|$) - [F,L]
 </IfModule>
 
 <FilesMatch "^(?:\.env|composer\.(?:json|lock)|README\.md)$">

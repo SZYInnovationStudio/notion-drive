@@ -7,7 +7,15 @@ require __DIR__ . '/src/bootstrap.php';
 use NotionDrive\Schema;
 use NotionDrive\Security;
 
-if (is_file(__DIR__ . '/storage/installed.lock')) {
+// 已安装判定以锁文件为准。若上次安装「数据库配置已写入但锁文件写入失败」（目录权限瞬时异常等），
+// 站点会因缺锁被 bootstrap 一直导回安装页而卡死；这里检测到配置已存在即补写锁自愈，让安装恢复到已完成状态。
+if (!is_file(__DIR__ . '/storage/installed.lock')) {
+    if (is_file(__DIR__ . '/config/database.php')
+        && @file_put_contents(__DIR__ . '/storage/installed.lock', date(DATE_ATOM), LOCK_EX) !== false) {
+        header('Location: index.php?installed=1');
+        exit;
+    }
+} else {
     header('Location: index.php');
     exit;
 }
@@ -36,6 +44,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (!preg_match('/^[a-zA-Z0-9_]+$/', $values['db_name'])) {
             throw new RuntimeException('数据库名称只能包含字母、数字和下划线。');
+        }
+        // db_host 会直接拼进 PDO DSN（mysql:host=<host>），必须限定字符集，
+        // 否则可用「;」等注入额外 DSN 参数（如 unix_socket、charset 覆盖）
+        if ($values['db_host'] === '' || !preg_match('/^[A-Za-z0-9._:\[\]-]+$/', (string) $values['db_host'])) {
+            throw new RuntimeException('数据库主机地址格式不正确。');
         }
         if (!preg_match('/^[\p{L}\p{N}_.-]{3,64}$/u', $values['admin_username'])) {
             throw new RuntimeException('管理员用户名需为 3–64 个字符。');
@@ -66,15 +79,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->exec("CREATE DATABASE IF NOT EXISTS {$quotedDatabase} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
         $pdo->exec("USE {$quotedDatabase}");
 
-        // 目标库已有用户数据说明不是全新安装，拒绝继续，避免重跑安装程序用 ON DUPLICATE KEY UPDATE 接管管理员账号
+        // 目标库已有用户 / 配置 / 官方账户数据说明不是全新安装，拒绝继续，
+        // 避免重跑安装程序用 ON DUPLICATE KEY UPDATE 接管管理员账号或覆盖既有配置
         $existingUsers = 0;
         try {
             $existingUsers = (int) $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
         } catch (Throwable) {
             // users 表尚不存在，属于全新数据库
         }
-        if ($existingUsers > 0) {
-            throw new RuntimeException('该数据库中已存在用户数据，安装程序拒绝覆盖。若确需重新安装，请先清空该数据库或改用其他数据库。');
+        $existingConfig = 0;
+        try {
+            $existingConfig = (int) $pdo->query('SELECT COUNT(*) FROM config')->fetchColumn();
+        } catch (Throwable) {
+            // config 表尚不存在
+        }
+        $existingAccounts = 0;
+        try {
+            $existingAccounts = (int) $pdo->query('SELECT COUNT(*) FROM official_accounts')->fetchColumn();
+        } catch (Throwable) {
+            // official_accounts 表尚不存在
+        }
+        if ($existingUsers > 0 || $existingConfig > 0 || $existingAccounts > 0) {
+            throw new RuntimeException('该数据库中已存在用户、配置或账户数据，安装程序拒绝覆盖。若确需重新安装，请先清空该数据库或改用其他数据库。');
         }
         $pdo->exec(
             'CREATE TABLE IF NOT EXISTS users (
@@ -155,7 +181,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         Schema::createAnnouncementsTable($pdo);
         Schema::createUserViolationsTable($pdo);
 
-        $appKey = bin2hex(random_bytes(32));
+        // 复用既有 app_key（若 config/database.php 已存在），避免每次安装重新生成密钥
+        // 导致旧库中 notion_token / official_accounts.token_encrypted / epay_key 等密文全部无法解密
+        $appKey = '';
+        $configPath = __DIR__ . '/config/database.php';
+        if (is_file($configPath)) {
+            $previousConfig = require $configPath;
+            if (is_array($previousConfig)
+                && isset($previousConfig['app_key'])
+                && is_string($previousConfig['app_key'])
+                && $previousConfig['app_key'] !== '') {
+                $appKey = $previousConfig['app_key'];
+            }
+        }
+        if ($appKey === '') {
+            $appKey = bin2hex(random_bytes(32));
+        }
         $statement = $pdo->prepare(
             'INSERT INTO config (config_key, config_value) VALUES (:config_key, :config_value)
              ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)'
@@ -164,7 +205,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'notion_token' => Security::encrypt($token, $appKey),
             'default_page_id' => (string) $pageId,
             'notion_plan' => $values['plan'],
-            'schema_version' => (string) Schema::CURRENT_VERSION,
             'moderation_enabled' => '0',
             'moderation_keywords' => '',
             'moderation_scope' => 'filename,text,image',
@@ -223,8 +263,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (file_put_contents(__DIR__ . '/config/database.php', $config, LOCK_EX) === false) {
             throw new RuntimeException('无法写入数据库配置，请检查 config 目录权限。');
         }
+        // 数据库配置含凭据与 app_key，收紧文件权限
+        @chmod(__DIR__ . '/config/database.php', 0600);
+        // 不再直接写 schema_version，交由 bootstrap 的 Schema::migrate() 按迁移链补齐，
+        // 避免安装程序内联建表与迁移脚本长期漂移
         if (file_put_contents(__DIR__ . '/storage/installed.lock', date(DATE_ATOM), LOCK_EX) === false) {
-            throw new RuntimeException('无法写入安装锁，请检查 storage 目录权限。');
+            // 此时数据库与配置均已就绪，仅锁文件写失败。不回滚配置（删掉反而要重装），
+            // 提示用户修复 storage 目录写权限后刷新本页：顶部自愈逻辑会自动补齐锁文件。
+            throw new RuntimeException('数据已写入，但无法写入 storage/installed.lock（请检查 storage 目录写权限）。修复权限后刷新本页即可自动补齐并进入站点。');
         }
 
         header('Location: index.php?installed=1');

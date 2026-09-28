@@ -104,7 +104,10 @@ final class BanService
         ]);
     }
 
-    /** 解封：结束当前生效中的封禁。 */
+    /**
+     * 解封：结束当前生效中的封禁，并把违规周期重置到当前时间（解封即从新周期重新累计）。
+     * 若不重置，解封后分数仍 ≥ 阈值，用户下一次违规会立即再次触发自动封禁。
+     */
     public function unban(int $userId, ?int $adminId = null): void
     {
         Database::connection()->prepare(
@@ -114,13 +117,17 @@ final class BanService
             'user_id'   => $userId,
             'lifted_by' => $adminId !== null && $adminId > 0 ? $adminId : null,
         ]);
+
+        Database::connection()->prepare(
+            'UPDATE users SET violation_ban_until = NULL, violation_cycle_start = NOW() WHERE id = :id'
+        )->execute(['id' => $userId]);
     }
 
     /**
      * 可信度（违规次数）总览：数字 + 分母 + 等级 + 进度 + 明细，账户页「可信度」卡片直接消费。
      * 读取前先做懒结算（自动解封到期、跨周期累计），保证展示与真实状态一致。
      *
-     * @return array{points: int, threshold: int, label: string, tone: string, banned: bool, ban_until: string, history: array<int, array<string, mixed>>, recent: array<int, array<string, mixed>>}
+     * @return array{points: int, threshold: int, label: string, tone: string, banned: bool, ban_until: string, history: array<int, array<string, mixed>>, recent: array<int, array<string, mixed>>, total: int}
      */
     public function trustSummary(int $userId): array
     {
@@ -150,7 +157,21 @@ final class BanService
             'ban_until' => $banUntil,
             'history'   => $this->violationHistory($userId),
             'recent'    => $this->recentViolations($userId),
+            // 明细列表有 LIMIT，标题条数需用真实总数，否则条目超限时永远显示封顶值（少报）
+            'total'     => $this->totalViolationCount($userId),
         ];
+    }
+
+    /** 历史违规记录的真实总条数（打回审核记录 + 手动加分记录，与明细列表口径一致，不受 LIMIT 影响）。 */
+    private function totalViolationCount(int $userId): int
+    {
+        $pdo = Database::connection();
+        $rejected = $pdo->prepare("SELECT COUNT(*) FROM moderation_records WHERE user_id = :user_id AND status = 'rejected'");
+        $rejected->execute(['user_id' => $userId]);
+        $manual = $pdo->prepare("SELECT COUNT(*) FROM user_violations WHERE user_id = :user_id AND source = 'manual'");
+        $manual->execute(['user_id' => $userId]);
+
+        return (int) $rejected->fetchColumn() + (int) $manual->fetchColumn();
     }
 
     /**
@@ -222,16 +243,11 @@ final class BanService
         }
 
         foreach ($rows as $row) {
+            // unban() 会一并把 violation_ban_until 清空、周期起点重置到当前时间（等价清零违规分）
             $this->unban((int) $row['id'], null);
         }
 
         $ids = array_map(static fn (array $row): int => (int) $row['id'], $rows);
-        $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        // 归零：解封后从新周期重新累计（分数由实时口径统计，故同时重置周期起点）
-        Database::connection()->prepare(
-            'UPDATE users SET violation_ban_until = NULL, violation_cycle_start = NOW()
-             WHERE id IN (' . $placeholders . ')'
-        )->execute($ids);
 
         Logger::info('ban', '违规自动封禁到期，已自动解封并清零违规分。', ['user_ids' => $ids]);
     }
@@ -397,6 +413,10 @@ final class BanService
      */
     public function evaluateAutoBan(int $userId): bool
     {
+        // 先懒结算：自动封禁到期解封 + 跨周期清零，避免用陈旧周期起点判定导致误封/漏封
+        $this->expireDue($userId);
+        $this->accrueCycle($userId);
+
         if ($this->isBanned($userId)) {
             return false;
         }
@@ -412,7 +432,12 @@ final class BanService
             '累计 ' . $count . ' 次违规文件，达到自动封禁阈值（' . $threshold . ' 次）。',
             null
         );
-        Logger::warning('ban', '用户因累计违规被自动封禁', [
+        // 写入到期时间：与 addViolation() 的自动封禁保持一致，否则该用户永远不会被 expireDue() 自动解封
+        Database::connection()->prepare(
+            'UPDATE users SET violation_ban_until = DATE_ADD(NOW(), INTERVAL ' . self::AUTO_BAN_DAYS . ' DAY) WHERE id = :id'
+        )->execute(['id' => $userId]);
+
+        Logger::warning('ban', '用户因累计违规被自动封禁（' . self::AUTO_BAN_DAYS . ' 天后自动解封）。', [
             'user_id'    => $userId,
             'violations' => $count,
             'threshold'  => $threshold,
