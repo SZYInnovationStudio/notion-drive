@@ -116,9 +116,9 @@ input[type="file"]::file-selector-button:hover { background: #eef1f4; }
 .alert-list .notice-check { display: inline-flex; flex: 0 0 auto; margin-right: 8px; }
 .alert-list li > span:first-of-type { flex: 1 1 auto; }
 .ticket-form { display: grid; gap: 10px; max-width: 640px; }
-.ticket-form label { display: grid; gap: 5px; }
-.ticket-form label span { color: var(--muted); font-size: .78rem; }
-.ticket-form input, .ticket-form select, .ticket-form textarea { width: 100%; padding: 8px 10px; border: 1px solid #dfe3e8; border-radius: 6px; font: inherit; font-size: .82rem; }
+.ticket-form > label { display: grid; gap: 5px; }
+.ticket-form > label > span { color: var(--muted); font-size: .78rem; }
+.ticket-form input:not([type="checkbox"]):not([type="radio"]), .ticket-form select, .ticket-form textarea { width: 100%; padding: 8px 10px; border: 1px solid #dfe3e8; border-radius: 6px; font: inherit; font-size: .82rem; }
 .ticket-form textarea { resize: vertical; }
 .ticket-status-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .ticket-status-open { background: #fdf3e2; color: #94610c; }
@@ -143,7 +143,7 @@ input[type="file"]::file-selector-button:hover { background: #eef1f4; }
 .review-bar { height: 8px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
 .review-bar i { display: block; height: 100%; background: #f5a623; }
 .review-bar-count { text-align: right; color: var(--muted); }
-.star-rating { position: relative; display: inline-block; font-size: 1.7rem; line-height: 1; user-select: none; }
+.star-rating { position: relative; display: inline-block; justify-self: start; font-size: 1.7rem; line-height: 1; user-select: none; }
 .star-rating-stars { position: relative; color: #dfe3e8; letter-spacing: 3px; white-space: nowrap; }
 .star-rating-fg { position: absolute; top: 0; left: 0; width: 0; overflow: hidden; white-space: nowrap; color: #f5a623; }
 .star-rating:not(.static) .star-rating-fg { width: var(--pct, 0%); }
@@ -263,8 +263,9 @@ body.drive-shell .site-credit .icp-license, body.drive-shell .site-credit .polic
 .drop-zone small { color: var(--muted); font-size: .72rem; }
 .drop-zone button { margin-top: 12px; padding: 7px 12px; border: 1px solid var(--line-strong); border-radius: 7px; background: #fff; color: #3c4654; font-size: .78rem; }
 .upload-queue { grid-column: 1 / -1; display: grid; gap: 7px; }
-/* 工单附件：与上方附件列表留出间距，拖放区与上传队列之间保持 8px 间隔 */
-#ticketAttachments { margin-top: 16px; display: grid; gap: 8px; }
+/* 工单详情：面板内容与下方上传区/提示条的上间距统一为 12px（与 .panel-title 的下间距一致） */
+#ticketAttachments { margin-top: 12px; display: grid; gap: 8px; }
+.ticket-panel-notice { margin-top: 12px; }
 .queue-item { display: flex; align-items: center; gap: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
 .queue-meta { min-width: 0; flex: 1; display: grid; }
 .queue-meta b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; }
@@ -660,7 +661,7 @@ body.has-overlay { overflow: hidden; }
     .ticket-thread { gap: 10px; }
     .ticket-msg { max-width: 100%; }
     .ticket-form, .review-form { max-width: 100%; }
-    .ticket-form label span { font-size: .8rem; }
+    .ticket-form > label > span { font-size: .8rem; }
     .ticket-form > button, .review-form > button { width: 100%; min-height: 44px; }
     .ticket-status-actions { gap: 10px; }
     .ticket-status-actions > * { flex: 1 1 calc(50% - 5px); min-height: 44px; }

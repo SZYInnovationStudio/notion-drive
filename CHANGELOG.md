@@ -28,6 +28,49 @@
 
 ---
 
+### [2026-09-29 22:25:41] 修复工单表单勾选框被撑满整行的问题
+
+- 目的：上一轮把「匿名提交」勾选框的 `display: grid` 恢复为 `flex` 后，勾选框与文案已同行，但输入框本身仍被撑成整行宽（截图可见一个横跨整行的带边框空框）。根因是 `.ticket-form input`（L121）为所有 input 统一设置了 `width: 100%`、内边距与边框，checkbox 也被一并命中。
+- 验证：`grep` 确认 `*.php` 内已无 `app.css?v=57` 残留（12 处均为 `?v=58`）。核对选择器：收窄后 `.ticket-form input:not([type="checkbox"]):not([type="radio"])` 仍覆盖文本 / 只读 input，`.star-rating-inputs input`（radio，绝对定位 + `opacity: 0`）与 `.checkbox input`（`flex: 0 0 auto`）不再被强制拉宽，勾选框恢复原生尺寸。纯 CSS 改动、不涉及业务逻辑；遵守「本机禁止功能 / HTTP 测试」约定，未做浏览器视觉验证。数据库结构影响：无。
+- 改动明细（行号为改动后当前行号）：
+  - `assets/app.css` L121 — `.ticket-form input` 收窄为 `.ticket-form input:not([type="checkbox"]):not([type="radio"])`，不再把 checkbox / radio 拉成整行宽并附加边框与内边距。
+  - `bans.php` L119、`admin.php` L1266、`account.php` L192、`tickets.php` L220、`admin_orders.php` L264、`install.php` L292、`index.php` L62、`forgot.php` L76、`dashboard.php` L134、`logs.php` L65、`register.php` L139、`pay.php` L134 — 静态资源缓存版本 `assets/app.css?v=57 → ?v=58`（12 个页面），无逻辑改动。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+### [2026-09-29 22:19:42] 统一工单详情页提示条间距并修复评价表单匿名勾选框换行
+
+- 目的：工单详情页各面板「内容 → 提示条/上传区」的上间距不一致——「工单对话」面板的结束提示与上方消息列表仅 8px，而「工单附件」面板的上传拖放区 / 结束提示为 16px，对比之下附件区显得更宽；统一为 12px（与全站 `.panel-title` 的 `margin-bottom: 12px` 节奏一致）。另修复工单评价表单底部「匿名提交」勾选框与文案被拆成两行的问题：根因是 `.ticket-form label`（优先级 0,1,1）覆盖了 `.checkbox`（0,1,0）的 `display: flex`，使勾选框 label 被强制为 `display: grid`，input 与文字各占一行。
+- 验证：`grep` 确认 `*.php` 内已无 `app.css?v=56` 残留（12 处均为 `?v=57`）；`tickets.php` 走 `php -l` 语法检查通过。核对选择器优先级：收窄为 `.ticket-form > label` 后仍命中三处工单表单的直接子级 `<label>`（提交 / 回复 / 评价的评分与留言），而 `.checkbox-row > label.checkbox` 与 `.star-rating-inputs > label` 均非直接子级，不再被覆盖（后者的 input 绝对定位、文案 `.sr-only` 隐藏，由 grid 退化为 flex 子项无视觉影响）。纯 CSS / 类名改动、不涉及业务逻辑；遵守「本机禁止功能 / HTTP 测试」约定，未做浏览器视觉验证。数据库结构影响：无。
+- 改动明细（行号为改动后当前行号）：
+  - `assets/app.css` L119 — `.ticket-form label` 收窄为 `.ticket-form > label`，不再覆盖 `.checkbox` 的 `display: flex`，修复「匿名提交」勾选框换行。
+  - `assets/app.css` L266-L268 — 原 `.ticket-attach-notice { margin-top: 16px; }` 改为通用类 `.ticket-panel-notice { margin-top: 12px; }`；`#ticketAttachments` 上间距 `16px → 12px`，使「内容 → 上传区 / 提示条」间距统一为 12px。
+  - `tickets.php` L460、L462 — 「工单对话」面板的两条结束提示（已过期 / 已关闭）增加 `ticket-panel-notice` 类名，与上方消息列表 `.ticket-thread`（`margin-bottom: 8px`）相邻时按外边距取大值得到 12px。
+  - `tickets.php` L504 — 附件面板结束提示由 `ticket-attach-notice` 改为 `ticket-panel-notice`。
+  - `tickets.php` L531 — 「重新开启工单」面板的失败原因提示同步加 `ticket-panel-notice` 类名（原间距已由 `.panel-title` 的 12px 给出，视觉不变，仅统一类名）。
+  - `bans.php` L119、`admin.php` L1266、`account.php` L192、`tickets.php` L220、`admin_orders.php` L264、`install.php` L292、`index.php` L62、`forgot.php` L76、`dashboard.php` L134、`logs.php` L65、`register.php` L139、`pay.php` L134 — 静态资源缓存版本 `assets/app.css?v=56 → ?v=57`（12 个页面），无逻辑改动。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+### [2026-09-29 22:14:30] 修复工单附件区与「已结束」提示条贴合问题
+
+- 目的：工单详情页「工单附件」面板中，当用户无上传权限（非管理员查看已结束工单）时，分支渲染的「该工单已结束，无法继续上传附件。」提示条与上方附件列表之间没有间距，两者贴合在一起。对照上传分支 `#ticketAttachments`（拖放区带 16px 上间距）可知，是 else 分支的提示条缺少同等上间距。
+- 验证：`grep` 确认 `*.php` 内已无 `app.css?v=55` 残留（12 处均为 `?v=56`）；`tickets.php` 走 `php -l` 语法检查通过。纯 CSS/类名改动、不涉及业务逻辑；遵守「本机禁止功能/HTTP 测试」约定，未做浏览器视觉验证。数据库结构影响：无。
+- 改动明细（行号为改动后当前行号）：
+  - `assets/app.css` L268-L269 — 新增 `.ticket-attach-notice { margin-top: 16px; }`，使结束提示条与上方附件列表的间距与上传拖放区一致。
+  - `tickets.php` L504 — 结束提示条 `<div class="alert warning">` 增加 `ticket-attach-notice` 类名；不改动 `#ticketAttachments` 结构（`app.js` 依赖其后代元素同时存在才初始化上传逻辑）。
+  - `bans.php` L119、`admin.php` L1266、`account.php` L192、`tickets.php` L220、`admin_orders.php` L264、`install.php` L292、`index.php` L62、`forgot.php` L76、`dashboard.php` L134、`logs.php` L65、`register.php` L139、`pay.php` L134 — 静态资源缓存版本 `assets/app.css?v=55 → ?v=56`（12 个页面），无逻辑改动。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+### [2026-09-29 22:10:58] 修复工单评价星级选择器点击后星星错位
+
+- 目的：工单评价页（`tickets.php` L561-L571）的半星选择器点击后，金色前景星形「跑到上面」。根因是 `.ticket-form label span`（优先级 0,1,2）同时命中了前景星形 `<span class="star-rating-fg">`，把它的 `font-size` 从 `1.7rem` 覆盖为 `.78rem`、金色覆盖为灰色；该 span 绝对定位于 `top:0`，缩小后即贴顶显示。此外 `.star-rating` 作为 `label` 网格子项被默认 `justify-self: stretch` 拉满整列宽，使 `--pct` 百分比宽度与实际星形宽度错位，半星命中不准。
+- 验证：核对选择器优先级与网格布局计算结果；`grep` 确认 `*.php` 内已无 `app.css?v=54` 残留（12 处均为 `?v=55`）。纯 CSS 改动、不涉及 PHP 逻辑，无需 `php -l`；遵守「本机禁止功能/HTTP 测试」约定，未做浏览器点击验证。数据库结构影响：无。
+- 改动明细（行号为改动后当前行号）：
+  - `assets/app.css` L120 — `.ticket-form label span` 收窄为 `.ticket-form > label > span`，不再命中星星前景 span；三处工单表单的说明 `<span>` 均为 `form > label > span` 直接子级，样式不受影响。
+  - `assets/app.css` L663 — 移动端媒体查询内的同名选择器同步收窄。
+  - `assets/app.css` L146 — `.star-rating` 增加 `justify-self: start`，使选择器收缩为内容宽度，`--pct` 与实际星形对齐。
+  - `bans.php` L119、`admin.php` L1266、`account.php` L192、`tickets.php` L220、`admin_orders.php` L264、`install.php` L292、`index.php` L62、`forgot.php` L76、`dashboard.php` L134、`logs.php` L65、`register.php` L139、`pay.php` L134 — 静态资源缓存版本 `assets/app.css?v=54 → ?v=55`（12 个页面），无逻辑改动。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
 ### [2026-09-29 22:00:54] 清理文档中的内部流程表述与失效链接
 
 - 目的：上一轮更新日志改名后，文内仍残留少量内部流程性措辞，且贡献指南「文档分工」引用了已从仓库删除的文件，形成失效链接；统一清理为面向所有读者的中性表述。

@@ -217,7 +217,7 @@ if ($ticketId > 0) {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag($ticket === null ? '我的工单' : '工单详情') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=54"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag($ticket === null ? '我的工单' : '工单详情') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=58"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
@@ -457,9 +457,9 @@ if ($ticketId > 0) {
             </form>
             <?php else: ?>
             <?php if ($ticketStatus === TicketService::STATUS_EXPIRED): ?>
-            <div class="alert warning">该工单已过期，无法继续回复，也不可重开；下方对话记录仍可查看。</div>
+            <div class="alert warning ticket-panel-notice">该工单已过期，无法继续回复，也不可重开；下方对话记录仍可查看。</div>
             <?php else: ?>
-            <div class="alert warning">该工单已关闭，无法继续回复；如需继续咨询可在下方重新开启，或重新提交一张工单。</div>
+            <div class="alert warning ticket-panel-notice">该工单已关闭，无法继续回复；如需继续咨询可在下方重新开启，或重新提交一张工单。</div>
             <?php endif; ?>
             <?php endif; ?>
         </section>
@@ -501,7 +501,7 @@ if ($ticketId > 0) {
                 <div id="ticketQueue" class="upload-queue" aria-live="polite"></div>
             </div>
             <?php else: ?>
-            <div class="alert warning">该工单已结束，无法继续上传附件。</div>
+            <div class="alert warning ticket-panel-notice">该工单已结束，无法继续上传附件。</div>
             <?php endif; ?>
         </section>
 
@@ -528,7 +528,7 @@ if ($ticketId > 0) {
                 <button class="secondary-button compact" data-confirm="确认重新开启该工单？重开后回到「待处理」，将占用 1 次重开机会（剩余 <?= (int) $reopenInfo['remaining'] ?> 次）。">重新开启工单</button>
             </form>
             <?php else: ?>
-            <div class="alert warning"><?= e($reopenReason) ?></div>
+            <div class="alert warning ticket-panel-notice"><?= e($reopenReason) ?></div>
             <?php endif; ?>
         </section>
         <?php endif; ?>
