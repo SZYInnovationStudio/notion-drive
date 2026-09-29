@@ -1,7 +1,7 @@
-# AI 更新日志（AI_CHANGELOG.md）
+# 更新日志
 
-> 本文件**只给 AI / 代码代理看**，用于快速掌握仓库的改动上下文。
-> 面向人类的功能说明、使用文档请写 README.md，不要写在这里。
+> 记录仓库的历次改动，便于快速掌握改动上下文；人工与其它途径产生的改动都应记录在此。
+> 功能说明与使用文档请写 README.md，不要写在这里。
 
 ## 记录规范
 
@@ -12,7 +12,7 @@
    - 行号写**改动后的当前行号**，支持 `L88`、`L88-L90` 形式。
    - 删除代码写成「原 Lxx-Lyy 删除」。
    - 目的写"为什么改"（触发原因、修的是什么问题），不要只复述"改了什么"。
-3. 写清**验证方式与结果**，方便后续代理判断该改动是否可信、能否回退。
+3. 写清**验证方式与结果**，便于后续维护者判断该改动是否可信、能否回退。
 4. 若改动依赖数据库结构，须注明受影响的表/列，以及**旧库是否需要手工补列**。
 5. 纯环境、临时文件（如 `.dev/`、本地凭据）不属于源码改动，统一记在文末「环境与本地运行」一节。
 
@@ -27,6 +27,43 @@
 ```
 
 ---
+
+### [2026-09-29 22:00:54] 清理文档中的内部流程表述与失效链接
+
+- 目的：上一轮更新日志改名后，文内仍残留少量内部流程性措辞，且贡献指南「文档分工」引用了已从仓库删除的文件，形成失效链接；统一清理为面向所有读者的中性表述。
+- 验证：全文检索确认相关内部流程关键词无残留（正文中的「AI 内容风控」等产品功能描述保留）；`CONTRIBUTING.md` 内链均指向存在的文件。纯文档改动，不涉及 PHP 源码，无需 `php -l`。数据库结构影响：无。
+- 改动明细（行号为改动后当前行号）：
+  - `CHANGELOG.md` L42-L53 — 上一轮改名条目改写为中性表述。
+  - `CHANGELOG.md` L148 — 删除一处内部复核方式的括注。
+  - `CHANGELOG.md` L196 — 一处面向后续处理者的措辞改为中性说法。
+  - `CONTRIBUTING.md` L102 — 删除指向已删除文件的失效链接行。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+### [2026-09-29 21:56:36] 更新日志更名为 CHANGELOG.md，并统一文档表述
+
+- 目的：原更新日志文件名带 `AI_` 前缀，且文中声明仅供内部使用，不符合开源仓库的通用约定；统一为通用更新日志 `CHANGELOG.md`，并明确本文件记录**所有**改动（人工与其它途径产生的改动都记在此处）。
+- 验证：全文检索 `AI_CHANGELOG` → 0 匹配（正文中的「AI 内容风控」属产品功能描述，保留）；`git mv` 重命名，尽量保留文件历史。纯文档改动，不涉及 PHP 源码，无需 `php -l`。数据库结构影响：无。
+- 改动明细（行号为改动后当前行号）：
+  - `AI_CHANGELOG.md` → `CHANGELOG.md` — 用 `git mv` 重命名。
+  - `CHANGELOG.md` L1 — 标题由「AI 更新日志」改为「更新日志」。
+  - `CHANGELOG.md` L3-L4 — 删除面向内部使用的说明，改为「记录仓库历次改动」。
+  - `CHANGELOG.md` L15 — 记录规范中的一处措辞改为「便于后续维护者判断」。
+  - `CHANGELOG.md` L891-L894 — 历史条目内的文件名引用同步替换为 `CHANGELOG.md`。
+  - `CONTRIBUTING.md` L66、L95 — 引用链接改为 `[CHANGELOG.md](CHANGELOG.md)`。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+### [2026-09-29 21:54:40] 新增贡献指南 CONTRIBUTING.md 并优化 README（修正功能列表、目录结构与 MySQL/MariaDB 表述等过时内容）
+
+- 目的：为开源后引入外部贡献者做规范准备。①缺少统一的贡献指南，新代码容易在风格、注释密度与提交规范上与既有实现脱节，故新建 `CONTRIBUTING.md` 明确「保持既有风格」「注释从简（只留说明为什么的功能性注释）」「最小改动」「不改品牌署名」等原则，并固化 PHP / 数据库 / 前端代码风格、注释规范、安全底线与提交前检查（`php -l`、更新 CHANGELOG、不做破坏性验证、提交信息 `ND-<序号> <中文简述>`）；②README 与当前实现已脱节，需同步修正。
+- 验证：纯文档改动，不涉及 PHP 源码，无需 `php -l`；已通读 `README.md` 与新建 `CONTRIBUTING.md` 全文核对交叉引用（README §贡献 → CONTRIBUTING、CONTRIBUTING → README / CHANGELOG / src/helpers.php / src/Schema.php 链接均存在）。数据库结构影响：无。
+- 改动明细（行号为改动后当前行号）：
+  - `CONTRIBUTING.md` L1-L105 — 新建贡献指南：L5-L14 开始之前（引用 README、`.\scripts\dev-start.ps1`、无 Composer / 框架 / 构建工具，不得引入第三方包）、L16-L21 核心原则、L23-L57 代码风格（PHP 的 `declare(strict_types=1)` / `final class` / Allman 大括号 / 4 空格 / 严格比较 / 工具函数置于 `src/helpers.php`；数据库 PDO 预处理、`utf8mb4`、结构变更走 `src/Schema.php` 版本门控；前端 CSP 禁内联、资源改动递增 `?v=`）、L59-L76 注释规范（禁止逐行复述、变更流水账、死代码、模板头；鼓励解释动机与魔法值；判断标准「删掉后是否仍一眼看懂」）、L78-L85 安全底线（CSRF / 上传校验 / 不回显报错 / 对外请求不跟跳转不进内网）、L87-L97 提交前检查、L99-L105 文档分工。
+  - `README.md` L3 — 首段重写：由「团队文件上传入口、共享 Notion 集成 Token」改为「以 Notion 为存储后端的网盘，既支持用户绑定自己的 Notion 账号，也支持管理员统一分配账号池」，与新实现一致。
+  - `README.md` L7-L25 — 功能列表重写：删除过时的「无公开注册的账号体系」「收费体系（待补充）」，改为 19 条与实现一致的功能（Web 安装向导 / 可开关公开注册与邮箱验证码 / 权限组 / Token 加密与账号池 / 双重校验 / 三阶段上传 / 多分片 / 在线预览 / 空间巡检 / 内容风控 / 可信度与封禁 / 工单 / 易支付收费体系 / 站点信息 / 防冲突命名 / 液态玻璃界面 / 安全基线）。
+  - `README.md` L83-L106 — 目录结构补齐 `bin/`、`scripts/` 与遗漏页面（`account.php` / `admin_orders.php` / `bans.php` / `forgot.php` / `index.php` / `logs.php` / `pay.php` / `register.php` / `site-asset.php` / `tickets.php`）。
+  - `README.md` L108-L110 — 新增「## 贡献」节，指向 `CONTRIBUTING.md`。
+  - `README.md` L116 — 「定期备份 MySQL」改为「定期备份 MySQL / MariaDB」，与环境要求一致。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
 
 ### [2026-09-28 21:54:30] 开源前全量审查修复：预览/下载 SSRF 与内容类型白名单、支付查单绑定、风控防指纹投毒与提示注入、封禁与工单终态、CSP 内联样式、找回密码、登录限流（高/中/低危逐项）
 
@@ -108,7 +145,7 @@
 
 - 目的：完成 `TASKS_ND.md` 阶段 11（收尾）。本阶段**不改功能代码**，只做三件事：①全量 PHP 语法校验；②前端资源版本号一致性检查；③把全量代码审查（bug / 功能性 / 逻辑，高→低）结论落盘到 `REVIEW_FINDINGS.md`。按项目约定**不 commit、不推送**，且**未做任何功能/HTTP 测试**（用户明确禁止：本机库触发即格式化）。
 - 关键结论：
-  1. **阶段 11 复审对原有清单逐条人工复核（明确不使用子代理）**，并把增量结论追加到 `REVIEW_FINDINGS.md` 文末「阶段 11 复审新增」小节。
+  1. **阶段 11 复审对原有清单逐条人工复核**，并把增量结论追加到 `REVIEW_FINDINGS.md` 文末「阶段 11 复审新增」小节。
   2. **重要更正：原 H1 已修复**。原 H1「全新安装后文件系统整体不可用」在当前代码中**不复现**：`install.php` 的内联 `uploads` 建表已含 `scope`/`ticket_id` 及索引（`install.php` L104-L134），且已改用 19 个 `Schema::create*Table()` 统一建表口径（L136-L154），`schema_version` 写入 `Schema::CURRENT_VERSION`（L165，当前 20）而非硬编码 18。故 `migrate()` 不再提前返回，v17 补列路径不再被跳过。
   3. **H2 仍存在（确认为高）**：`clearRecord()` → `forgetHash()` 删除**全站唯一**的 `content_hash` 指纹条目，一次单用户清除操作产生跨用户全局副作用（其他用户再传同内容不再被拦截）。
   4. **新增 7 条中危**：M7 管理员批量改工单状态非结束态分支未排除 `expired`/`closed`，可「复活」已过期/已关闭工单并绕过 `reopenState()` 与 `MAX_REOPEN`（**此为该问题唯一可达入口**，此前「申诉路径可绕过过期」的推断经复核**不成立**——`appendAppealMessage()` 对 `expired` 有正确分支，另起新工单）；M8 `closeTicket()` 无原状态守卫，重复关闭会刷新 `closed_at`、`expired`↔`closed` 可互改；M9 `replyAsAdmin()` 缺 `isEnded()` 拦截（与 `api/upload.php` 结束态 409 `ticket_closed` 自相矛盾）；M10 `evaluateAutoBan()` 未先做 `expireDue()`+`accrueCycle()` 懒结算；M11 `unban()` 不重置 `violation_cycle_start`/`violation_ban_until`，解封后分数仍 ≥ 阈值；M12 账户页历史违规条数由两个 LIMIT 截断结果相加导致少报；M13 `site-asset.php` `k=media` 输出缺 `image/*` 白名单（`avatar.php` 有）。
@@ -156,7 +193,7 @@
 - 目的：完成 `TASKS_ND.md` 阶段 9。R9 —— `dashboard.php`「未通过内容审核」提示区新增**「全选 + 一键删除」**，用户可一次性把面板上的审核提示全部从自己视角隐藏；语义与既有单条「清除记录」**完全同源**（只置 `moderation_records.user_dismissed = 1`，**不改 `status`、不动风控记录与违规计数**），管理员仍可正常复核，复核时 `closeRecord()` 会把标记归零使提示**重新出现**（依据 `TASKS_ND.md` L356-L357 与 L178「R9-Q1 = 1」）。
 - 关键设计：
   1. **一次 UPDATE 覆盖全部，而非循环单条**：新增 `ModerationService::dismissAllNotices(int $userId): int`，一条 `UPDATE ... SET user_dismissed = 1 WHERE user_id = :user_id AND decision = 'flagged' AND status IN ('open','resubmit') AND user_dismissed = 0`，返回 `rowCount()` 作为「已清除 N 条」。与单条 `dismissNotice()` 共用同一过滤口径，避免两套条件漂移。
-  2. **勾选框仅作 UI 示意，`一键删除` 以服务端为准作用于面板全部提示**：需求原文为「全选 + 一键删除」，且 R9-Q1 明确一键删除＝对面板上**全部**提示打标记；故「全选」是可见的批量入口（`data-check-all="notice-check"` 驱动同组 `input[name="notice-check"]` 的勾选/反勾选与半选态），**取消勾选不会改变提交结果**（已在 `assets/app.js` 注释中写明该取舍，避免后续代理误以为漏了「仅删所选」逻辑）。
+  2. **勾选框仅作 UI 示意，`一键删除` 以服务端为准作用于面板全部提示**：需求原文为「全选 + 一键删除」，且 R9-Q1 明确一键删除＝对面板上**全部**提示打标记；故「全选」是可见的批量入口（`data-check-all="notice-check"` 驱动同组 `input[name="notice-check"]` 的勾选/反勾选与半选态），**取消勾选不会改变提交结果**（已在 `assets/app.js` 注释中写明该取舍，避免误以为漏了「仅删所选」逻辑）。
   3. **二次确认**：提交按钮沿用既有 `data-confirm` 机制（`assets/app.js` 的站内确认弹窗 `askConfirm`），文案含本次条数；**因 CSP 禁内联脚本**，全选逻辑落在 `assets/app.js`（与工单批量 `[data-check-all]` 同风格，但作用域以 `[data-check-all="notice-check"]` 收窄，不影响工单批量表单）。
   4. **结果提示**：`?cleared=ok`（单条）与新增 `?cleared=all&count=N`（批量）分开展示，批量提示回显实际条数。
 - 验证：
@@ -876,10 +913,10 @@
 - 目的：项目由两人协作，而历史记录里的「修改人」一律写成同一个人，无法区分实际改动者，用户要求直接删掉该字段，避免错误归属。
 - 验证：除本条记录自身提及外，全文检索 `修改人` / `ShiZhongyan` → 0 匹配；22 条既有记录的标题、目的、验证、改动明细均完整保留（仅少一行字段，标题下方的空行与后续内容未受影响）。
 - 改动明细：
-  - `AI_CHANGELOG.md` 原 L38、L59、L85、L108、L130、L144、L159、L182、L200、L225、L252、L295、L309、L328、L350、L368、L379、L417、L448、L499、L534、L547 — 删除 22 条记录中的 `- 修改人：…` 行。
-  - `AI_CHANGELOG.md` 原 L11-L14 — 「记录规范」删除原第 2 条（关于「修改人」的 4 行要求），原第 3-6 条重编号为现 L11-L17 的第 2-5 条。
-  - `AI_CHANGELOG.md` 原 L27 — 「条目模板」删除 `- 修改人：[xxx]` 行。
-  - `AI_CHANGELOG.md` 原 L451、L483、L503 — 正文内联署名改为「用户」（「按 用户 决策」「其后又按 用户 要求」「已与 用户 确认」）。
+  - `CHANGELOG.md` 原 L38、L59、L85、L108、L130、L144、L159、L182、L200、L225、L252、L295、L309、L328、L350、L368、L379、L417、L448、L499、L534、L547 — 删除 22 条记录中的 `- 修改人：…` 行。
+  - `CHANGELOG.md` 原 L11-L14 — 「记录规范」删除原第 2 条（关于「修改人」的 4 行要求），原第 3-6 条重编号为现 L11-L17 的第 2-5 条。
+  - `CHANGELOG.md` 原 L27 — 「条目模板」删除 `- 修改人：[xxx]` 行。
+  - `CHANGELOG.md` 原 L451、L483、L503 — 正文内联署名改为「用户」（「按 用户 决策」「其后又按 用户 要求」「已与 用户 确认」）。
   - 无代码 / 数据库改动，不影响任何运行时行为。
 
 ---
