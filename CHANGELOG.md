@@ -28,6 +28,63 @@
 
 ---
 
+### [2026-09-30 21:00:49] 全量安全与健壮性排查修复（出厂重置 / 审核指纹 / 上传配额 / 迁移幂等 / 邮箱枚举等 10 项）
+
+- 目的：对整个项目做一轮全量排查后，逐项修复「开源之后会被用户遇到的问题」，涵盖功能性缺陷、并发竞态与安全边界。共 10 处：①恢复出厂设置后无法重装；②审核白名单可被「文件名指纹」投毒；③工单附件绕过单文件 / 数量限制；④分块上传不预留在途容量（并发可超配额）；⑤自动判定违规即写入全站黑名单（误伤面过大）；⑥Notion 空间自检把瞬时错误误判为页面缺失并重建；⑦`bans.php` 服务端未拦截对管理员的处置；⑧注册 / 绑定邮箱可被枚举；⑨`Schema` 申诉迁移非幂等（重跑重复建单）；⑩`clientIp()` 在反向代理后取不到真实客户端 IP，另有后台告警「先查后插」竞态。
+- 验证：对仓库全部 `*.php` 执行 `php -l`，结果 `Total failures: 0`（含本轮改动的全部文件）。本轮仅静态改动，遵守「本机禁止功能 / HTTP 测试」约定，未做 HTTP 或浏览器验证。数据库结构影响：**无**（`Schema::CURRENT_VERSION` 未变，不新增 / 修改任何表或列；旧库无需手工补列）。
+- 改动明细（行号为改动后当前行号）：
+  - `src/Restore/RestoreService.php` L117-L122 — `factoryReset()` 清库、删 `installed.lock` 后，追加删除 `config/database.php`：只删锁会让 `install.php` 因配置文件仍在而「补锁自愈」，安装向导不可达；一并删除才真正回到未安装状态。
+  - `src/Moderation/ModerationService.php` L223-L228 — `isScanned()` 由「命中任意已有指纹即视为已扫描」收窄为仅认 `filename+` 前缀的指纹，避免攻击者把含违规关键词的文件名指纹登记进白名单后，同名文件（或其改名变体）整体免检。
+  - `api/upload.php` L236-L259、L425、L607 — 新增 `$ticketAttachmentLimit = 20` 与 `$assertTicketAttachmentCapacity()`：工单附件虽不计入个人配额，但仍受单文件上限与「单张工单最多 20 个附件」约束，堵住借工单无限上传 / 囤积超大文件的绕过路径。
+  - `api/upload.php` L181-L204、L206-L234 — 新增 `$pendingUploadBytes()` 统计当前用户尚未落库的分块会话占用（按会话声明大小、排除工单 scope），并在 `$assertCapacity()` 中计入：否则并发开启多个大文件上传时每个会话都只按「已落库用量」判定，合计可远超个人容量。`finish` 调用处排除本次会话自身（L607 附近注释说明），避免把本文件重复计入在途占用。
+  - `api/upload.php` L770 — 自动审核判定 `flagged` 时不再直接调用「写入全站黑名单」，仅 `quarantine($uploadId)` 隔离当前文件；黑名单改由人工打回时写入（见 `ModerationService::reject()`），避免误判即全站封禁同内容。
+  - `src/NotionSpaceRepair.php` L141-L160 — `state()` 仅当 `NotionApiException::status() === 404` 才返回 `missing`，鉴权失败 / 网络中断 / 5xx 等瞬时错误改为向上抛出（由 `repair()` 的 `catch (Throwable)` 记为 failed）：否则会把临时故障误判为页面缺失并重建，覆盖 `notion_page_id`、凭空多建空间页面并孤立旧文件块。
+  - `bans.php` L56-L73、L76、L101 — 新增 `$assertDisposable()` 并在 `ban_user` / `add_violation` 分支入口调用：拒绝把当前账号或管理员作为处置对象。页面按钮已隐藏这些入口，但服务端必须同样拦截，否则可伪造请求封禁管理员。
+  - `register.php` L66-L76 — 邮箱验证码 `Verification::check()` 移到「邮箱占用查询」之前：反之未认证者可提交任意邮箱，从「已被占用 / 验证码错误」的提示差异枚举已注册邮箱；先过验证码则只有真正持有该邮箱者才知道占用结果。
+  - `account.php` L121-L130 — 同上，`bind_email` 分支把 `Verification::check($email, 'bind', $code)` 移到占用查询之前（「已绑定当前账号」这步保留在前，其不泄露他人信息）。
+  - `src/Schema.php` L432-L446 — `migrateAppealsToTickets()` 的取数语句追加 `AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.category = 'appeal' AND t.related_record_id = moderation_records.id)`：迁移无事务且失败不推进 `schema_version`，整段可能被重跑，加判重后已建的申诉工单不再重复建单 / 重复留言。
+  - `src/helpers.php` L871-L900 — `clientIp()` 在「直连对端为受信任内网 / 本机地址」时改读 `X-Forwarded-For`，从右往左（代理自右侧追加）跳过内网 / 保留地址取第一个公网地址；否则反向代理后所有访客都算作同一代理 IP，按 IP 的登录限流与验证码限流形同虚设。公网直连仍只取 `REMOTE_ADDR`。
+  - `src/helpers.php` L1335-L1362 — `raiseAdminAlert()` 由「先查未读同名告警、无则插入」改为条件插入 `INSERT ... SELECT ... WHERE NOT EXISTS`，用 `rowCount() > 0` 判定是否新告警并据此发信：消除并发请求各插一条导致的重复告警与重复邮件。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+### [2026-09-30 20:40:01] 全站导航按角色文案一致性排查，修复工单页浏览器标题
+
+- 目的：承接上一处「我的文件」页侧栏工单入口文案错误，对全部带侧栏导航的页面做一次同类问题排查。逐一比对了 `dashboard.php` / `tickets.php` / `account.php` / `pay.php` / `admin.php` / `admin_orders.php` / `bans.php` / `logs.php` 的导航结构：普通用户可见项、管理员专属项、`会员套餐` 的按角色显隐、各项 `active` 态、`管理后台` 桌面折叠组（`.nav-group`）与移动端链接（`.nav-admin-link`，见 `assets/app.css` L214 / L597-L599）的切换均一致，无其他偏差。仅发现 `tickets.php` 的浏览器标签 `<title>` 仍把工单入口写死为「我的工单」，与页面内按角色显示的侧栏、页头「工单管理」不一致，予以修复。
+- 验证：`php -l tickets.php` 结果 `No syntax errors detected`。改动沿用同页页头既有表达式 `$isAdmin ? '工单管理' : '我的工单'`（`$isAdmin` 已于文件 L13 定义，早于 `<head>`），管理员无工单时标签页显示「工单管理」，查看工单详情时仍为「工单详情」；遵守「本机禁止功能 / HTTP 测试」约定，未做浏览器验证。数据库结构影响：无。
+- 改动明细（行号为改动后当前行号）：
+  - `tickets.php` L220 — 浏览器标题由 `siteTitleTag($ticket === null ? '我的工单' : '工单详情')` 改为 `siteTitleTag($ticket === null ? ($isAdmin ? '工单管理' : '我的工单') : '工单详情')`，与同页页头（L244）保持一致。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+### [2026-09-30 20:33:57] 修复「我的文件」页侧栏工单入口在管理员态文案错误
+
+- 目的：管理员登录后进入「我的文件」（`dashboard.php`）页面，左侧导航的工单入口固定显示「我的工单」，应为「工单管理」。同一入口在 `account.php` / `pay.php` / `tickets.php` 均已按角色区分文案（管理员「工单管理」/ 普通用户「我的工单」），仅 `dashboard.php` 遗漏了条件判断，属开源后可被任意管理员复现的文案不一致问题。
+- 验证：`php -l dashboard.php` 结果 `No syntax errors detected`。改动仅将写死文案替换为既有的 `isAdmin($user) ? '工单管理' : '我的工单'` 表达式，与其余三处入口保持一致；遵守「本机禁止功能 / HTTP 测试」约定，未做浏览器验证。数据库结构影响：无。
+- 改动明细（行号为改动后当前行号）：
+  - `dashboard.php` L141 — 侧栏工单入口文案由写死的「我的工单」改为 `<?= isAdmin($user) ? '工单管理' : '我的工单' ?>`，管理员态显示「工单管理」。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+### [2026-09-30 20:33:03] 全站控件样式与规格统一，并新增暗色模式
+
+- 目的：对全站输入框 / 按钮 / 选择框做一次完整的样式与规格排查，并逐项修复。此前控件规格各自为政——同一行内字号 `0.8 / 0.82 / 0.85rem` 混杂、圆角 `10 / 11 / 12px` 混用、多处以 `#fff` / `#fafbfd` 等硬编码浅色写死（无法被主题变量统一覆盖），同时缺失键盘焦点样式、缺 `[hidden]` 兜底、暗色系统偏好下配色失效。本轮以「一套控件规格」为目标：控件与按钮统一 44px 高、16px 字号、9px 圆角；卡片 / 面板 12px 圆角；弹窗 16px；胶囊 999px；并把可主题化的表面色（`--surface` / `--surface-soft` / `--line` / `--muted` / `--label` / `--control-text`）与各类 tint 色全部变量化，为暗色模式铺路。
+- 验证：`grep` 确认 `*.php` 内已无 `app.css?v=58` 残留（12 处均为 `?v=59`）；对仓库全部 `*.php` 执行 `php -l`，结果 `ALL PHP FILES: syntax OK`。本轮为纯 CSS / 模板版本号改动，不涉及业务逻辑；遵守「本机禁止功能 / HTTP 测试」约定，未做浏览器视觉验证（暗色模式亦未做浏览器验证）。数据库结构影响：无。
+- 改动明细（行号为改动后当前行号）：
+  - `assets/app.css` L18-L19 — `:root` 新增语义变量 `--label`（表单标签色）、`--control-text`（次级控件文字色），替换散落的 `#4c5562` / `#404854`。
+  - `assets/app.css` L24 — `[hidden]` 兜底由局部提升为全局 `[hidden] { display: none !important; }`：组件一旦用类选择器设置 `display`，浏览器默认的 `[hidden]` 即失效，故需全局兜底。
+  - `assets/app.css` L25、L31 — 新增 `html { color-scheme: light dark; }` 使原生表单控件跟随主题；新增全局键盘焦点样式 `a, button, summary, [tabindex]:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }`。
+  - `assets/app.css` L64-L71 — 输入 / 选择 / 文本域背景统一为 `var(--surface)`；`input[type="file"]` 与 `::file-selector-button` 按控件高对齐（外框 `var(--control-h)`，内按钮 34px + 上下各 5px 内边距恰好等高）。
+  - `assets/app.css` L125-L126 — `.ticket-form input` 收窄为 `:not([type="checkbox"]):not([type="radio"])`，工单表单控件统一高度 44px、内边距 12px。
+  - `assets/app.css` L322、L325 — `.file-section-tools .inline-rename` 高度对齐 44px；`.file-actions .inline-form:not(.violation-form) input` 宽度限定 150px。
+  - `assets/app.css` L337 — `.panel-title > a:not([class])`，避免无 class 标题链接样式误伤按钮类链接。
+  - `assets/app.css` L348-L349 — `.moderation-review` 改用全局控件高度，删除移动端 40px 覆写。
+  - `assets/app.css` L409 — `.inline-form` 增加 `align-items: stretch` 与 `gap: 8px`，修复同行控件高度 / 间距不齐。
+  - `assets/app.css` L416-L418 — 验证码 `img` 与 `.captcha-refresh` 统一 `var(--control-h)` 等高，背景变量化。
+  - `assets/app.css` L501-L537 — 套餐 / 来源 / 订单卡片统一 `var(--radius)` 圆角与 `var(--surface)` 背景；删除 `.secondary-button`、`.confirm-actions .confirm-danger`、`.pay-type-option`、`.source-option` 等多处 `font-size` 覆写（统一 16px）；`.plan-option input`（L509）改为绝对定位到卡片右上角并显示原生圆点（此前被隐藏且布局错位）。
+  - `assets/app.css` L564-L573 — 移动端（≤760px）统一 `input / select / textarea / file` 为 16px（避免 iOS 聚焦缩放），并删除重复的 `[hidden]` 覆写与 `.moderation-review input` 覆写。
+  - `assets/app.css` L743-L779 — 文件预览、公告弹窗相关浅色 tint 与圆角变量化（弹窗 16px、媒体 `var(--control-radius)`）。
+  - `assets/app.css` L781-L830 — 新增暗色模式 `@media (prefers-color-scheme: dark)`：覆写 `:root` 深色变量，并对品牌标记、导航激活态、状态角标 / 胶囊、提示条、工单消息与状态、邀请卡、星级等浅色 tint 组件逐条给出深色配色。
+  - 12 个页面 Link 资源版本号 `assets/app.css?v=58 → ?v=59`：`bans.php` L119、`admin.php` L1266、`account.php` L192、`tickets.php` L220、`admin_orders.php` L264、`install.php` L292、`index.php` L62、`forgot.php` L76、`dashboard.php` L134、`logs.php` L65、`register.php` L139、`pay.php` L134，无逻辑改动。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
 ### [2026-09-29 22:25:41] 修复工单表单勾选框被撑满整行的问题
 
 - 目的：上一轮把「匿名提交」勾选框的 `display: grid` 恢复为 `flex` 后，勾选框与文案已同行，但输入框本身仍被撑成整行宽（截图可见一个横跨整行的带边框空框）。根因是 `.ticket-form input`（L121）为所有 input 统一设置了 `width: 100%`、内边距与边框，checkbox 也被一并命中。

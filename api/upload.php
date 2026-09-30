@@ -174,8 +174,36 @@ $resolveDuplicate = static function (string $filename, string $duplicateAction) 
     return ['filename' => $renamed, 'handled' => 'rename', 'freed_bytes' => 0, 'renamed_to' => $renamed, 'duplicate' => null];
 };
 
-/** 校验单文件上限与个人容量（覆盖同名文件时，旧文件占用的空间会被释放）。 */
-$assertCapacity = static function (string $filename, int $size, int $freedBytes) use ($fail, $user): void {
+/**
+ * 统计当前用户尚未落库的分块上传占用（按会话声明大小计）。并发开启多个大文件上传时，
+ * 每个会话若都只按「已落库用量」判定配额，合计可远远超出个人容量，须把在途会话一并预留。
+ */
+$pendingUploadBytes = static function (?string $excludeToken) use ($chunkDir, $user): int {
+    $total = 0;
+    foreach (glob($chunkDir . '/*.json') ?: [] as $metaFile) {
+        if ($excludeToken !== null && basename($metaFile, '.json') === $excludeToken) {
+            continue;
+        }
+        $raw = @file_get_contents($metaFile);
+        if ($raw === false || $raw === '') {
+            continue;
+        }
+        $meta = json_decode($raw, true);
+        if (!is_array($meta) || (int) ($meta['user_id'] ?? 0) !== (int) $user['id']) {
+            continue;
+        }
+        // 工单附件不计入个人配额，不参与预留
+        if ((string) ($meta['scope'] ?? 'drive') === 'ticket') {
+            continue;
+        }
+        $total += max(0, (int) ($meta['size'] ?? 0));
+    }
+
+    return $total;
+};
+
+/** 校验单文件上限与个人容量（覆盖同名文件时，旧文件占用的空间会被释放；在途会话占用一并计入）。 */
+$assertCapacity = static function (string $filename, int $size, int $freedBytes, ?string $excludeToken = null) use ($fail, $user, $pendingUploadBytes): void {
     $limit = userSingleFileLimit($user);
     if ($size > $limit) {
         $plan = (string) Database::config('notion_plan', 'free');
@@ -191,15 +219,43 @@ $assertCapacity = static function (string $filename, int $size, int $freedBytes)
 
     $quotaBytes = userQuotaBytes($user);
     $usedBytes = userUsedBytes((int) $user['id']);
-    $requiredBytes = $usedBytes - $freedBytes + $size;
+    $pendingBytes = $pendingUploadBytes($excludeToken);
+    $requiredBytes = $usedBytes + $pendingBytes - $freedBytes + $size;
     if ($quotaBytes !== null && $requiredBytes > $quotaBytes) {
         $fail('quota_exceeded', sprintf(
-            '个人空间不足：已用 %s / 共 %s，剩余 %s，本次需要 %s，请联系管理员调整容量。',
+            '个人空间不足：已用 %s / 共 %s，另有上传中的文件占用 %s，本次需要 %s，请联系管理员调整容量。',
             formatBytes($usedBytes),
             formatBytes($quotaBytes),
-            formatBytes(max(0, $quotaBytes - $usedBytes + $freedBytes)),
+            formatBytes($pendingBytes),
             formatBytes($size)
-        ), ['used_bytes' => $usedBytes, 'quota_bytes' => $quotaBytes, 'size' => $size, 'freed_bytes' => $freedBytes]);
+        ), ['used_bytes' => $usedBytes, 'pending_bytes' => $pendingBytes, 'quota_bytes' => $quotaBytes, 'size' => $size, 'freed_bytes' => $freedBytes]);
+    }
+};
+
+/** 单张工单可保有的附件数量上限。 */
+$ticketAttachmentLimit = 20;
+
+/**
+ * 工单附件容量校验：附件不计入个人配额，但仍限制单文件上限与单张工单的附件数量，
+ * 否则可借工单无限上传超大文件或囤积大量文件，绕过个人容量与单文件限制。
+ */
+$assertTicketAttachmentCapacity = static function (int $ticketId, string $filename, int $size) use ($fail, $user, $ticketAttachmentLimit): void {
+    $limit = userSingleFileLimit($user);
+    if ($size > $limit) {
+        $fail('file_too_large', sprintf(
+            '附件 %s 实际大小 %s，超过单文件上限 %s。',
+            $filename,
+            formatBytes($size),
+            formatBytes($limit)
+        ), ['size' => $size, 'single_limit' => $limit], 413);
+    }
+
+    $statement = Database::connection()->prepare(
+        "SELECT COUNT(*) FROM uploads WHERE scope = 'ticket' AND ticket_id = :ticket_id AND status IN ('active', 'quarantined')"
+    );
+    $statement->execute(['ticket_id' => $ticketId]);
+    if ((int) $statement->fetchColumn() >= $ticketAttachmentLimit) {
+        $fail('ticket_attachment_limit', sprintf('单张工单最多上传 %d 个附件，已达上限。', $ticketAttachmentLimit));
     }
 };
 
@@ -362,10 +418,11 @@ try {
             }
         }
 
-        // 工单附件不做重名处理与容量校验（不计入个人配额）
+        // 工单附件不做重名处理，也不计入个人配额，但仍校验单文件上限与单张工单的附件数量
         $duplicateAction = is_string($_POST['duplicate_action'] ?? null) ? $_POST['duplicate_action'] : '';
         if ($scope === 'ticket') {
             $resolved = ['filename' => $filename, 'handled' => '', 'freed_bytes' => 0, 'renamed_to' => '', 'duplicate' => null];
+            $assertTicketAttachmentCapacity($ticketId, $filename, $size);
         } else {
             $resolved = $resolveDuplicate($filename, $duplicateAction);
             $filename = $resolved['filename'];
@@ -545,8 +602,9 @@ try {
         // 重新校验：分块期间文件名与配额可能已被并发上传改变
         $extension = $validateFilename($filename, $size);
         if ($scope === 'ticket') {
-            // 工单附件不做重名处理与容量校验（finish 前已复核工单状态）
+            // 工单附件不做重名处理，也不计入个人配额，但仍复核单文件上限与单张工单的附件数量
             $resolved = ['filename' => $filename, 'handled' => '', 'freed_bytes' => 0, 'renamed_to' => '', 'duplicate' => null];
+            $assertTicketAttachmentCapacity($ticketId, $filename, $size);
         } else {
             $resolved = $resolveDuplicate($filename, (string) ($meta['duplicate_action'] ?? ''));
             $filename = $resolved['filename'];
@@ -558,7 +616,8 @@ try {
             }
             $context['file']['name'] = $filename;
 
-            $assertCapacity($filename, $size, $resolved['freed_bytes']);
+            // 本次会话的元数据仍在，须排除自身，否则会把本文件重复计入在途占用
+            $assertCapacity($filename, $size, $resolved['freed_bytes'], $token);
         }
 
         // 分块期间目标文件夹可能已被删除，落库前再确认一次，失效则落到根目录而不是让整条 INSERT 失败；工单附件固定在根目录
@@ -706,7 +765,8 @@ try {
                             $verdict,
                             $contentHash
                         );
-                        $moderationService->rememberHash($contentHash, Verdict::FLAGGED);
+                        // 自动识别只隔离当前文件，不写全站黑名单：AI 存在误判，若立即拉黑全站，
+                        // 同一内容会被永久拦截且易被反向利用；待管理员人工打回（ModerationService::reject）时才登记黑名单
                         $moderationService->quarantine($uploadId);
                         Logger::warning('upload', '内容审核命中，文件已暂停使用', [
                             'appeal_no' => $appealNo,

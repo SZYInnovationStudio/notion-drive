@@ -118,14 +118,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (emailBound($user) && strcasecmp((string) $user['email'], $email) === 0) {
                 throw new RuntimeException('该邮箱已绑定到当前账号。');
             }
+            // 先校验验证码再查占用：反之登录用户提交任意邮箱即可从提示差异判断其是否已被注册（邮箱枚举）
+            $verificationError = Verification::check($email, 'bind', $code);
+            if ($verificationError !== null) {
+                throw new RuntimeException($verificationError);
+            }
             $occupied = $pdo->prepare('SELECT 1 FROM users WHERE email = :email AND id <> :id LIMIT 1');
             $occupied->execute(['email' => $email, 'id' => $userId]);
             if ($occupied->fetch()) {
                 throw new RuntimeException('该邮箱已被其他账号使用。');
-            }
-            $verificationError = Verification::check($email, 'bind', $code);
-            if ($verificationError !== null) {
-                throw new RuntimeException($verificationError);
             }
             $pdo->prepare('UPDATE users SET email = :email, email_verified_at = NOW() WHERE id = :id')
                 ->execute(['email' => $email, 'id' => $userId]);
@@ -189,7 +190,7 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('账户管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=58"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('账户管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=59"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>

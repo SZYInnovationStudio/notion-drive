@@ -83,7 +83,8 @@ final class RestoreService
      * 恢复出厂设置：清空整个数据库并回到未安装状态，由调用方跳转到 install.php。
      *
      * 执行顺序刻意把「清库」放在最后：前面任何一步失败都还留有完整数据，不会出现「文件没了但库还在」
-     * 这种半损坏状态。清库完成后删除 installed.lock，install.php 会重新建表并写入初始配置。
+     * 这种半损坏状态。清库完成后同时删除 installed.lock 与 config/database.php 才算真正回到未安装状态，
+     * 否则 install.php 会因配置仍存在而自愈补锁，安装向导永不可达。
      */
     public function factoryReset(): void
     {
@@ -115,6 +116,10 @@ final class RestoreService
 
         // 4) 删除安装锁：整站回到「未安装」，本次跳转与后续请求都会被引导到 install.php
         @unlink(dirname(__DIR__, 2) . '/storage/installed.lock');
+
+        // 5) 删除数据库配置：只删锁会让 install.php 因配置仍存在而补锁自愈，安装向导不可达；
+        //    与「回到未安装状态」一致，须一并删除，让安装向导重新收集数据库与管理员信息
+        @unlink(dirname(__DIR__, 2) . '/config/database.php');
     }
 
     /**

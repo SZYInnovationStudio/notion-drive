@@ -53,10 +53,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $userId = (int) ($_POST['user_id'] ?? 0);
 
-        if ($action === 'ban_user') {
-            if ($userId === (int) $currentUser['id']) {
-                throw new RuntimeException('不能封禁当前登录的账号。');
+        // 处置目标校验：页面按钮已对管理员与当前账号隐藏，服务端必须同样拦截，
+        // 否则可伪造请求封禁管理员或给管理员记违规，把管理员账号一并封掉
+        $assertDisposable = static function (int $userId) use ($currentUser): void {
+            if ($userId <= 0 || $userId === (int) $currentUser['id']) {
+                throw new RuntimeException('不能将当前登录的账号作为处置对象。');
             }
+            $statement = Database::connection()->prepare(
+                'SELECT g.is_admin FROM users u LEFT JOIN `groups` g ON g.id = u.group_id WHERE u.id = :id LIMIT 1'
+            );
+            $statement->execute(['id' => $userId]);
+            $row = $statement->fetch();
+            if (!is_array($row)) {
+                throw new RuntimeException('用户不存在。');
+            }
+            if ((int) ($row['is_admin'] ?? 0) === 1) {
+                throw new RuntimeException('不能对管理员账号执行封禁或违规处置。');
+            }
+        };
+
+        if ($action === 'ban_user') {
+            $assertDisposable($userId);
             $reason = trim((string) ($_POST['reason'] ?? ''));
             $service->ban($userId, $reason !== '' ? $reason : '管理员手动封禁。', (int) $currentUser['id']);
             Logger::warning('ban', '管理员手动封禁用户。', [
@@ -81,6 +98,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // R10 可信度：管理员手动给用户增加违规次数（累计到阈值即自动封禁）
         if ($action === 'add_violation') {
+            $assertDisposable($userId);
             $points = (int) ($_POST['violation_points'] ?? 1);
             $reason = trim((string) ($_POST['violation_reason'] ?? ''));
             $service->addViolation($userId, $points, $reason, (int) $currentUser['id']);
@@ -116,7 +134,7 @@ $flash = pullFlash();
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('封禁管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=58"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('封禁管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=59"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>

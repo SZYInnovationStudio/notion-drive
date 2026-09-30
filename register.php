@@ -63,14 +63,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 191) {
                 throw new RuntimeException('请填写有效的邮箱地址。');
             }
+            // 先校验验证码再查占用：反之未认证者提交任意邮箱即可从「已被占用 / 验证码错误」的差异
+            // 判断该邮箱是否已注册（邮箱枚举）；先过验证码则只有真正持有该邮箱、能收到码的人才知道占用结果
+            $verificationError = Verification::check($email, 'register', $code);
+            if ($verificationError !== null) {
+                throw new RuntimeException($verificationError);
+            }
             $occupied = $pdo->prepare('SELECT 1 FROM users WHERE email = :email LIMIT 1');
             $occupied->execute(['email' => $email]);
             if ($occupied->fetch()) {
                 throw new RuntimeException('该邮箱已被其他账号使用。');
-            }
-            $verificationError = Verification::check($email, 'register', $code);
-            if ($verificationError !== null) {
-                throw new RuntimeException($verificationError);
             }
         } else {
             $email = '';
@@ -136,7 +138,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <?= siteTitleTag('注册') ?>
     <?= siteFaviconTag() ?>
-    <link rel="stylesheet" href="assets/app.css?v=58">
+    <link rel="stylesheet" href="assets/app.css?v=59">
 </head>
 <body class="login-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <main class="login-layout">

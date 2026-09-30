@@ -431,9 +431,14 @@ final class Schema
     /** 升级前用户只填过「一条申诉文本」：转成对应申诉工单的首条留言，避免内容丢失。 */
     private static function migrateAppealsToTickets(PDO $pdo): void
     {
+        // 迁移无事务且 schema_version 失败不推进，整段可能被重跑；已建过的申诉工单须跳过，
+        // 否则同一条记录会被重复建单与重复留言
         $legacy = $pdo->query(
             "SELECT id, user_id, appeal_no, filename, appeal_text, appealed_at, created_at
-             FROM moderation_records WHERE appeal_text <> ''"
+             FROM moderation_records WHERE appeal_text <> ''
+               AND NOT EXISTS (
+                   SELECT 1 FROM tickets t WHERE t.category = 'appeal' AND t.related_record_id = moderation_records.id
+               )"
         )->fetchAll();
 
         foreach ($legacy ?: [] as $row) {

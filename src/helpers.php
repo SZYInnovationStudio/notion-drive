@@ -867,10 +867,35 @@ function bytesToInputValue(?int $bytes, int $unitBytes): string
     return rtrim(rtrim(number_format($value, 6, '.', ''), '0'), '.');
 }
 
-/** 当前请求来源 IP（只取 REMOTE_ADDR，不信任可伪造的转发头）。 */
+/**
+ * 当前请求来源 IP。
+ *
+ * 公网直连时只取 REMOTE_ADDR；位于反向代理之后（直连对端为本机/内网地址）时改看 X-Forwarded-For，
+ * 否则所有访客都会算作同一个代理 IP，按 IP 的登录限流与验证码限流形同虚设。
+ * 该头可被客户端伪造，因此从右往左读取（代理是从右侧追加的），跳过受信任的内网/保留地址，
+ * 取第一个公网地址；客户端自带的左侧条目一律不采信。
+ */
 function clientIp(): string
 {
     $ip = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+
+    if (remoteAddrIsTrustedProxy())
+    {
+        $chain = explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''));
+        for ($i = count($chain) - 1; $i >= 0; $i--)
+        {
+            $candidate = trim($chain[$i]);
+            if ($candidate === '' || filter_var($candidate, FILTER_VALIDATE_IP) === false)
+            {
+                continue;
+            }
+
+            if (filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false)
+            {
+                return substr($candidate, 0, 45);
+            }
+        }
+    }
 
     return $ip === '' ? '0.0.0.0' : substr($ip, 0, 45);
 }
@@ -1319,17 +1344,20 @@ function raiseAdminAlert(string $level, string $message, array $context = []): v
     try {
         $pdo = Database::connection();
         $message = mb_strcut($message, 0, 500, 'UTF-8');
-        $statement = $pdo->prepare('SELECT 1 FROM admin_alerts WHERE is_read = 0 AND message = :message LIMIT 1');
-        $statement->execute(['message' => $message]);
-        if (!$statement->fetch()) {
-            $pdo->prepare('INSERT INTO admin_alerts (level, message, context) VALUES (:level, :message, :context)')
-                ->execute([
-                    'level' => $level,
-                    'message' => $message,
-                    'context' => $context === [] ? null : (string) json_encode($context, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                ]);
-            $inserted = true;
-        }
+        // 用条件插入取代「先查后插」：两个并发请求可能同时判定“无未读同名告警”而各插一条，
+        // 造成重复告警与重复邮件；把检查与写入合成一条语句可消除该竞态
+        $statement = $pdo->prepare(
+            'INSERT INTO admin_alerts (level, message, context)
+             SELECT :level, :message, :context FROM DUAL
+             WHERE NOT EXISTS (SELECT 1 FROM admin_alerts WHERE is_read = 0 AND message = :duplicate_message)'
+        );
+        $statement->execute([
+            'level'             => $level,
+            'message'           => $message,
+            'context'           => $context === [] ? null : (string) json_encode($context, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'duplicate_message' => $message,
+        ]);
+        $inserted = $statement->rowCount() > 0;
     } catch (Throwable $exception) {
         Logger::warning('alert', '写入后台告警失败。', ['reason' => $exception->getMessage()]);
     }

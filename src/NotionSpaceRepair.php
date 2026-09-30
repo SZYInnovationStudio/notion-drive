@@ -137,7 +137,7 @@ final class NotionSpaceRepair
         return ['root' => $root, 'page' => \normalizePageId((string) $statement->fetchColumn())];
     }
 
-    /** 判断页面状态：active（可用）/ trashed（在回收站）/ missing（接口 404 或不可读）。 */
+    /** 判断页面状态：active（可用）/ trashed（在回收站）/ missing（接口 404，页面确实不存在）。 */
     private function state(string $pageId, NotionClient $client): string
     {
         if ($pageId === '') {
@@ -146,9 +146,14 @@ final class NotionSpaceRepair
 
         try {
             $page = $client->retrievePage($pageId);
-        } catch (NotionApiException) {
-            // 页面被彻底删除或当前不可读，统一按「不存在」处理，交由上层决定是否重建
-            return 'missing';
+        } catch (NotionApiException $exception) {
+            // 只有 404 才代表页面确实不存在；网络中断、5xx、鉴权失败等瞬时或环境问题若也按缺失处理，
+            // 会触发重建并覆盖 notion_page_id，凭空多建一个空间页面且旧文件的块被孤立，故向上抛出
+            if ($exception->status() === 404) {
+                return 'missing';
+            }
+
+            throw $exception;
         }
 
         return !empty($page['in_trash']) || !empty($page['archived']) ? 'trashed' : 'active';

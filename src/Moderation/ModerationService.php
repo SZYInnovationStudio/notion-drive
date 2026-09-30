@@ -216,12 +216,15 @@ final class ModerationService
 
     /**
      * 「通过」结论是否来自真实执行的审核判断（用于决定能否写入全站白名单）。
-     * 未配置 AI、审核范围不含任何载荷（skipped）、风控关闭时均为未实际审核，返回 false，
-     * 避免把未经审核的内容登记为「已通过」而长期免审（指纹投毒）。
+     * 只有把文件内容（文本或图片）一并送审才算「已审核」：未配置 AI（unconfigured）、
+     * 风控关闭（disabled）、审核范围不含任何载荷（skipped）以及只审了文件名（filename）时，
+     * 内容实际未被检查，返回 false，避免把未经审核的内容登记为「已通过」而长期免审（指纹投毒）。
      */
     public static function isScanned(Verdict $verdict): bool
     {
-        return !in_array($verdict->detail, ['unconfigured', 'disabled', 'skipped'], true);
+        // AiModerator 在有内容载荷参与时把 detail 记为 filename+text / filename+image（含两者组合），
+        // 仅审文件名时固定为 filename，据此判定是否至少审过一类内容
+        return str_starts_with($verdict->detail, 'filename+');
     }
 
     /**
