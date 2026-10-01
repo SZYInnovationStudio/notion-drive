@@ -131,17 +131,17 @@ $premiumNotice = premiumNotice($user);
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <?= siteTitleTag('我的文件') ?>
     <?= siteFaviconTag() ?>
-    <link rel="stylesheet" href="assets/app.css?v=59">
+    <link rel="stylesheet" href="assets/app.css?v=60">
 </head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>" data-limit="<?= $singleLimit ?>" data-remaining="<?= $remainingBytes === null ? '' : $remainingBytes ?>" data-folder="<?= $currentFolderId ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
         <nav class="drive-nav" aria-label="主导航">
-            <a class="active" href="dashboard.php"><span>▣</span>我的文件</a>
-            <a href="tickets.php"><span>✉</span><?= isAdmin($user) ? '工单管理' : '我的工单' ?></a>
-            <?php if (isAdmin($user)): ?><a href="admin.php"><span>⚙</span>管理后台</a><a href="admin_orders.php"><span>¥</span>订单管理</a><a href="bans.php"><span>⛔</span>封禁管理</a><a href="logs.php"><span>☰</span>运行日志</a><?php endif; ?>
-            <a href="account.php"><span>◍</span>账户管理</a>
-            <?php if (!isAdmin($user)): ?><a href="pay.php"><span>★</span>会员套餐</a><?php endif; ?>
+            <a class="active" href="dashboard.php"><?= navIcon('files') ?>我的文件</a>
+            <a href="tickets.php"><?= navIcon('tickets') ?><?= isAdmin($user) ? '工单管理' : '我的工单' ?></a>
+            <?php if (isAdmin($user)): ?><a href="admin.php"><?= navIcon('admin') ?>管理后台</a><a href="admin_orders.php"><?= navIcon('orders') ?>订单管理</a><a href="bans.php"><?= navIcon('bans') ?>封禁管理</a><a href="logs.php"><?= navIcon('logs') ?>运行日志</a><?php endif; ?>
+            <a href="account.php"><?= navIcon('account') ?>账户管理</a>
+            <?php if (!isAdmin($user)): ?><a href="pay.php"><?= navIcon('premium') ?>会员套餐</a><?php endif; ?>
         </nav>
         <?= sidebarStorageHtml($user) ?>
         <?= sidebarIcpHtml() ?>

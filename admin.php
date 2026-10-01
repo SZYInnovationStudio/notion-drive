@@ -1263,11 +1263,11 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('管理后台') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=59"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('管理后台') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=60"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
-        <nav class="drive-nav"><a href="dashboard.php"><span>▣</span>我的文件</a><a href="tickets.php"><span>✉</span>工单管理</a><a class="active nav-admin-link" href="admin.php"><span>⚙</span>管理后台</a><details class="nav-group" open><summary><span>⚙</span>管理后台</summary><div class="nav-sub"><?php foreach ($adminTabs as $tabKey => $tabMeta): ?><a class="<?= $tabKey === $activeTab ? 'active' : '' ?>" href="<?= e($tabUrl((string) $tabKey)) ?>"><?= e($tabMeta['label']) ?></a><?php endforeach; ?></div></details><a href="admin_orders.php"><span>¥</span>订单管理</a><a href="bans.php"><span>⛔</span>封禁管理</a><a href="logs.php"><span>☰</span>运行日志</a><a href="account.php"><span>◍</span>账户管理</a></nav>
+        <nav class="drive-nav"><a href="dashboard.php"><?= navIcon('files') ?>我的文件</a><a href="tickets.php"><?= navIcon('tickets') ?>工单管理</a><a class="active nav-admin-link" href="admin.php"><?= navIcon('admin') ?>管理后台</a><details class="nav-group" open><summary><?= navIcon('admin') ?>管理后台</summary><div class="nav-sub"><?php foreach ($adminTabs as $tabKey => $tabMeta): ?><a class="<?= $tabKey === $activeTab ? 'active' : '' ?>" href="<?= e($tabUrl((string) $tabKey)) ?>"><?= e($tabMeta['label']) ?></a><?php endforeach; ?></div></details><a href="admin_orders.php"><?= navIcon('orders') ?>订单管理</a><a href="bans.php"><?= navIcon('bans') ?>封禁管理</a><a href="logs.php"><?= navIcon('logs') ?>运行日志</a><a href="account.php"><?= navIcon('account') ?>账户管理</a></nav>
         <?= sidebarStorageHtml($currentUser) ?>
         <?= sidebarIcpHtml() ?>
         <?= sidebarPoliceHtml() ?>

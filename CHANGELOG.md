@@ -28,8 +28,24 @@
 
 ---
 
-### [2026-10-01 10:54:43] 修复 Linux 部署后子目录命名空间类无法自动加载（空间巡检抛 Class not found、tickets.php 500）
+### [2026-10-01 13:12:20] 侧边栏导航图标由 emoji / 符号字形改为内联 SVG
 
+- 目的：侧边栏原来用 `▣ ✉ ⚙ ¥ ⛔ ☰ ◍ ★` 等字符充当图标，这些字形依赖系统字体与 emoji 字体，在部分浏览器 / 操作系统（尤其是 Linux 服务器截图、无 emoji 字体的环境）会渲染成方块或彩色 emoji，与站点配色不一致。改为内联描边 SVG 后由 `currentColor` 上色（跟随链接文字颜色，含 hover / active 态），不再依赖任何字体，各平台渲染一致；同时折叠分组的箭头 `▾` 也改为纯 CSS 绘制的 chevron，使侧边栏彻底无字形依赖。
+- 验证：`php -l` 对仓库全部 `*.php` 执行，结果 `ALL PHP FILES: syntax OK`；`grep` 确认 `*.php` 内已无 `app.css?v=59` 残留（12 处均为 `?v=60`），亦无 `<span>▣</span>` 等旧图标残留。遵守「本机禁止功能 / HTTP 测试」约定，未做 HTTP 验证。
+- 改动明细（行号为改动后当前行号）：
+  - `src/helpers.php` L124-L143 — 新增 `navIcon(string $name): string`，用名称表返回 8 个内联 SVG（`files` / `tickets` / `admin` / `orders` / `bans` / `logs` / `account` / `premium`），输出 `<span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" ...>`，未知名称返回空串。
+  - `dashboard.php` L140-L144、`account.php` L198-L202、`pay.php` L139-L143、`tickets.php` L225-L229 — 侧边栏 `<span>▣</span>` 等逐个替换为 `<?= navIcon('files') ?>` 等调用。
+  - `admin.php` L1270 — 单行导航里 link 与 `<summary>` 两处 `⚙` 均替换为 `navIcon('admin')`。
+  - `admin_orders.php` L268、`bans.php` L141、`logs.php` L69 — 同为单行导航，替换 `▣ ✉ ⚙ ¥ ⛔ ☰ ◍`。
+  - `assets/app.css` L204-L205 — 新增 `.drive-nav a span.nav-icon svg, .nav-group > summary span.nav-icon svg { display: block; margin: 0 auto; }`，让 SVG 在原有 20px 宽度占位内居中（保留 `<span>` 外壳以复用现有定位与移动端隐藏规则）。
+  - `assets/app.css` L210-L211 — 折叠箭头原 `content: '▾'` 改为纯 CSS chevron（`content: ''` + `border-right` / `border-bottom` 旋转 45°），关闭态由 `rotate(-90deg)` 改为 `rotate(-45deg)`（指向右），方向与原来一致。
+  - 资源版本号 `assets/app.css?v=59 → ?v=60`：`dashboard.php` L134、`account.php` L193、`admin.php` L1266、`admin_orders.php` L264、`bans.php` L137、`logs.php` L65、`pay.php` L134、`tickets.php` L220、`index.php` L62、`register.php` L141、`forgot.php` L76、`install.php` L292（共 12 处）。项目惯例为「改 CSS 即全站同步 +1」，避免浏览器与 CDN 复用旧样式。
+- 数据库结构影响：**无**。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+---
+
+### [2026-10-01 10:54:43] 修复 Linux 部署后子目录命名空间类无法自动加载（空间巡检抛 Class not found、tickets.php 500）
 - 目的：自动加载器用原始反斜杠拼路径（`__DIR__ . '/' . substr($class, ...) . '.php'`），在 Windows 上 `\` 恰好是目录分隔符所以一直正常，但 Linux 下 `\` 是普通字符，`is_file()` 恒为 false，导致 `src/` 子目录里的全部类（`Space\SpacePatrol`、`Tickets\TicketService`、`Bans\BanService`、`Moderation\*`、`Restore\RestoreService`）都加载不到：表现为运行日志刷 `Class "NotionDrive\Space\SpacePatrol" not found`、`tickets.php` 直接 500（其调 `TicketService` 且无 try/catch）、而根目录类（`Auth`/`Database`/`Schema`）仍正常，故登录与安装看似无恙。
 - 验证：`php -l src/bootstrap.php` 通过（`No syntax errors detected`）。遵守「本机禁止功能 / HTTP 测试」约定，未做 HTTP 验证。
 - 改动明细（行号为改动后当前行号）：

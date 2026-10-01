@@ -261,11 +261,11 @@ $statusLabels = ['' => '全部状态', 'pending' => '待支付', 'paid' => '已�
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('订单管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=59"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('订单管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=60"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
-        <nav class="drive-nav"><a href="dashboard.php"><span>▣</span>我的文件</a><a href="tickets.php"><span>✉</span>工单管理</a><a href="admin.php"><span>⚙</span>管理后台</a><a class="active" href="admin_orders.php"><span>¥</span>订单管理</a><a href="bans.php"><span>⛔</span>封禁管理</a><a href="logs.php"><span>☰</span>运行日志</a><a href="account.php"><span>◍</span>账户管理</a></nav>
+        <nav class="drive-nav"><a href="dashboard.php"><?= navIcon('files') ?>我的文件</a><a href="tickets.php"><?= navIcon('tickets') ?>工单管理</a><a href="admin.php"><?= navIcon('admin') ?>管理后台</a><a class="active" href="admin_orders.php"><?= navIcon('orders') ?>订单管理</a><a href="bans.php"><?= navIcon('bans') ?>封禁管理</a><a href="logs.php"><?= navIcon('logs') ?>运行日志</a><a href="account.php"><?= navIcon('account') ?>账户管理</a></nav>
         <?= sidebarStorageHtml($currentUser) ?>
         <?= sidebarIcpHtml() ?>
         <?= sidebarPoliceHtml() ?>

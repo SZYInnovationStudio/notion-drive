@@ -201,12 +201,14 @@ fieldset legend { margin-bottom: 10px; }
 .drive-nav a:hover { background: var(--surface-soft); color: var(--text); }
 .drive-nav a.active { background: var(--primary-soft); color: #1255b8; font-weight: 650; }
 .drive-nav a span { width: 20px; text-align: center; }
+/* 导航图标为内联 SVG，在固定宽度占位内居中 */
+.drive-nav a span.nav-icon svg, .nav-group > summary span.nav-icon svg { display: block; margin: 0 auto; }
 /* 管理后台二级菜单：桌面端侧栏可折叠分组；移动端隐藏，改用正文顶部的分区条 */
 .nav-group { margin: 0; }
 .nav-group > summary { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: var(--control-radius); color: var(--muted); font-size: .9rem; cursor: pointer; list-style: none; }
 .nav-group > summary::-webkit-details-marker { display: none; }
-.nav-group > summary::after { content: '▾'; margin-left: auto; font-size: .68rem; color: #9aa2ad; transition: transform .15s; }
-.nav-group:not([open]) > summary::after { transform: rotate(-90deg); }
+.nav-group > summary::after { content: ''; width: 6px; height: 6px; margin-left: auto; border-right: 1.7px solid #9aa2ad; border-bottom: 1.7px solid #9aa2ad; transform: rotate(45deg); transition: transform .15s; }
+.nav-group:not([open]) > summary::after { transform: rotate(-45deg); }
 .nav-group > summary:hover { background: var(--surface-soft); color: var(--text); }
 .nav-group[open] > summary { color: var(--text); font-weight: 650; }
 .nav-group > summary span { width: 20px; text-align: center; }

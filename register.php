@@ -138,7 +138,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <?= siteTitleTag('注册') ?>
     <?= siteFaviconTag() ?>
-    <link rel="stylesheet" href="assets/app.css?v=59">
+    <link rel="stylesheet" href="assets/app.css?v=60">
 </head>
 <body class="login-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <main class="login-layout">
