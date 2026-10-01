@@ -28,6 +28,15 @@
 
 ---
 
+### [2026-10-01 10:54:43] 修复 Linux 部署后子目录命名空间类无法自动加载（空间巡检抛 Class not found、tickets.php 500）
+
+- 目的：自动加载器用原始反斜杠拼路径（`__DIR__ . '/' . substr($class, ...) . '.php'`），在 Windows 上 `\` 恰好是目录分隔符所以一直正常，但 Linux 下 `\` 是普通字符，`is_file()` 恒为 false，导致 `src/` 子目录里的全部类（`Space\SpacePatrol`、`Tickets\TicketService`、`Bans\BanService`、`Moderation\*`、`Restore\RestoreService`）都加载不到：表现为运行日志刷 `Class "NotionDrive\Space\SpacePatrol" not found`、`tickets.php` 直接 500（其调 `TicketService` 且无 try/catch）、而根目录类（`Auth`/`Database`/`Schema`）仍正常，故登录与安装看似无恙。
+- 验证：`php -l src/bootstrap.php` 通过（`No syntax errors detected`）。遵守「本机禁止功能 / HTTP 测试」约定，未做 HTTP 验证。
+- 改动明细（行号为改动后当前行号）：
+  - `src/bootstrap.php` L26-L28 — 自动加载器新增 `$relative = str_replace('\\', '/', substr($class, strlen($prefix)));`，把命名空间分隔符规范为目录分隔符后再拼路径（Windows 同样兼容）；原 L26 的 `$path` 单行拼接删除。
+- 数据库结构影响：**无**。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
 ### [2026-10-01 10:10:51] 新增根目录高分辨率站点图标 favicon.png / favicon.ico
 
 - 目的：为浏览器对 `/favicon.ico` 的默认请求及需要位图图标的场景，提供与内置 `assets/favicon.svg` 图案一致的高分辨率图标。

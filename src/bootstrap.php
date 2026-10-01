@@ -23,7 +23,9 @@ spl_autoload_register(static function (string $class): void {
     if (!str_starts_with($class, $prefix)) {
         return;
     }
-    $path = __DIR__ . '/' . substr($class, strlen($prefix)) . '.php';
+    // 命名空间分隔符必须转成目录分隔符：Linux 下反斜杠是普通字符，直接用会找不到子目录里的类
+    $relative = str_replace('\\', '/', substr($class, strlen($prefix)));
+    $path = __DIR__ . '/' . $relative . '.php';
     if (is_file($path)) {
         require $path;
     }
