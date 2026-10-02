@@ -649,7 +649,8 @@ final class TicketService
     }
 
     /**
-     * 工单附件：scope = ticket 且归属该工单的在用文件（不出现在「我的文件」）。
+     * 工单附件：scope = ticket 且归属该工单的业务文件（不出现在「我的文件」）。
+     * 含被风控隔离（quarantined）的文件：关闭工单时需一并清理，避免隔离附件残留。
      *
      * @return array<int, array<string, mixed>>
      */
@@ -659,7 +660,7 @@ final class TicketService
             "SELECT up.id, up.filename, up.display_name, up.file_size, up.mime_type, up.user_id, up.created_at, u.username
              FROM uploads up
              LEFT JOIN users u ON u.id = up.user_id
-             WHERE up.scope = 'ticket' AND up.ticket_id = :ticket_id AND up.status = 'active'
+             WHERE up.scope = 'ticket' AND up.ticket_id = :ticket_id AND up.status IN ('active', 'quarantined')
              ORDER BY up.id ASC"
         );
         $statement->execute(['ticket_id' => $ticketId]);
@@ -706,6 +707,34 @@ final class TicketService
         $this->purgeAttachments($ticketId);
 
         return true;
+    }
+
+    /**
+     * 申诉复核闭环：审核记录被管理员放行 / 打回 / 清除后，把对应申诉工单同步回复并关闭，
+     * 避免「记录已处理、工单仍挂起」的两套状态长期不一致；已结束的工单不再处理。
+     *
+     * @return bool 是否关闭了工单
+     */
+    public function resolveAppealByRecord(int $recordId, int $adminId, string $message): bool
+    {
+        $statement = Database::connection()->prepare(
+            'SELECT id, status FROM tickets
+             WHERE related_record_id = :record_id AND category = :category
+             ORDER BY id DESC LIMIT 1'
+        );
+        $statement->execute(['record_id' => $recordId, 'category' => self::CATEGORY_APPEAL]);
+        $ticket = $statement->fetch();
+        if (!is_array($ticket) || self::isEnded((string) $ticket['status'])) {
+            return false;
+        }
+
+        $ticketId = (int) $ticket['id'];
+        $message = trim($message);
+        if ($message !== '') {
+            $this->appendMessage($ticketId, self::ROLE_ADMIN, $adminId, $message);
+        }
+
+        return $this->closeTicket($ticketId);
     }
 
     /**

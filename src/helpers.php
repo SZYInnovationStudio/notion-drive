@@ -696,7 +696,11 @@ function userActiveBan(?array $user): ?array
         return null;
     }
 
-    return BanService::create()->activeBan((int) $user['id']);
+    $service = BanService::create();
+    // 懒结算自动解封：读状态前先解除到期封禁，避免只在账户页访问才刷新导致封禁「看起来还在」
+    $service->expireDue((int) $user['id']);
+
+    return $service->activeBan((int) $user['id']);
 }
 
 /**
@@ -1386,6 +1390,17 @@ function raiseAdminAlert(string $level, string $message, array $context = []): v
     // 只在新告警时发邮件，避免重复提醒；同一请求内相同内容也只发一次
     if ($inserted) {
         sendAdminAlertMail($level, $message, $context);
+    }
+
+    // 告警保留期：已读告警保留 30 天、全部告警保留 180 天，避免表无限增长（懒清理，无 cron）
+    try {
+        Database::connection()->exec(
+            'DELETE FROM admin_alerts
+             WHERE (is_read = 1 AND created_at < DATE_SUB(NOW(), INTERVAL 30 DAY))
+                OR created_at < DATE_SUB(NOW(), INTERVAL 180 DAY)'
+        );
+    } catch (Throwable $exception) {
+        Logger::warning('alert', '清理过期后台告警失败。', ['reason' => $exception->getMessage()]);
     }
 }
 

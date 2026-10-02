@@ -790,6 +790,8 @@ try {
                         'upload_id' => $uploadId,
                         'sha256' => $contentHash,
                     ] + $context);
+                    // 指纹命中白名单即审核通过：获准重传的用户重新上传成功后自动闭环待处理记录
+                    $moderationService->completeResubmit((int) $user['id'], (string) $meta['filename']);
                 } else {
                     // 全站已有同内容被判定违规：不再重复调用 AI，直接按违规处理
                     $verdict = $known === Verdict::FLAGGED
@@ -858,6 +860,8 @@ try {
                         if (ModerationService::isScanned($verdict)) {
                             $moderationService->rememberHash($contentHash, Verdict::APPROVED);
                         }
+                        // 审核通过：获准重传的用户重新上传成功后自动闭环待处理记录
+                        $moderationService->completeResubmit((int) $user['id'], (string) $meta['filename']);
                     }
                 }
             }

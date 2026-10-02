@@ -353,8 +353,23 @@ final class ModerationService
     public function forgetHash(string $contentHash, int $exceptRecordId = 0): void
     {
         $contentHash = self::normalizeHash($contentHash);
-        if ($contentHash === '') {
+        if ($contentHash === '' || $this->hasOtherRejectedHash($contentHash, $exceptRecordId)) {
             return;
+        }
+
+        Database::connection()->prepare('DELETE FROM moderation_hashes WHERE content_hash = :content_hash')
+            ->execute(['content_hash' => $contentHash]);
+    }
+
+    /**
+     * 该指纹是否仍被其它「已打回」记录引用：若存在，说明全站仍有用户因同一内容被判违规，
+     * 此时不得因单条记录的放行 / 清除而改动全站指纹。
+     */
+    private function hasOtherRejectedHash(string $contentHash, int $exceptRecordId): bool
+    {
+        $contentHash = self::normalizeHash($contentHash);
+        if ($contentHash === '') {
+            return false;
         }
 
         $statement = Database::connection()->prepare(
@@ -366,18 +381,26 @@ final class ModerationService
             'status'       => self::STATUS_REJECTED,
             'except_id'    => $exceptRecordId,
         ]);
-        if ((int) $statement->fetchColumn() > 0) {
-            return;
-        }
 
-        Database::connection()->prepare('DELETE FROM moderation_hashes WHERE content_hash = :content_hash')
-            ->execute(['content_hash' => $contentHash]);
+        return (int) $statement->fetchColumn() > 0;
     }
 
     public function quarantine(int $uploadId): void
     {
         $statement = Database::connection()->prepare(
             "UPDATE uploads SET status = 'quarantined' WHERE id = :id AND status = 'active'"
+        );
+        $statement->execute(['id' => $uploadId]);
+    }
+
+    /**
+     * 恢复可用：把被隔离的文件重新置为可用，用于管理员放行后原文件直接恢复，
+     * 无需用户再次上传。
+     */
+    public function restoreUpload(int $uploadId): void
+    {
+        $statement = Database::connection()->prepare(
+            "UPDATE uploads SET status = 'active' WHERE id = :id AND status = 'quarantined'"
         );
         $statement->execute(['id' => $uploadId]);
     }
@@ -417,6 +440,8 @@ final class ModerationService
         // 待人工复核（AI 降级）的记录文件此前可用，打回才真正隔离
         $isPending = (string) $record['decision'] === Verdict::PENDING;
 
+        $this->resolveAppealTicket($recordId, $adminId, '管理员复核结论：该内容判定违规，文件已隔离，申诉已处理。');
+
         return [
             'appeal_no' => (string) $record['appeal_no'],
             'message'   => ($isPending
@@ -427,21 +452,66 @@ final class ModerationService
     }
 
     /**
-     * 允许重传：用户可再次上传同名文件，上传后仍会被识别。
+     * 放行重传：认可该内容并登记白名单，用户重传同一文件时按 SHA-256 自动放行。
      *
      * @return array{appeal_no: string, message: string}
      */
     public function allowResubmit(int $recordId, int $adminId, string $note): array
     {
         $record = $this->requireRecord($recordId);
-        $this->closeRecord($recordId, self::STATUS_RESUBMIT, $adminId, $note);
-        // 放行重传：撤销该内容指纹，让重传内容重新进入审核而不是被指纹直接拦截
-        $this->forgetHash((string) ($record['content_hash'] ?? ''), $recordId);
+
+        // 上传后识别的记录有原文件：放行即把隔离文件恢复可用，无需用户重新上传；
+        // 上传前拦截（关键词命中，尚未落库）的记录没有文件，仍走「放行重传」由用户重新上传
+        $uploadId = $record['upload_id'] === null ? null : (int) $record['upload_id'];
+        $restored = $uploadId !== null;
+        $this->closeRecord($recordId, $restored ? self::STATUS_CLEARED : self::STATUS_RESUBMIT, $adminId, $note);
+        if ($restored) {
+            $this->restoreUpload($uploadId);
+        }
+
+        // 放行即认可该内容：撤销其黑名单后登记白名单，用户重传同一内容时由 SHA-256 指纹命中直接放行，
+        // 不再重复跑 AI，避免「放行 → 重传 → 再被 AI 判违规」的死循环。
+        // 该内容仍被其它已打回记录引用时不动全站指纹，避免因本条放行而误解除对他人的拦截
+        $contentHash = (string) ($record['content_hash'] ?? '');
+        if (!$this->hasOtherRejectedHash($contentHash, $recordId)) {
+            $this->forgetHash($contentHash, $recordId);
+            $this->rememberHash($contentHash, Verdict::APPROVED);
+        }
+
+        $this->resolveAppealTicket($recordId, $adminId, $restored
+            ? '管理员复核结论：该内容已放行，原文件已恢复可用，申诉已处理。'
+            : '管理员复核结论：该内容已放行，请重新上传同一文件（将自动通过），申诉已处理。');
 
         return [
             'appeal_no' => (string) $record['appeal_no'],
-            'message'   => '已允许申诉号 ' . $record['appeal_no'] . ' 重新上传，请提醒用户重传后再复核。',
+            'message'   => $restored
+                ? '已放行申诉号 ' . $record['appeal_no'] . '：文件已恢复可用，该内容已登记白名单。'
+                : '已放行申诉号 ' . $record['appeal_no'] . '：该内容已登记白名单，用户重传同一文件将按 SHA-256 自动通过，上传成功后记录自动闭环。',
         ];
+    }
+
+    /**
+     * 重传闭环：获准重传的用户已重新上传同名文件并通过审核，把该「已放行重传」记录置为已清除，
+     * 用户面板的待处理提示随之消失；与手动「清除记录」同为 cleared 态，不计入违规次数。
+     *
+     * @return int 本次闭环的记录数
+     */
+    public function completeResubmit(int $userId, string $filename): int
+    {
+        $statement = Database::connection()->prepare(
+            'UPDATE moderation_records
+             SET status = :status, reviewed_at = NOW(), review_note = :note, user_dismissed = 0
+             WHERE user_id = :user_id AND filename = :filename AND status = :resubmit'
+        );
+        $statement->execute([
+            'status'   => self::STATUS_CLEARED,
+            'note'     => '用户已重新上传并通过审核，系统自动闭环。',
+            'user_id'  => $userId,
+            'filename' => mb_substr($filename, 0, 900),
+            'resubmit' => self::STATUS_RESUBMIT,
+        ]);
+
+        return $statement->rowCount();
     }
 
     /**
@@ -462,6 +532,15 @@ final class ModerationService
         }
         $this->closeRecord($recordId, self::STATUS_CLEARED, $adminId, $note);
         $this->forgetHash((string) ($record['content_hash'] ?? ''), $recordId);
+
+        $this->resolveAppealTicket($recordId, $adminId, '管理员复核结论：已清除该违规记录，申诉已处理。');
+
+        // 清除后可信度可能回落到阈值以下：复核并解除自动封禁（手动封禁不受影响，且不重置违规周期）
+        try {
+            BanService::create()->reconcileAutoBan((int) $record['user_id'], $adminId);
+        } catch (Throwable $exception) {
+            Logger::error('ban', '清除违规记录后复核自动封禁失败', ['record_id' => $recordId, 'error' => $exception->getMessage()]);
+        }
 
         return [
             'appeal_no' => (string) $record['appeal_no'],
@@ -804,6 +883,18 @@ final class ModerationService
             'review_note' => mb_substr(trim($note), 0, 500),
             'id'          => $recordId,
         ]);
+    }
+
+    /**
+     * 申诉工单闭环：复核完成后同步回复并关闭对应申诉工单，失败只记日志、不阻断主流程。
+     */
+    private function resolveAppealTicket(int $recordId, int $adminId, string $message): void
+    {
+        try {
+            TicketService::create()->resolveAppealByRecord($recordId, $adminId, $message);
+        } catch (Throwable $exception) {
+            Logger::error('moderation', '申诉工单闭环失败', ['record_id' => $recordId, 'error' => $exception->getMessage()]);
+        }
     }
 
     /**

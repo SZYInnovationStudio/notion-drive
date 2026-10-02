@@ -70,6 +70,54 @@
 
 ---
 
+### [2026-10-03 00:15:40] 修复隔离文件无出口、申诉工单不闭环、封禁到期不解封与告警只增不减
+
+- 目的：全局功能性排查发现 4 组「有状态写入、无状态出口」的缺陷——① 被风控隔离（`uploads.status='quarantined'`）的文件没有任何恢复入口，管理员放行后文件仍不可用，只能让用户重传；② 申诉工单与审核记录是两套状态，记录被放行 / 打回 / 清除后对应工单仍挂起，长期不一致；③ 自动封禁到期的懒结算只在账户页（`trustSummary`）触发，其它页面读到的封禁状态滞后；④ 管理员告警表 `admin_alerts` 只增不减，且勾选「清除违规记录」后若用户此前已因累计违规被自动封禁，可信度回落到阈值以下仍不解封。
+- 验证：`php -l` 对 `src/Moderation/ModerationService.php`、`src/Tickets/TicketService.php`、`src/Bans/BanService.php`、`src/helpers.php`、`admin.php`、`bans.php` 逐一执行，均 `No syntax errors detected`（退出码 0）。遵守「本机禁止功能 / HTTP 测试」约定，未做 HTTP 验证。
+- 改动明细（行号为改动后当前行号）：
+  - 组一 · 隔离文件恢复可用：
+    - `src/Moderation/ModerationService.php` L400-L406 — 新增 `restoreUpload(int $uploadId): void`：把 `status='quarantined'` 的文件改回 `active`。
+    - `src/Moderation/ModerationService.php` L459-L491 — 重写 `allowResubmit()`：按 `upload_id` 分流——有原文件（`finish` 阶段 AI 判定违规、文件已隔离）时调用 `restoreUpload()` 恢复可用并把记录置 `cleared`（闭环、不再提示重传）；无文件（`start` 阶段关键词拦截、尚未落库）时保持 `resubmit` 由用户重传。返回文案区分两种结果。此前一律置 `resubmit`，会出现「文件已恢复可用、面板仍提示重传」的矛盾。
+    - `admin.php` L1484 — 审核记录面板说明文字补充「放行时若原文件仍在会直接恢复可用……上传前拦截（无文件）的记录则由用户重传」。
+    - `admin.php` L1526 — 复核按钮文字「放行重传」改为「放行」（`value="moderation_resubmit"` 不变），与「有文件即恢复、无文件才重传」的新语义一致。
+  - 组二 · 申诉工单闭环：
+    - `src/Tickets/TicketService.php` L718-L738 — 新增 `resolveAppealByRecord(int $recordId, int $adminId, string $message): bool`：按 `related_record_id` + `category='appeal'` 取最新工单，已结束则跳过；否则追加一条管理员回复后 `closeTicket()`。
+    - `src/Moderation/ModerationService.php` L891-L898 — 新增私有 `resolveAppealTicket()`：包一层 try/catch 调用上述方法，失败只记日志、不阻断主流程。
+    - `src/Moderation/ModerationService.php` L443（`reject()`）、L481-L483（`allowResubmit()`）、L536（`clearRecord()`）— 三处复核完成后各调用一次，同步回复并关闭申诉工单。
+  - 组三 · 封禁到期闭环：
+    - `src/Bans/BanService.php` L78-L101 — `ban()` 统一在写入封禁记录后更新 `users.violation_ban_until`（`AUTO_BAN_DAYS` 天后），使手动封禁与违规自动封禁口径一致，不再出现「手动封禁 = 永久封禁」；`violation_count` 快照改用 `currentScore()`，与账户页「可信度」同源。
+    - `src/Bans/BanService.php` 原 L74-L82 删除 `violationCount()` 方法（改用 `currentScore()` 后无调用者）。
+    - `src/Bans/BanService.php` 原 L297（`addViolation()` 内）、原 L437（`evaluateAutoBan()` 内）删除冗余的 `UPDATE users SET violation_ban_until` —— 已由 `ban()` 集中处理。
+    - `src/helpers.php` L699-L701 — `userActiveBan()` 读状态前先调用 `BanService::expireDue()` 懒结算到期封禁；该方法被 dashboard / upload / folder / file 等多页面复用，从而扩大自动解封的触发点覆盖。
+    - `bans.php` L193 — 注释改为「手动封禁与违规自动封禁一致，到点后访问本页会自动解封」；L210 — 手动封禁按钮 `data-confirm` 补「封禁将于 30 天后自动解除。」。
+  - 组四 · 告警与计数口径：
+    - `src/helpers.php` L1395-L1404 — `raiseAdminAlert()` 末尾追加告警保留期清理（已读告警保留 30 天、全部告警保留 180 天），懒清理、无 cron，失败只记日志。
+    - `src/Bans/BanService.php` L129-L154 — 新增 `reconcileAutoBan(int $userId, ?int $adminId = null): bool`：仅当生效中封禁为自动封禁（`banned_by IS NULL`）且 `currentScore() < threshold()` 时解除，且**不重置违规周期**，避免「清一条记录就洗白全部违规」。
+    - `src/Moderation/ModerationService.php` L538-L543 — `clearRecord()` 清除记录后调用 `reconcileAutoBan()`（try/catch 包裹），使自动封禁随可信度回落自动解除。
+    - `src/Tickets/TicketService.php` L657-L669 — `attachments()` 查询条件由 `up.status = 'active'` 扩为 `up.status IN ('active', 'quarantined')`，使关闭工单时的 `purgeAttachments()` 能一并清理被隔离的工单附件（全仓仅 `purgeAttachments()` 调用本方法，无展示副作用）。
+- 数据库结构影响：**无**（沿用既有 `uploads.status`、`user_bans`、`users.violation_ban_until` / `violation_cycle_start`、`admin_alerts`；旧库无需补列）。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+---
+
+### [2026-10-02 23:40:24] 放行重传改为 SHA-256 白名单自动放行，重传成功自动闭环
+
+- 目的：后台「重新上传」原实现只撤销黑名单指纹（`forgetHash`）而**未登记白名单**，用户重传同一文件时仍会重新跑 AI，可能再次被判违规并隔离，形成「放行 → 重传 → 再被拦」的死循环，记录也长期停留在「已放行重传」不闭环。现改为「管理员放行 = 认可该内容」：放行时把内容 SHA-256 登记为白名单，用户重传同一文件时指纹命中直接通过（不再重复审核）；并在重传上传成功且审核通过后，自动把该「已放行重传」记录置为「已清除违规」，用户面板的待处理提示随之消失。
+- 验证：`php -l src/Moderation/ModerationService.php`、`php -l api/upload.php`、`php -l admin.php` 均 `No syntax errors detected`（退出码 0）；核对 `ModerationService::STATUS_CLEARED` 常量与 `BanService::currentScore()` 只统计 `status='rejected'`（`resubmit → cleared` 不影响违规计数与自动封禁）。遵守「本机禁止功能 / HTTP 测试」约定，未做 HTTP 验证。
+- 改动明细（行号为改动后当前行号）：
+  - `src/Moderation/ModerationService.php` L353-L362 — `forgetHash()` 重构：改为先经 `hasOtherRejectedHash()` 保护判断，命中即直接返回、不再删除全站指纹。
+  - `src/Moderation/ModerationService.php` L364-L386 — 新增私有方法 `hasOtherRejectedHash(string $contentHash, int $exceptRecordId): bool`：查询是否仍有其它 `status='rejected'` 记录引用同一指纹，避免因单条记录的放行 / 清除而误解除对他人的全站拦截。
+  - `src/Moderation/ModerationService.php` L472-L479 — 重写 `allowResubmit()` 的指纹处理段（`allowResubmit()` 整体见 10-03 条目 L459-L491）：放行时若无其它已打回记录引用该指纹，则 `forgetHash()` 撤销黑名单并 `rememberHash($contentHash, Verdict::APPROVED)` 登记白名单。
+  - `src/Moderation/ModerationService.php` L499-L515 — 新增 `completeResubmit(int $userId, string $filename): int`：把该用户同名文件处于 `resubmit` 的记录批量置为 `cleared`，写 `review_note='用户已重新上传并通过审核，系统自动闭环。'`、`user_dismissed=0`，返回受影响行数。
+  - `api/upload.php` L793-L794 — 内容指纹命中白名单（`$known === Verdict::APPROVED`）分支内 `Logger::info` 后新增 `$moderationService->completeResubmit((int) $user['id'], (string) $meta['filename']);`。
+  - `api/upload.php` L863-L864 — 上传后识别「审核通过」的 `else` 分支内（`isScanned` 登记白名单之后）新增同一 `completeResubmit()` 调用。判定违规 / 待人工复核分支不调用，避免未通过审核就闭环。
+  - `admin.php` L1484 — 审核记录面板说明文字改为「重新上传会把该内容登记白名单，用户重传同一文件时按 SHA-256 自动放行，上传成功后记录自动闭环。」（10-03 条目又据「放行即恢复可用」语义二次调整）。
+  - `admin.php` L1526 — 复核按钮文字「重新上传」改为「放行重传」，与状态徽章「已放行重传」及新语义一致（实际由用户重传，非管理员上传）。
+- 数据库结构影响：**无**（沿用既有 `moderation_records.status` / `content_hash`、`moderation_hashes` 表；旧库无需补列）。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+---
+
 ### [2026-10-02 21:30:09] 修复重传哈希锚定校验的凭证生命周期与容错问题
 
 - 目的：对上一版「放行重传哈希锚定校验」自审后修复以下问题。①严重：放行凭证用后不消费，`allowResubmit()` 写入的 `status=resubmit` 记录永不改变（`clearRecord()` 仅允许清 `rejected`），使该文件名被永久锁定为原哈希；且 `resubmitAnchorHash()` 用 `ORDER BY id DESC LIMIT 1` 只认最新一条，日后同名新内容（含合法修改）会被误拒 `resubmit_content_mismatch`。②中：新校验块位于 finish 阶段既有 try/catch 之外，异常会冒泡致 500，违反项目「风控不可用不阻断正常上传」的 fail-open 约定；且未按风控开关 / 用户豁免门控。③潜在：最新一条 resubmit 记录 `content_hash` 为空（start 阶段关键词拦截记录）时直接返回 `null`，把更早的有效锚定一并跳过，形成免校验窗口。④性能：同一文件在锚定校验与内容审核处各做一次全量 SHA-256（可达 5 GB）。⑤冗余：每次 drive 上传多一次 `hasResubmitPass` 查询。

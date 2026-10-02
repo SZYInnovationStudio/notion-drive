@@ -190,7 +190,7 @@ $flash = pullFlash();
                     $violations = (int) $row['violations'];
                     $isAdminRow = (int) ($row['group_is_admin'] ?? 0) === 1;
                     $isSelf = (int) $row['id'] === (int) $currentUser['id'];
-                    // 违规自动封禁的到期时间：到点后本页访问会自动解封并把违规次数清零
+                    // 封禁到期时间：手动封禁与违规自动封禁一致，到点后访问本页会自动解封
                     $autoBanUntil = (string) ($row['violation_ban_until'] ?? '');
                     ?>
                     <tr>
@@ -207,7 +207,7 @@ $flash = pullFlash();
                                 <?php if ($isBannedRow): ?>
                                 <form method="post" class="inline-form"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="unban_user"><input type="hidden" name="user_id" value="<?= (int) $row['id'] ?>"><button data-confirm="确认解除该用户的封禁？解封后其上传、下载、修改与重命名将立即恢复。">解封</button></form>
                                 <?php elseif (!$isAdminRow && !$isSelf): ?>
-                                <form method="post" class="inline-form"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="ban_user"><input type="hidden" name="user_id" value="<?= (int) $row['id'] ?>"><input name="reason" placeholder="封禁原因（可留空）" maxlength="500"><button class="danger" data-confirm="确认封禁该用户？封禁后其上传、下载、修改、重命名均被禁止，仅保留工单申诉入口。">封禁</button></form>
+                                <form method="post" class="inline-form"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="ban_user"><input type="hidden" name="user_id" value="<?= (int) $row['id'] ?>"><input name="reason" placeholder="封禁原因（可留空）" maxlength="500"><button class="danger" data-confirm="确认封禁该用户？封禁后其上传、下载、修改、重命名均被禁止，仅保留工单申诉入口；封禁将于 30 天后自动解除。">封禁</button></form>
                                 <?php else: ?>
                                 <span class="log-meta">—</span>
                                 <?php endif; ?>

@@ -1481,7 +1481,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         </section>
 
         <section class="admin-panel">
-            <div class="panel-title"><div><h2>审核记录</h2><p>关键词拦截与 AI 识别的全部结论。AI 降级（待人工复核）的记录文件仍可正常使用，人工判定违规才隔离；不可用则维持隔离状态，重新上传仅放开同名文件的上传前拦截。</p></div><span><?= count($moderationRecords) ?> 条</span></div>
+            <div class="panel-title"><div><h2>审核记录</h2><p>关键词拦截与 AI 识别的全部结论。AI 降级（待人工复核）的记录文件仍可正常使用，人工判定违规才隔离；放行时若原文件仍在会直接恢复可用，并登记内容白名单，上传前拦截（无文件）的记录则由用户重传，重传同一文件按 SHA-256 自动放行。</p></div><span><?= count($moderationRecords) ?> 条</span></div>
             <?php if (!$moderationRecords): ?>
             <div class="empty-state compact-empty">还没有审核记录。</div>
             <?php else: ?>
@@ -1523,7 +1523,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
                                     <?php if ($reviewPending): ?>
                                     <div class="row-actions"><button class="delete-action" name="action" value="moderation_reject" data-confirm="确认判定违规？文件将被隔离。">不可用</button></div>
                                     <?php else: ?>
-                                    <div class="row-actions"><button class="text-action" name="action" value="moderation_resubmit">重新上传</button><button class="delete-action" name="action" value="moderation_reject" data-confirm="确认打回该申诉？文件将保持不可用。">不可用</button></div>
+                                    <div class="row-actions"><button class="text-action" name="action" value="moderation_resubmit">放行</button><button class="delete-action" name="action" value="moderation_reject" data-confirm="确认打回该申诉？文件将保持不可用。">不可用</button></div>
                                     <?php endif; ?>
                                 </form>
                                 <?php else: ?>

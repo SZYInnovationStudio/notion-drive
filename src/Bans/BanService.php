@@ -70,19 +70,10 @@ final class BanService
         return is_array($ban) ? $ban : null;
     }
 
-    /** 违规次数：被管理员打回的审核记录条数。 */
-    public function violationCount(int $userId): int
-    {
-        $statement = Database::connection()->prepare(
-            "SELECT COUNT(*) FROM moderation_records WHERE user_id = :user_id AND status = 'rejected'"
-        );
-        $statement->execute(['user_id' => $userId]);
-
-        return (int) $statement->fetchColumn();
-    }
-
     /**
-     * 手动封禁（管理员操作）。已在封禁中时不重复写入。
+     * 封禁用户（管理员手动封禁或违规累计自动触发）：写入生效中的封禁记录，
+     * 并统一登记 AUTO_BAN_DAYS 天后的自动解封时间——到期由 expireDue() 懒结算解除，
+     * 手动封禁与自动封禁口径一致，不会出现「永久封禁」的隐式差异。已在封禁中时不重复写入。
      */
     public function ban(int $userId, string $reason, ?int $adminId = null): void
     {
@@ -99,9 +90,14 @@ final class BanService
         )->execute([
             'user_id'         => $userId,
             'reason'          => mb_substr(trim($reason), 0, 500),
-            'violation_count' => $this->violationCount($userId),
+            // 快照口径与账户页「可信度」同源（本周期 rejected 记录 + 手动加分），仅用于留档展示
+            'violation_count' => $this->currentScore($userId),
             'banned_by'       => $adminId !== null && $adminId > 0 ? $adminId : null,
         ]);
+
+        Database::connection()->prepare(
+            'UPDATE users SET violation_ban_until = DATE_ADD(NOW(), INTERVAL ' . self::AUTO_BAN_DAYS . ' DAY) WHERE id = :id'
+        )->execute(['id' => $userId]);
     }
 
     /**
@@ -121,6 +117,40 @@ final class BanService
         Database::connection()->prepare(
             'UPDATE users SET violation_ban_until = NULL, violation_cycle_start = NOW() WHERE id = :id'
         )->execute(['id' => $userId]);
+    }
+
+    /**
+     * 自动封禁复核：管理员清除违规记录使可信度分回落到阈值以下时，解除因累计违规
+     * 自动触发的封禁（banned_by 为空的才是自动封禁，手动封禁由管理员显式解除，不在此处理）。
+     * 不重置违规周期——其余历史违规仍计入，避免「清一条记录就洗白全部违规」。
+     *
+     * @return bool 本次是否解除了封禁
+     */
+    public function reconcileAutoBan(int $userId, ?int $adminId = null): bool
+    {
+        $ban = $this->activeBan($userId);
+        if ($ban === null || $ban['banned_by'] !== null) {
+            return false;
+        }
+        if ($this->currentScore($userId) >= $this->threshold()) {
+            return false;
+        }
+
+        Database::connection()->prepare(
+            'UPDATE user_bans SET is_active = 0, lifted_at = NOW(), lifted_by = :lifted_by
+             WHERE user_id = :user_id AND is_active = 1 AND banned_by IS NULL'
+        )->execute([
+            'user_id'   => $userId,
+            'lifted_by' => $adminId !== null && $adminId > 0 ? $adminId : null,
+        ]);
+
+        Database::connection()->prepare(
+            'UPDATE users SET violation_ban_until = NULL WHERE id = :id'
+        )->execute(['id' => $userId]);
+
+        Logger::info('ban', '违规记录被清除后可信度已低于阈值，已解除自动封禁。', ['user_id' => $userId]);
+
+        return true;
     }
 
     /**
@@ -293,9 +323,6 @@ final class BanService
 
         if ($next >= $threshold && $this->isBanned($userId) === false) {
             $this->ban($userId, '累计 ' . $next . ' 次违规，达到自动封禁阈值（' . $threshold . ' 次）。', null);
-            Database::connection()->prepare(
-                'UPDATE users SET violation_ban_until = DATE_ADD(NOW(), INTERVAL ' . self::AUTO_BAN_DAYS . ' DAY) WHERE id = :id'
-            )->execute(['id' => $userId]);
 
             Logger::warning('ban', '用户违规累计达阈值，已自动封禁（' . self::AUTO_BAN_DAYS . ' 天后自动解封）。', [
                 'user_id'   => $userId,
@@ -432,10 +459,6 @@ final class BanService
             '累计 ' . $count . ' 次违规文件，达到自动封禁阈值（' . $threshold . ' 次）。',
             null
         );
-        // 写入到期时间：与 addViolation() 的自动封禁保持一致，否则该用户永远不会被 expireDue() 自动解封
-        Database::connection()->prepare(
-            'UPDATE users SET violation_ban_until = DATE_ADD(NOW(), INTERVAL ' . self::AUTO_BAN_DAYS . ' DAY) WHERE id = :id'
-        )->execute(['id' => $userId]);
 
         Logger::warning('ban', '用户因累计违规被自动封禁（' . self::AUTO_BAN_DAYS . ' 天后自动解封）。', [
             'user_id'    => $userId,
