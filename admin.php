@@ -1503,6 +1503,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
                             ModerationService::STATUS_REJECTED => ['label' => '已打回', 'class' => 'void'],
                             ModerationService::STATUS_RESUBMIT => ['label' => '已放行重传', 'class' => 'closed'],
                             ModerationService::STATUS_CLEARED => ['label' => '已清除违规', 'class' => 'closed'],
+                            ModerationService::STATUS_CONSUMED => ['label' => '已重传', 'class' => 'closed'],
                             default => ['label' => $recordDecision === 'pending' ? '待人工复核' : '待复核', 'class' => 'pending'],
                         };
                         $username = (string) ($record['username'] ?? '');

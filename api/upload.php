@@ -636,6 +636,33 @@ try {
         $mime = $computeMime($partPath, $extension);
         $context['file']['mime'] = $mime;
 
+        // 管理员放行重传后的内容锚定校验：重传文件必须与申诉记录中的原文件哈希一致，
+        // 防止借「同名不同内容」绕过内容审核上传真违规内容（锚定哈希来自放行记录的 content_hash）。
+        // 与其它风控调用一致：风控关闭 / 用户豁免时不做校验，且校验本身异常时不阻断正常上传
+        $contentHash = '';
+        $matchedResubmitAnchor = false;
+        if ($scope === 'drive' && !$moderationExempt) {
+            try {
+                $moderationService = ModerationService::create();
+                if ($moderationService->enabled()) {
+                    $anchorHash = $moderationService->resubmitAnchorHash((int) $user['id'], (string) $meta['filename']);
+                    if ($anchorHash !== null) {
+                        $contentHash = is_file($partPath) ? (string) (hash_file('sha256', $partPath) ?: '') : '';
+                        if ($contentHash === '' || !hash_equals($anchorHash, $contentHash)) {
+                            $fail('resubmit_content_mismatch', '重传文件内容与申诉记录中的原文件不一致，无法重传。请上传与原文件相同的内容后重试。', [
+                                'anchor_sha256' => $anchorHash,
+                                'actual_sha256' => $contentHash,
+                            ]);
+                        }
+                        $matchedResubmitAnchor = true;
+                    }
+                }
+            } catch (Throwable $exception) {
+                // 风控不可用不阻断上传：记录错误便于排查（与 start / finish 其它风控调用一致）
+                Logger::error('upload', '重传内容锚定校验执行失败，已按正常流程放行', ['error' => $exception->getMessage()] + $context);
+            }
+        }
+
         // 同步双写：每个目标账户各存一份，至少一份成功即视为成功（失败会自动告警管理员）
         $stored = writeNotionReplicas($user, $partPath, $filename, $mime, $size);
 
@@ -727,6 +754,16 @@ try {
             }
         }
 
+        // 重传凭证一次性消费：锚定校验通过且文件已成功落库后，撤销该文件名的重传放行，
+        // 避免该文件名被永久锁定为原哈希（此后同名的新内容可正常上传并重新进入审核）
+        if ($matchedResubmitAnchor) {
+            try {
+                ModerationService::create()->consumeResubmitPass((int) $user['id'], (string) $meta['filename']);
+            } catch (Throwable $exception) {
+                Logger::warning('upload', '重传凭证消费失败，该文件名可能仍被锚定', ['error' => $exception->getMessage()] + $context);
+            }
+        }
+
         $message = match ($resolved['handled']) {
             'overwrite' => sprintf('已上传「%s」并覆盖了同名旧文件。', $filename),
             'rename' => sprintf('同名文件已存在，已自动编号为「%s」并上传。', $filename),
@@ -739,7 +776,10 @@ try {
         try {
             $moderationService = ModerationService::create();
             if ($scope === 'drive' && $moderationService->enabled() && !$moderationExempt) {
-                $contentHash = is_file($partPath) ? (string) (hash_file('sha256', $partPath) ?: '') : '';
+                // 复用锚定校验已算出的 SHA-256，避免对同一文件重复全量哈希（可达 5 GB）
+                if ($contentHash === '') {
+                    $contentHash = is_file($partPath) ? (string) (hash_file('sha256', $partPath) ?: '') : '';
+                }
                 if ($contentHash !== '') {
                     $context['file']['sha256'] = $contentHash;
                 }

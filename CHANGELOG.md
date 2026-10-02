@@ -28,6 +28,35 @@
 
 ---
 
+### [2026-10-02 21:30:09] 修复重传哈希锚定校验的凭证生命周期与容错问题
+
+- 目的：对上一版「放行重传哈希锚定校验」自审后修复以下问题。①严重：放行凭证用后不消费，`allowResubmit()` 写入的 `status=resubmit` 记录永不改变（`clearRecord()` 仅允许清 `rejected`），使该文件名被永久锁定为原哈希；且 `resubmitAnchorHash()` 用 `ORDER BY id DESC LIMIT 1` 只认最新一条，日后同名新内容（含合法修改）会被误拒 `resubmit_content_mismatch`。②中：新校验块位于 finish 阶段既有 try/catch 之外，异常会冒泡致 500，违反项目「风控不可用不阻断正常上传」的 fail-open 约定；且未按风控开关 / 用户豁免门控。③潜在：最新一条 resubmit 记录 `content_hash` 为空（start 阶段关键词拦截记录）时直接返回 `null`，把更早的有效锚定一并跳过，形成免校验窗口。④性能：同一文件在锚定校验与内容审核处各做一次全量 SHA-256（可达 5 GB）。⑤冗余：每次 drive 上传多一次 `hasResubmitPass` 查询。
+- 验证：`php -l src/Moderation/ModerationService.php`、`php -l api/upload.php`、`php -l admin.php` 均通过（`No syntax errors detected`）。遵守「本机禁止功能 / HTTP 测试」约定，未做 HTTP 验证。逻辑自查：合法重传锚定通过后 `consumeResubmitPass()` 把该文件名全部 `resubmit` 记录置为 `consumed`，`resubmitAnchorHash()` / `hasResubmitPass()` 均只认 `resubmit`，因此放行与锚定同时撤销；`userNotices()` 只取 `open` / `resubmit`，`consumed` 记录不再出现在用户面板，`dashboard.php` 亦只对 `resubmit` 渲染特例，无需改动。
+- 改动明细（行号为改动后当前行号）：
+  - `src/Moderation/ModerationService.php` L26 — 新增状态常量 `STATUS_CONSUMED = 'consumed'`。
+  - `src/Moderation/ModerationService.php` L489-L508 — `resubmitAnchorHash()` 查询加 `AND content_hash <> ''`，只取最新**非空**指纹，消除「最新一条为空则跳过更早有效锚定」的免校验窗口；doc 注释同步说明。
+  - `src/Moderation/ModerationService.php` L511-L532 — 新增 `consumeResubmitPass(int $userId, string $filename): int`：把该用户该文件名的 `resubmit` 记录批量置为 `consumed`，撤销放行与锚定，返回消费记录数。
+  - `api/upload.php` L639-L664 — 锚定校验块重写：加 `scope=drive && !$moderationExempt` 与 `enabled()` 门控、整段包 try/catch（异常记 `Logger::error` 后放行，fail-open）、去掉冗余的 `hasResubmitPass` 调用、把算出的哈希存入 `$contentHash` 供后续复用、新增 `$matchedResubmitAnchor` 标记。
+  - `api/upload.php` L779-L784 — 内容审核处复用已算出的 `$contentHash`（为空时才重算），避免对同一文件重复全量哈希；L787 起后续 `lookupHash` / `inspect` / `rememberHash` 沿用同一哈希。
+  - `api/upload.php` L756-L764 — 成功落库后（`$message = match` 之前）新增重传凭证一次性消费：`$matchedResubmitAnchor` 为真时调用 `consumeResubmitPass()`，异常记 `Logger::warning` 不阻断。
+  - `admin.php` L1506 — 后台审核列表状态标签新增 `ModerationService::STATUS_CONSUMED => ['label' => '已重传', 'class' => 'closed']`，避免新状态落入 default 分支误显示「待复核」。
+- 数据库结构影响：**无**（新状态值 `consumed` 复用现有 `moderation_records.status VARCHAR(20) NOT NULL DEFAULT 'open'`，无需手工补列）。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+---
+
+### [2026-10-02 21:23:28] 放行重传增加内容哈希锚定校验，防止借「同名不同内容」上传真违规文件
+
+- 目的：管理员「允许重传」误判文件后，原逻辑仅按 `用户 + 文件名 + status=resubmit` 放行（`hasResubmitPass`），且 `allowResubmit()` 会 `forgetHash()` 撤销内容指纹黑名单。攻击者可借这一「重传通行证」上传**同名但内容完全不同**的真违规文件：上传前关键词拦截被跳过，上传后若新内容不在 AI 审核载荷范围内（如图片 / 文本之外的压缩包、音视频）则可能完全躲过审核。改为在重传完成时校验新文件 SHA-256 与放行记录中的原文件 `content_hash` 一致，不一致则拒绝上传。
+- 验证：`php -l api/upload.php`、`php -l src/Moderation/ModerationService.php` 均通过（`No syntax errors detected`）。遵守「本机禁止功能 / HTTP 测试」约定，未做 HTTP 验证。逻辑自查：`resubmitAnchorHash` 对 `content_hash` 为空（start 阶段关键词拦截记录，无内容指纹）返回 `null`，此类放行重传不校验、维持原行为；有锚定哈希且实际哈希为空或不一致时以 `hash_equals` 恒定时间比对后拒绝。
+- 改动明细（行号为改动后当前行号）：
+  - `src/Moderation/ModerationService.php` L485-L507 — 新增 `resubmitAnchorHash(int $userId, string $filename): ?string`：取该用户该文件名最新一条 `status=resubmit` 记录的 `content_hash`，经 `normalizeHash()` 归一化后返回非空值，否则返回 `null`（无锚定）。
+  - `api/upload.php` L639-L655 — finish 阶段在 `writeNotionReplicas()` 双写之前新增内容锚定校验：`scope=drive` 且有 `hasResubmitPass` 时，取 `resubmitAnchorHash`，用 `hash_equals` 比对拼接完成文件的 SHA-256，不一致（或哈希计算失败）即 `$fail('resubmit_content_mismatch', …)` 拒绝上传，并记录 `anchor_sha256` / `actual_sha256` 到日志上下文。
+- 数据库结构影响：**无**（复用现有 `moderation_records.content_hash` 列）。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+---
+
 ### [2026-10-01 13:12:20] 侧边栏导航图标由 emoji / 符号字形改为内联 SVG
 
 - 目的：侧边栏原来用 `▣ ✉ ⚙ ¥ ⛔ ☰ ◍ ★` 等字符充当图标，这些字形依赖系统字体与 emoji 字体，在部分浏览器 / 操作系统（尤其是 Linux 服务器截图、无 emoji 字体的环境）会渲染成方块或彩色 emoji，与站点配色不一致。改为内联描边 SVG 后由 `currentColor` 上色（跟随链接文字颜色，含 hover / active 态），不再依赖任何字体，各平台渲染一致；同时折叠分组的箭头 `▾` 也改为纯 CSS 绘制的 chevron，使侧边栏彻底无字形依赖。

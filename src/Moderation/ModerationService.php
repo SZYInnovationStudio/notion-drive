@@ -23,6 +23,7 @@ final class ModerationService
     public const STATUS_REJECTED  = 'rejected';
     public const STATUS_RESUBMIT  = 'resubmit';
     public const STATUS_CLEARED   = 'cleared';
+    public const STATUS_CONSUMED  = 'consumed';
 
     public const STAGE_START  = 'start';
     public const STAGE_FINISH = 'finish';
@@ -481,6 +482,54 @@ final class ModerationService
         ]);
 
         return (int) $statement->fetchColumn() > 0;
+    }
+
+    /**
+     * 取「放行重传」记录的锚定内容指纹：管理员放行重传时认为该内容是被误判的，
+     * 重传文件必须与之哈希一致，否则可能借「同名不同内容」绕过审核上传真违规内容。
+     * 仅取最新的**非空** SHA-256，避免最新一条恰为 start 阶段关键词拦截记录（无内容指纹）时
+     * 把更早的有效锚定一并跳过；没有任何非空指纹（无法锚定）时返回 null。
+     */
+    public function resubmitAnchorHash(int $userId, string $filename): ?string
+    {
+        $statement = Database::connection()->prepare(
+            "SELECT content_hash FROM moderation_records
+             WHERE user_id = :user_id AND filename = :filename AND status = :status AND content_hash <> ''
+             ORDER BY id DESC LIMIT 1"
+        );
+        $statement->execute([
+            'user_id'  => $userId,
+            'filename' => mb_substr($filename, 0, 900),
+            'status'   => self::STATUS_RESUBMIT,
+        ]);
+        $hash = $statement->fetchColumn();
+
+        $hash = is_string($hash) ? self::normalizeHash($hash) : '';
+
+        return $hash !== '' ? $hash : null;
+    }
+
+    /**
+     * 消费「放行重传」凭证：用户已完成与原文件内容一致的合法重传后调用，把该文件名的
+     * 放行记录置为已消费状态，撤销其对文件名的放行（含上传前关键词拦截的放行）。
+     * 否则该凭证会永久有效，使同一文件名被长期锁定为原哈希、日后同名新内容被误拒。
+     *
+     * @return int 本次消费的记录数
+     */
+    public function consumeResubmitPass(int $userId, string $filename): int
+    {
+        $statement = Database::connection()->prepare(
+            'UPDATE moderation_records SET status = :consumed
+             WHERE user_id = :user_id AND filename = :filename AND status = :status'
+        );
+        $statement->execute([
+            'consumed' => self::STATUS_CONSUMED,
+            'user_id'  => $userId,
+            'filename' => mb_substr($filename, 0, 900),
+            'status'   => self::STATUS_RESUBMIT,
+        ]);
+
+        return $statement->rowCount();
     }
 
     /**
