@@ -8,7 +8,9 @@ use NotionDrive\Auth;
 use NotionDrive\Database;
 use NotionDrive\Logger;
 use NotionDrive\Moderation\ModerationService;
+use NotionDrive\Moderation\Verdict;
 use NotionDrive\NotionApiException;
+use NotionDrive\NotionClient;
 use NotionDrive\Security;
 use NotionDrive\Tickets\TicketService;
 use NotionDrive\Uploads\NotionWriteQueue;
@@ -196,6 +198,31 @@ $pendingUploadBytes = static function (?string $excludeToken, bool $includeTicke
         if (!$includeTicket && (string) ($meta['scope'] ?? 'drive') === 'ticket') {
             continue;
         }
+        // 在线上传（直传）不在服务器保存文件字节，不占用服务器磁盘与个人暂存，故不计入
+        if (!empty($meta['direct'])) {
+            continue;
+        }
+        $total += max(0, (int) ($meta['size'] ?? 0));
+    }
+
+    return $total;
+};
+
+/** 全服在途分块会话占用：所有用户、所有分块会话声明的文件大小合计（直传会话不占服务器磁盘，跳过）。 */
+$pendingChunkBytesAll = static function (?string $excludeToken) use ($chunkDir): int {
+    $total = 0;
+    foreach (glob($chunkDir . '/*.json') ?: [] as $metaFile) {
+        if ($excludeToken !== null && basename($metaFile, '.json') === $excludeToken) {
+            continue;
+        }
+        $raw = @file_get_contents($metaFile);
+        if ($raw === false || $raw === '') {
+            continue;
+        }
+        $meta = json_decode($raw, true);
+        if (!is_array($meta) || !empty($meta['direct'])) {
+            continue;
+        }
         $total += max(0, (int) ($meta['size'] ?? 0));
     }
 
@@ -223,8 +250,30 @@ $assertStagingBudget = static function (int $size, ?string $excludeToken) use ($
     }
 };
 
-/** 校验单文件上限与个人容量（覆盖同名文件时，旧文件占用的空间会被释放；在途会话占用一并计入）。 */
-$assertCapacity = static function (string $filename, int $size, int $freedBytes, ?string $excludeToken = null) use ($fail, $user, $pendingUploadBytes, $assertStagingBudget): void {
+/**
+ * 全服防爆盘上限校验：所有用户的「待写入暂存 + 在途分块」合计不得超过后台配置的上限（默认 10 GB）。
+ * 超限时返回 server_disk_exceeded，前端据此询问用户是否改为「在线上传 Notion」（直传不占服务器暂存）。
+ */
+$assertServerDiskBudget = static function (int $size, ?string $excludeToken) use ($fail, $pendingChunkBytesAll): void {
+    $limit = NotionWriteQueue::serverLimitBytes();
+    if ($limit <= 0) {
+        return;
+    }
+
+    $staged = NotionWriteQueue::stagedBytesAll() + $pendingChunkBytesAll($excludeToken);
+    if ($staged + $size > $limit) {
+        $fail('server_disk_exceeded', sprintf(
+            '服务器暂存空间已用 %s / 共 %s，本次还需 %s，暂无可用额度。可改为「在线上传 Notion」（文件不经服务器暂存，直接写入 Notion）后重试。',
+            formatBytes($staged),
+            formatBytes($limit),
+            formatBytes($size)
+        ), ['staged_bytes' => $staged, 'server_limit' => $limit, 'size' => $size], 507);
+    }
+};
+
+/** 校验单文件上限与个人容量（覆盖同名文件时，旧文件占用的空间会被释放；在途会话占用一并计入）。
+ *  $direct 为 true 表示「在线上传」：文件不经服务器暂存，故跳过暂存与全服磁盘校验，仍校验单文件上限与个人配额。 */
+$assertCapacity = static function (string $filename, int $size, int $freedBytes, ?string $excludeToken = null, bool $direct = false) use ($fail, $user, $pendingUploadBytes, $assertStagingBudget, $assertServerDiskBudget): void {
     $limit = userSingleFileLimit($user);
     if ($size > $limit) {
         $plan = (string) Database::config('notion_plan', 'free');
@@ -252,7 +301,12 @@ $assertCapacity = static function (string $filename, int $size, int $freedBytes,
         ), ['used_bytes' => $usedBytes, 'pending_bytes' => $pendingBytes, 'quota_bytes' => $quotaBytes, 'size' => $size, 'freed_bytes' => $freedBytes]);
     }
 
+    if ($direct) {
+        return;
+    }
+
     $assertStagingBudget($size, $excludeToken);
+    $assertServerDiskBudget($size, $excludeToken);
 };
 
 /** 单张工单可保有的附件数量上限。 */
@@ -262,7 +316,7 @@ $ticketAttachmentLimit = 20;
  * 工单附件容量校验：附件不计入个人配额，但仍限制单文件上限与单张工单的附件数量，
  * 否则可借工单无限上传超大文件或囤积大量文件，绕过个人容量与单文件限制。
  */
-$assertTicketAttachmentCapacity = static function (int $ticketId, string $filename, int $size, ?string $excludeToken = null) use ($fail, $user, $ticketAttachmentLimit, $assertStagingBudget): void {
+$assertTicketAttachmentCapacity = static function (int $ticketId, string $filename, int $size, ?string $excludeToken = null, bool $direct = false) use ($fail, $user, $ticketAttachmentLimit, $assertStagingBudget, $assertServerDiskBudget): void {
     $limit = userSingleFileLimit($user);
     if ($size > $limit) {
         $fail('file_too_large', sprintf(
@@ -281,7 +335,12 @@ $assertTicketAttachmentCapacity = static function (int $ticketId, string $filena
         $fail('ticket_attachment_limit', sprintf('单张工单最多上传 %d 个附件，已达上限。', $ticketAttachmentLimit));
     }
 
+    if ($direct) {
+        return;
+    }
+
     $assertStagingBudget($size, $excludeToken);
+    $assertServerDiskBudget($size, $excludeToken);
 };
 
 /** 上传可行性前置检查：在 start 阶段就拦下不可能成功的上传，避免传完整个大文件才失败。 */
@@ -318,6 +377,215 @@ $computeMime = static function (string $path, string $extension): string {
     }
 
     return $mime;
+};
+
+/**
+ * 「在线上传」（直传）收尾：分片已在 chunk 阶段逐块转发给各 Notion 会话，此处完成会话并挂载到用户空间页面。
+ * 全程不在服务器保存文件，故先入库占位（writing）→ complete + 挂载 → 回填副本转 active；
+ * 全部目标都失败时删除占位记录并清理，避免留下无法重试的孤儿（没有暂存文件，队列重试也无法推进）。
+ */
+$finishDirectUpload = static function (
+    string $token,
+    array $meta,
+    string $filename,
+    int $size,
+    string $mime,
+    string $storageName,
+    int $folderId
+) use ($user, $fail, $context, $moderationExempt, $resolveDuplicate, &$cleanupChunkTokens): never {
+    $queue = NotionWriteQueue::create();
+    $pdo = Database::connection();
+    $uploadId = 0;
+    $resolved = ['filename' => $filename, 'handled' => '', 'freed_bytes' => 0, 'renamed_to' => '', 'duplicate' => null];
+
+    try {
+        $pdo->beginTransaction();
+        try {
+            // 与常规路径一致：锁定用户行，串行化同一用户的并发落库（配额与重名判定）
+            $pdo->prepare('SELECT id FROM users WHERE id = :id FOR UPDATE')->execute(['id' => (int) $user['id']]);
+            $resolved = $resolveDuplicate((string) $meta['filename'], (string) ($meta['duplicate_action'] ?? ''));
+            $filename = $resolved['filename'];
+            if ($resolved['handled'] !== '') {
+                $context['duplicate'] = $resolved['handled'];
+            }
+            $context['renamed_to'] = $resolved['renamed_to'];
+            $context['file']['name'] = $filename;
+
+            $quotaBytes = userQuotaBytes($user);
+            $usedBytes = userUsedBytes((int) $user['id']);
+            if ($quotaBytes !== null && $usedBytes - $resolved['freed_bytes'] + $size > $quotaBytes) {
+                throw new RuntimeException('个人空间不足：并发上传占用了剩余空间，本次上传已取消，请稍后重试。');
+            }
+
+            $pdo->prepare(
+                'INSERT INTO uploads (user_id, scope, folder_id, ticket_id, filename, display_name, storage_name, file_size, mime_type, notion_file_upload_id, notion_block_id, status, overwrite_upload_id)
+                 VALUES (:user_id, :scope, :folder_id, :ticket_id, :filename, :display_name, :storage_name, :file_size, :mime_type, :notion_file_upload_id, :notion_block_id, :status, :overwrite_upload_id)'
+            )->execute([
+                'user_id' => $user['id'],
+                'scope' => 'drive',
+                'folder_id' => $folderId > 0 ? $folderId : null,
+                'ticket_id' => null,
+                'filename' => $filename,
+                'display_name' => $filename,
+                'storage_name' => $storageName,
+                'file_size' => $size,
+                'mime_type' => $mime,
+                // Notion 副本紧随其后回填，此处先留空占位（该列 NOT NULL，用空串而非 NULL）
+                'notion_file_upload_id' => '',
+                'notion_block_id' => null,
+                'status' => NotionWriteQueue::STATUS_WRITING,
+                'overwrite_upload_id' => $resolved['handled'] === 'overwrite' && $resolved['duplicate'] !== null
+                    ? (int) $resolved['duplicate']['id']
+                    : null,
+            ]);
+            $uploadId = (int) $pdo->lastInsertId();
+            $pdo->commit();
+        } catch (Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $exception;
+        }
+    } catch (Throwable $exception) {
+        $cleanupChunkTokens[$token] = true;
+        $fail('direct_failed', $exception->getMessage() !== '' ? $exception->getMessage() : '在线上传失败，请稍后重试。');
+    }
+
+    // 按「账户类型 + 账户 id」重新取当前可用 Token（meta 中不保存 Token）
+    $byKey = [];
+    foreach (uploadTargets($user) as $target) {
+        $byKey[(string) $target['type'] . '#' . ($target['account_id'] === null ? '0' : (int) $target['account_id'])] = $target;
+    }
+
+    $replicas = [];
+    foreach ((array) ($meta['targets'] ?? []) as $session) {
+        if (!is_array($session)) {
+            continue;
+        }
+        $key = (string) ($session['account_type'] ?? '') . '#' . (($session['account_id'] ?? null) === null ? '0' : (int) $session['account_id']);
+        if (!isset($byKey[$key])) {
+            continue;
+        }
+        $target = $byKey[$key];
+        $role = count($replicas) + 1;
+        try {
+            $client = new NotionClient((string) $target['token']);
+            // complete 为非幂等 POST，放在自愈包装之外，避免页面被归档后重试时重复完成
+            $client->completeStreamSession((string) $session['complete_url']);
+            $replicas[] = notionWriteWithRepair(
+                static function () use ($user, $target, $session, $client, $mime, $role): array {
+                    $pageId = ensureUserSpacePage($user, $target, $client);
+                    $attached = $client->attachFileUpload((string) $session['file_upload_id'], $pageId, $mime);
+                    $blockId = (string) ($attached['results'][0]['id'] ?? '');
+                    if ($blockId === '') {
+                        throw new RuntimeException('Notion 未返回文件块。');
+                    }
+
+                    return [
+                        'role' => $role,
+                        'account_type' => (string) $target['type'],
+                        'official_account_id' => $target['account_id'],
+                        'notion_file_upload_id' => (string) $session['file_upload_id'],
+                        'notion_block_id' => $blockId,
+                    ];
+                },
+                $user,
+                $target,
+                [
+                    'stage' => 'upload',
+                    'user_id' => (int) $user['id'],
+                    'account_type' => $target['type'],
+                    'account_id' => $target['account_id'],
+                ]
+            );
+        } catch (Throwable $exception) {
+            Logger::warning('upload', '在线上传账户挂载失败。', [
+                'user_id' => (int) $user['id'],
+                'account_type' => $target['type'],
+                'account_id' => $target['account_id'],
+                'reason' => $exception->getMessage(),
+            ]);
+            raiseAdminAlert('error', sprintf('账户「%s」在线上传失败：%s', (string) $target['label'], $exception->getMessage()), [
+                'stage' => 'upload',
+                'account_type' => $target['type'],
+                'account_id' => $target['account_id'],
+            ]);
+        }
+    }
+
+    if ($replicas === []) {
+        // 没有任何副本写入成功：删除占位记录，避免留下永远无法写入的「待写入」条目
+        $pdo->prepare('DELETE FROM uploads WHERE id = :id')->execute(['id' => $uploadId]);
+        $cleanupChunkTokens[$token] = true;
+        $fail('notion_error', '在线上传失败：存储服务暂时不可用，请稍后重试。');
+    }
+
+    if (!$queue->commitReplicas($uploadId, $replicas)) {
+        // 记录已被并发删除：把刚写入的副本归档，避免孤儿文件块
+        archiveWrittenReplicas($user, $replicas);
+        $cleanupChunkTokens[$token] = true;
+        $fail('upload_cancelled', '该文件在写入期间已被删除，已取消上传。');
+    }
+
+    // 覆盖同名旧文件：新文件已确认写入，此时才把它从列表移除并归档其 Notion 副本
+    if ($resolved['handled'] === 'overwrite' && $resolved['duplicate'] !== null) {
+        $previousId = (int) $resolved['duplicate']['id'];
+        try {
+            archiveUploadReplicas(['id' => $previousId], $user);
+            Database::connection()->prepare("UPDATE uploads SET status = 'deleted' WHERE id = :id")->execute(['id' => $previousId]);
+        } catch (Throwable $exception) {
+            Logger::warning('upload', '覆盖旧文件时清理其 Notion 副本失败，旧副本可能残留。', ['previous_upload_id' => $previousId, 'reason' => $exception->getMessage()] + $context);
+        }
+    }
+
+    // 直传无本地文件可审：风控开启且用户未豁免时登记为待人工复核并提醒管理员（关键词拦截已在 start 执行）
+    if (!$moderationExempt) {
+        try {
+            $moderationService = ModerationService::create();
+            if ($moderationService->enabled()) {
+                $appealNo = $moderationService->record(
+                    (int) $user['id'],
+                    $uploadId,
+                    $filename,
+                    ModerationService::STAGE_FINISH,
+                    Verdict::pending('在线上传无本地文件，转人工复核。')
+                );
+                Logger::warning('upload', '在线上传无法自动审核，已登记待人工复核', ['upload_id' => $uploadId, 'appeal_no' => $appealNo] + $context);
+                raiseAdminAlert('warning', sprintf(
+                    '在线上传内容待人工复核：用户 %s 上传《%s》（记录号 %s）',
+                    (string) $user['username'],
+                    $filename,
+                    $appealNo
+                ), ['upload_id' => $uploadId, 'user_id' => (int) $user['id'], 'filename' => $filename]);
+            }
+        } catch (Throwable $exception) {
+            // 登记失败不阻断已完成的写入（与队列审核一致）
+            Logger::error('upload', '在线上传降级审核登记失败，已按正常流程放行', ['error' => $exception->getMessage()] + $context);
+        }
+    }
+
+    $cleanupChunkTokens[$token] = true;
+    $message = match ($resolved['handled']) {
+        'overwrite' => sprintf('已通过「在线上传」上传「%s」并覆盖了同名旧文件。', $filename),
+        'rename' => sprintf('同名文件已存在，已自动编号为「%s」并在线上传完成。', $filename),
+        default => sprintf('已通过「在线上传」上传「%s」。', $filename),
+    };
+
+    Logger::info('upload', sprintf('在线上传已完成：%s（%s）', $filename, formatBytes($size)), $context + [
+        'code' => 'uploaded_online',
+        'upload_id' => $uploadId,
+        'storage_backend' => 'notion_stream',
+    ]);
+
+    jsonResponse([
+        'ok' => true,
+        'message' => $message,
+        'name' => $filename,
+        'duplicate' => $resolved['handled'],
+        'writing' => false,
+        'online' => true,
+        'upload_id' => $uploadId,
+    ]);
 };
 
 try {
@@ -412,6 +680,8 @@ try {
     if ($action === 'start') {
         $scope = (($_POST['scope'] ?? '') === 'ticket') ? 'ticket' : 'drive';
         $assertNotBanned($scope);
+        // 「在线上传」直传：文件不经服务器暂存，直接写入 Notion；工单附件不提供该模式
+        $direct = $scope === 'drive' && (string) ($_POST['direct'] ?? '') === '1';
         $ticketId = 0;
         if ($scope === 'ticket') {
             $ticketId = is_numeric($_POST['ticket_id'] ?? null) ? (int) $_POST['ticket_id'] : 0;
@@ -490,7 +760,7 @@ try {
             }
             $context['file']['name'] = $filename;
 
-            $assertCapacity($filename, $size, $resolved['freed_bytes']);
+            $assertCapacity($filename, $size, $resolved['freed_bytes'], null, $direct);
         }
 
         // 大文件分块上传前先确认真的能写，避免传完才发现目标账户不可用
@@ -502,6 +772,91 @@ try {
         $cleanupStaleChunks();
 
         $token = bin2hex(random_bytes(16));
+
+        if ($direct) {
+            // 重传锚定需要整份文件哈希，直传无本地文件无法校验，故命中锚定的文件名一律拒绝直传（改用常规上传）
+            $anchorBlocked = false;
+            if (!$moderationExempt) {
+                try {
+                    $anchorService = ModerationService::create();
+                    $anchorBlocked = $anchorService->enabled()
+                        && $anchorService->resubmitAnchorHash((int) $user['id'], $filename) !== null;
+                } catch (Throwable $exception) {
+                    Logger::error('upload', '直传重传锚定预检失败，已按正常流程放行', ['error' => $exception->getMessage()] + $context);
+                }
+            }
+            if ($anchorBlocked) {
+                $fail('direct_not_allowed', '该文件处于重传内容校验中，无法使用「在线上传」，请按常规方式重新上传原文件。');
+            }
+
+            // 分片大小：Notion 要求每片 5~20 MB（末片可小），单分片模式仅适用于 ≤20 MB 且不超过 PHP 单块上限的文件
+            $phpChunk = uploadChunkSizeBytes();
+            if ($size <= 20 * 1024 * 1024 && $size <= $phpChunk) {
+                $partSize = $size;
+                $total = 1;
+            } else {
+                if ($phpChunk < 5 * 1024 * 1024) {
+                    $fail('direct_unavailable', '服务器 PHP 上传限制过小，无法使用「在线上传」，请联系管理员调大 upload_max_filesize / post_max_size。');
+                }
+                $partSize = max(5 * 1024 * 1024, min(20 * 1024 * 1024, $phpChunk));
+                $total = max(1, (int) ceil($size / $partSize));
+                if ($total > 1000) {
+                    $fail('file_too_large', '文件过大，超过 Notion 单文件分片上限（1000 片），无法使用「在线上传」。', ['parts' => $total, 'part_size' => $partSize], 413);
+                }
+            }
+            $multi = $total > 1;
+
+            // 为每个目标账户建立 Notion 上传会话；后续每收一块立即转发给这些会话（meta 中不保存 Token）
+            $mime = mimeForExtension($extension);
+            $storageName = directStorageName((int) $user['id'], $filename);
+            $sessions = [];
+            foreach (uploadTargets($user) as $target) {
+                $client = new NotionClient((string) $target['token']);
+                $session = $client->initStreamSession($storageName, $mime, $multi, $total);
+                $sessions[] = [
+                    'account_type' => (string) $target['type'],
+                    'account_id' => $target['account_id'],
+                    'file_upload_id' => $session['id'],
+                    'upload_url' => $session['upload_url'],
+                    'complete_url' => $session['complete_url'],
+                ];
+            }
+            if ($sessions === []) {
+                $fail('notion_not_configured', '当前账号尚未完成 Notion 账户绑定，请先到「账户管理」中绑定后再上传。');
+            }
+
+            $writeChunkMeta($token, [
+                'user_id' => (int) $user['id'],
+                'filename' => $filename,
+                'size' => $size,
+                'extension' => $extension,
+                'chunk_size' => $partSize,
+                'total' => $total,
+                'received' => 0,
+                'duplicate_action' => $duplicateAction,
+                'folder_id' => $folderId,
+                'scope' => 'drive',
+                'ticket_id' => 0,
+                'created_at' => time(),
+                'direct' => true,
+                'multi' => $multi,
+                'part_size' => $partSize,
+                'storage_name' => $storageName,
+                'mime' => $mime,
+                'targets' => $sessions,
+            ]);
+
+            jsonResponse([
+                'ok' => true,
+                'upload_token' => $token,
+                'chunk_size' => $partSize,
+                'total' => $total,
+                'name' => $filename,
+                'duplicate' => $resolved['handled'],
+                'online' => true,
+            ]);
+        }
+
         $chunkSize = uploadChunkSizeBytes();
         $total = max(1, (int) ceil($size / $chunkSize));
 
@@ -573,6 +928,60 @@ try {
             $fail('tmp_file_invalid', '分块数据未通过 PHP 安全检查，本次上传已终止，请重新上传该文件。', ['tmp_name' => $temporaryPath]);
         }
 
+        // 直传：每收到一块就立即转发给各 Notion 会话，不在服务器拼接整份文件（服务器最多缓冲当前这一块）
+        if (!empty($meta['direct'])) {
+            $incomingBytes = (int) $chunk['size'];
+            $partSize = (int) ($meta['part_size'] ?? 0);
+            $expectedBytes = $partSize > 0 ? min($partSize, max(0, (int) $meta['size'] - $index * $partSize)) : 0;
+            if ($incomingBytes <= 0 || $incomingBytes !== $expectedBytes) {
+                $cleanupChunkTokens[$token] = true;
+                $fail('chunk_size_mismatch', '上传数据校验失败，本次上传已终止，请重新上传该文件。', [
+                    'incoming_bytes' => $incomingBytes,
+                    'expected_bytes' => $expectedBytes,
+                ]);
+            }
+
+            // 按「账户类型 + 账户 id」重新取当前可用 Token（meta 中不保存 Token）
+            $byKey = [];
+            foreach (uploadTargets($user) as $target) {
+                $byKey[(string) $target['type'] . '#' . ($target['account_id'] === null ? '0' : (int) $target['account_id'])] = (string) $target['token'];
+            }
+
+            $storageName = (string) ($meta['storage_name'] ?? '');
+            $mime = (string) ($meta['mime'] ?? mimeForExtension((string) $meta['extension']));
+            $partNumber = !empty($meta['multi']) ? $index + 1 : null;
+            $sent = 0;
+            foreach ((array) ($meta['targets'] ?? []) as $session) {
+                if (!is_array($session)) {
+                    continue;
+                }
+                $key = (string) ($session['account_type'] ?? '') . '#' . (($session['account_id'] ?? null) === null ? '0' : (int) $session['account_id']);
+                if (!isset($byKey[$key])) {
+                    continue;
+                }
+                try {
+                    (new NotionClient($byKey[$key]))->sendStreamPart((string) $session['upload_url'], $temporaryPath, $storageName, $mime, $partNumber);
+                    $sent++;
+                } catch (Throwable $exception) {
+                    Logger::warning('upload', '在线上传分片转发失败。', [
+                        'index' => $index,
+                        'account_type' => $session['account_type'] ?? '',
+                        'account_id' => $session['account_id'] ?? null,
+                        'reason' => $exception->getMessage(),
+                    ] + $context);
+                }
+            }
+            if ($sent === 0) {
+                $cleanupChunkTokens[$token] = true;
+                $fail('notion_error', '在线上传失败：无法把数据写入 Notion，请稍后重试。');
+            }
+
+            $meta['received'] = $received + 1;
+            $writeChunkMeta($token, $meta);
+
+            jsonResponse(['ok' => true, 'received' => (int) $meta['received'], 'total' => $total]);
+        }
+
         $partPath = $chunkPartPath($token);
         $currentBytes = is_file($partPath) ? (int) filesize($partPath) : 0;
         $incomingBytes = (int) $chunk['size'];
@@ -638,18 +1047,22 @@ try {
             $fail('upload_incomplete', sprintf('文件分块尚未全部上传（%d/%d），请重试。', $received, $total), [], 409);
         }
 
-        $partPath = $chunkPartPath($token);
         $filename = (string) $meta['filename'];
         $size = (int) $meta['size'];
         $context['file'] = ['name' => $filename, 'size' => $size, 'extension' => (string) $meta['extension']];
+        $isDirect = !empty($meta['direct']);
 
-        $actualBytes = is_file($partPath) ? (int) filesize($partPath) : 0;
-        if ($actualBytes !== $size) {
-            $cleanupChunkTokens[$token] = true;
-            $fail('upload_incomplete', '上传数据不完整，本次上传已终止，请重新上传该文件。', [
-                'actual_bytes' => $actualBytes,
-                'expected_bytes' => $size,
-            ]);
+        // 直传不在服务器保存文件，故跳过整份文件的字节数校验；其余校验与常规路径一致
+        if (!$isDirect) {
+            $partPath = $chunkPartPath($token);
+            $actualBytes = is_file($partPath) ? (int) filesize($partPath) : 0;
+            if ($actualBytes !== $size) {
+                $cleanupChunkTokens[$token] = true;
+                $fail('upload_incomplete', '上传数据不完整，本次上传已终止，请重新上传该文件。', [
+                    'actual_bytes' => $actualBytes,
+                    'expected_bytes' => $size,
+                ]);
+            }
         }
 
         // 分块已齐全且字节数完全一致，此后失败无法续传：统一登记 token，确保后续校验失败也不会残留 .part（可达 5 GB）
@@ -660,7 +1073,7 @@ try {
         if ($scope === 'ticket') {
             // 工单附件不做重名处理，也不计入个人配额，但仍复核单文件上限与单张工单的附件数量
             $resolved = ['filename' => $filename, 'handled' => '', 'freed_bytes' => 0, 'renamed_to' => '', 'duplicate' => null];
-            $assertTicketAttachmentCapacity($ticketId, $filename, $size, $token);
+            $assertTicketAttachmentCapacity($ticketId, $filename, $size, $isDirect ? null : $token, $isDirect);
         } else {
             $resolved = $resolveDuplicate($filename, (string) ($meta['duplicate_action'] ?? ''));
             $filename = $resolved['filename'];
@@ -673,7 +1086,7 @@ try {
             $context['file']['name'] = $filename;
 
             // 本次会话的元数据仍在，须排除自身，否则会把本文件重复计入在途占用
-            $assertCapacity($filename, $size, $resolved['freed_bytes'], $token);
+            $assertCapacity($filename, $size, $resolved['freed_bytes'], $isDirect ? null : $token, $isDirect);
         }
 
         // 分块期间目标文件夹可能已被删除，落库前再确认一次，失效则落到根目录而不是让整条 INSERT 失败；工单附件固定在根目录
@@ -687,6 +1100,21 @@ try {
 
         if (uploadTargets($user) === []) {
             $assertUploadAllowed();
+        }
+
+        // 在线上传：分片已在 chunk 阶段逐块转发给 Notion，此处完成会话、挂载并落库（全程不占服务器暂存）
+        if ($isDirect) {
+            $directMime = (string) ($meta['mime'] ?? mimeForExtension($extension));
+            $context['file']['mime'] = $directMime;
+            $finishDirectUpload(
+                $token,
+                $meta,
+                $filename,
+                $size,
+                $directMime,
+                (string) ($meta['storage_name'] ?? directStorageName((int) $user['id'], $filename)),
+                $folderId
+            );
         }
 
         $mime = $computeMime($partPath, $extension);

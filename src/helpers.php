@@ -905,6 +905,63 @@ function uniqueStorageName(int $userId, string $originalName, string $filePath):
     return $prefix . $trimmedStem . $suffix;
 }
 
+/** 在线上传（直传）的存储名：无本地文件可算哈希，故仅用用户、时间与随机数组成唯一前缀。 */
+function directStorageName(int $userId, string $originalName): string
+{
+    $extension = pathinfo($originalName, PATHINFO_EXTENSION);
+    $stem = pathinfo($originalName, PATHINFO_FILENAME);
+    $prefix = sprintf('u%d_%s_%s__', $userId, gmdate('YmdHis'), bin2hex(random_bytes(4)));
+    $suffix = $extension === '' ? '' : '.' . $extension;
+    $available = max(1, 900 - strlen($prefix) - strlen($suffix));
+    $trimmedStem = mb_strcut($stem, 0, $available, 'UTF-8');
+
+    return $prefix . $trimmedStem . $suffix;
+}
+
+/** 在线上传无本地文件可探测内容，按扩展名映射推断 MIME；未知类型回退 application/octet-stream。 */
+function mimeForExtension(string $extension): string
+{
+    $map = [
+        'pdf' => 'application/pdf', 'csv' => 'text/csv', 'txt' => 'text/plain', 'md' => 'text/markdown',
+        'markdown' => 'text/markdown', 'json' => 'application/json', 'xml' => 'application/xml',
+        'html' => 'text/html', 'htm' => 'text/html', 'css' => 'text/css', 'js' => 'text/javascript',
+        'ts' => 'text/plain', 'tsx' => 'text/plain', 'py' => 'text/plain', 'yaml' => 'text/yaml',
+        'yml' => 'text/yaml', 'tsv' => 'text/tab-separated-values', 'ics' => 'text/calendar',
+        'doc' => 'application/msword', 'dot' => 'application/msword',
+        'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'dotx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
+        'xls' => 'application/vnd.ms-excel', 'xlt' => 'application/vnd.ms-excel',
+        'xla' => 'application/vnd.ms-excel',
+        'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'xltx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.template',
+        'ppt' => 'application/vnd.ms-powerpoint', 'pot' => 'application/vnd.ms-powerpoint',
+        'pps' => 'application/vnd.ms-powerpoint', 'ppa' => 'application/vnd.ms-powerpoint',
+        'pptx' => 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'potx' => 'application/vnd.openxmlformats-officedocument.presentationml.template',
+        'rtf' => 'application/rtf', 'odt' => 'application/vnd.oasis.opendocument.text',
+        'ods' => 'application/vnd.oasis.opendocument.spreadsheet',
+        'odp' => 'application/vnd.oasis.opendocument.presentation',
+        'epub' => 'application/epub+zip',
+        'zip' => 'application/zip', 'gz' => 'application/gzip', 'gzip' => 'application/gzip',
+        'tar' => 'application/x-tar', 'rar' => 'application/vnd.rar', '7z' => 'application/x-7z-compressed',
+        'bz2' => 'application/x-bzip2',
+        'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'gif' => 'image/gif',
+        'webp' => 'image/webp', 'bmp' => 'image/bmp', 'avif' => 'image/avif', 'apng' => 'image/apng',
+        'tif' => 'image/tiff', 'tiff' => 'image/tiff', 'ico' => 'image/x-icon', 'heic' => 'image/heic',
+        'svg' => 'image/svg+xml',
+        'mp3' => 'audio/mpeg', 'mpga' => 'audio/mpeg', 'm4a' => 'audio/mp4', 'm4b' => 'audio/mp4',
+        'wav' => 'audio/wav', 'ogg' => 'audio/ogg', 'oga' => 'audio/ogg', 'opus' => 'audio/ogg',
+        'flac' => 'audio/flac', 'aac' => 'audio/aac', 'adts' => 'audio/aac', 'wma' => 'audio/x-ms-wma',
+        'mid' => 'audio/midi', 'midi' => 'audio/midi', 'weba' => 'audio/webm',
+        'mp4' => 'video/mp4', 'm4v' => 'video/x-m4v', 'mov' => 'video/quicktime', 'qt' => 'video/quicktime',
+        'webm' => 'video/webm', 'ogv' => 'video/ogg', 'avi' => 'video/x-msvideo', 'wmv' => 'video/x-ms-wmv',
+        'mkv' => 'video/x-matroska', 'mpeg' => 'video/mpeg', '3gp' => 'video/3gpp', '3g2' => 'video/3gpp2',
+        'flv' => 'video/x-flv', 'f4v' => 'video/x-f4v', 'asf' => 'video/x-ms-asf', 'amv' => 'video/x-amv',
+    ];
+
+    return $map[strtolower($extension)] ?? 'application/octet-stream';
+}
+
 function findActiveUploadByName(int $userId, string $name): ?array
 {
     $statement = Database::connection()->prepare(

@@ -182,7 +182,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </section>
     </main>
     <?= siteCreditHtml() ?>
-    <script src="assets/app.js?v=32" defer></script>
+    <script src="assets/app.js?v=33" defer></script>
     <?php if ($emailRequired): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>
 </html>

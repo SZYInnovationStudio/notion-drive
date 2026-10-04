@@ -84,6 +84,24 @@ final class NotionWriteQueue
         return (int) $statement->fetchColumn();
     }
 
+    /** 全服「待写入暂存」上限（字节，0 表示不限）：后台「上传与容量」可配，默认 10 GB。 */
+    public static function serverLimitBytes(): int
+    {
+        $megabytes = (int) Database::config('server_disk_limit_mb', '10240');
+
+        return $megabytes > 0 ? $megabytes * 1024 * 1024 : 0;
+    }
+
+    /** 全服当前占用的待写入暂存字节数（所有用户合计；工单附件一样占服务器空间，故一并计入）。 */
+    public static function stagedBytesAll(): int
+    {
+        $statement = Database::connection()->query(
+            "SELECT COALESCE(SUM(file_size), 0) FROM uploads WHERE status IN ('" . self::STATUS_WRITING . "', '" . self::STATUS_FAILED . "')"
+        );
+
+        return (int) $statement->fetchColumn();
+    }
+
     /**
      * 把拼接完成的文件收进暂存区，返回暂存路径。
      * 同分区内 rename 是原子操作；跨分区时回退为复制后删除。失败即抛异常，由调用方回滚数据库记录。
@@ -325,8 +343,9 @@ final class NotionWriteQueue
         $this->discard($userId, $uploadId);
     }
 
-    /** 回填副本并把记录转为 active；记录已不是待写入状态（被删除等）时返回 false，且不写任何副本。 */
-    private function commitReplicas(int $uploadId, array $replicas): bool
+    /** 回填副本并把记录转为 active；记录已不是待写入状态（被删除等）时返回 false，且不写任何副本。
+     *  在线上传（直传）路径由 api/upload.php 在 finish 阶段直接调用。 */
+    public function commitReplicas(int $uploadId, array $replicas): bool
     {
         $pdo = Database::connection();
         $pdo->beginTransaction();

@@ -55,13 +55,39 @@ final class NotionClient
         $multiPart = $size > 20 * 1024 * 1024;
         $parts = $multiPart ? (int) ceil($size / self::PART_SIZE) : 1;
 
+        $session = $this->initStreamSession($filename, $mime, $multiPart, $parts);
+        $uploadId = $session['id'];
+
+        if ($multiPart) {
+            $this->sendParts($session['upload_url'], $path, $filename, $mime, $parts, $onProgress);
+            $this->completeStreamSession($session['complete_url']);
+        } else {
+            $this->sendStreamPart($session['upload_url'], $path, $filename, $mime);
+            if ($onProgress !== null) {
+                $onProgress(1, 1);
+            }
+        }
+
+        $attached = $this->attachFileUpload($uploadId, $pageId, $mime);
+
+        return ['file_upload_id' => $uploadId, 'block' => $attached];
+    }
+
+    /**
+     * 建立 Notion 文件上传会话（「在线上传」直传复用）：只拿 upload_url / complete_url，不实际传输内容。
+     * $multiPart 为 true 时按 $parts 声明分片总数（Notion 要求每片 5~20 MB、末片可小、part_number ≤ 1000）。
+     *
+     * @return array{id:string, upload_url:string, complete_url:string, multi_part:bool}
+     */
+    public function initStreamSession(string $filename, string $mime, bool $multiPart, int $parts): array
+    {
         $payload = [
             'mode' => $multiPart ? 'multi_part' : 'single_part',
             'filename' => $filename,
             'content_type' => $mime,
         ];
         if ($multiPart) {
-            $payload['number_of_parts'] = $parts;
+            $payload['number_of_parts'] = max(1, $parts);
         }
 
         $session = $this->jsonRequest('POST', self::API_BASE . '/file_uploads', $payload);
@@ -70,23 +96,63 @@ final class NotionClient
         if ($uploadId === '' || !$this->isTrustedUploadUrl($uploadUrl)) {
             throw new NotionApiException('Notion 未返回有效的上传会话。');
         }
-
-        if ($multiPart) {
-            $this->sendParts($uploadUrl, $path, $filename, $mime, $parts, $onProgress);
-            $completeUrl = (string) ($session['complete_url'] ?? self::API_BASE . '/file_uploads/' . $uploadId . '/complete');
-            if (!$this->isTrustedUploadUrl($completeUrl)) {
-                throw new NotionApiException('Notion 未返回有效的完成地址。');
-            }
-            $this->jsonRequest('POST', $completeUrl, null);
-        } else {
-            $this->sendFile($uploadUrl, $path, $filename, $mime);
-            if ($onProgress !== null) {
-                $onProgress(1, 1);
-            }
+        $completeUrl = (string) ($session['complete_url'] ?? self::API_BASE . '/file_uploads/' . $uploadId . '/complete');
+        if (!$this->isTrustedUploadUrl($completeUrl)) {
+            throw new NotionApiException('Notion 未返回有效的完成地址。');
         }
 
+        return ['id' => $uploadId, 'upload_url' => $uploadUrl, 'complete_url' => $completeUrl, 'multi_part' => $multiPart];
+    }
+
+    /**
+     * 把一个服务器上的分片（或整份小文件）转发给 Notion 直传会话；$partNumber 为 null 表示单分片模式。
+     * 重发同一分片只会覆盖该分片、不产生多余数据，因此 execute() 允许幂等重试。
+     */
+    public function sendStreamPart(string $uploadUrl, string $filePath, string $filename, string $mime, ?int $partNumber = null): void
+    {
+        if (!$this->isTrustedUploadUrl($uploadUrl)) {
+            throw new NotionApiException('Notion 未返回有效的上传地址。');
+        }
+
+        $fields = ['file' => new CURLFile($filePath, $mime, $filename)];
+        if ($partNumber !== null) {
+            $fields['part_number'] = (string) $partNumber;
+        }
+
+        $handle = curl_init($uploadUrl);
+        curl_setopt_array($handle, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $fields,
+            CURLOPT_HTTPHEADER => [
+                'Authorization: Bearer ' . $this->token,
+                'Notion-Version: ' . self::API_VERSION,
+                'Accept: application/json',
+            ],
+            CURLOPT_CONNECTTIMEOUT => 15,
+            CURLOPT_TIMEOUT => 600,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        ]);
+        $this->execute($handle, true);
+    }
+
+    /** 完成直传会话：通知 Notion 所有分片已就位。complete 为 POST、非幂等，故不做盲目重试。 */
+    public function completeStreamSession(string $completeUrl): void
+    {
+        if (!$this->isTrustedUploadUrl($completeUrl)) {
+            throw new NotionApiException('Notion 未返回有效的完成地址。');
+        }
+
+        $this->jsonRequest('POST', $completeUrl, null);
+    }
+
+    /** 把一个已完成的 file_upload 挂到指定页面下，返回 Notion 返回的块对象。 */
+    public function attachFileUpload(string $fileUploadId, string $pageId, string $mime): array
+    {
         $blockType = $this->blockType($mime);
-        $attached = $this->jsonRequest(
+
+        return $this->jsonRequest(
             'PATCH',
             self::API_BASE . '/blocks/' . rawurlencode($pageId) . '/children',
             [
@@ -95,13 +161,11 @@ final class NotionClient
                     'type' => $blockType,
                     $blockType => [
                         'type' => 'file_upload',
-                        'file_upload' => ['id' => $uploadId],
+                        'file_upload' => ['id' => $fileUploadId],
                     ],
                 ]],
             ]
         );
-
-        return ['file_upload_id' => $uploadId, 'block' => $attached];
     }
 
     public function createUserSpace(string $parentPageId, string $username): string
@@ -253,27 +317,6 @@ final class NotionClient
         return $this->execute($handle, $method === 'GET' || $method === 'DELETE');
     }
 
-    private function sendFile(string $url, string $path, string $filename, string $mime): void
-    {
-        $handle = curl_init($url);
-        curl_setopt_array($handle, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => ['file' => new CURLFile($path, $mime, $filename)],
-            CURLOPT_HTTPHEADER => [
-                'Authorization: Bearer ' . $this->token,
-                'Notion-Version: ' . self::API_VERSION,
-                'Accept: application/json',
-            ],
-            CURLOPT_CONNECTTIMEOUT => 15,
-            CURLOPT_TIMEOUT => 600,
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-        ]);
-        // 同一分片重复上传只会覆盖该分片，不会产生额外数据，因此允许重试
-        $this->execute($handle, true);
-    }
-
     /**
      * 并发发送全部文件分片：Notion 允许分片并行、乱序上传（只要 complete 之前把 1..N 发完即可），
      * 逐片串行会把每一次往返延迟累加，大文件因此非常慢。这里用 curl_multi 维持固定并发窗口，
@@ -407,7 +450,7 @@ final class NotionClient
         return $temporary;
     }
 
-    /** 初始化一个分片上传句柄：鉴权头与超时同 sendFile()，另加共享连接缓存与每句柄独立的 Retry-After 记录。 */
+    /** 初始化一个分片上传句柄：鉴权头与超时同 sendStreamPart()，另加共享连接缓存与每句柄独立的 Retry-After 记录。 */
     private function initPartHandle(string $url, string $temporary, string $filename, string $mime, int $part, $share, object $state)
     {
         $handle = curl_init($url);

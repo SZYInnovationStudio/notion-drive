@@ -382,7 +382,7 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
     </main>
     <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=32" defer></script>
+    <script src="assets/app.js?v=33" defer></script>
     <script src="assets/admin.js?v=9" defer></script>
     <?php if ($canBindEmail): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>

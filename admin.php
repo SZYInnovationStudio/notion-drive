@@ -772,6 +772,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $officialLimitMb = (int) ($_POST['official_single_file_limit_mb'] ?? 0);
             $chunkMb = (int) ($_POST['upload_chunk_size_mb'] ?? 0);
             $stagingMb = (int) ($_POST['staging_limit_mb'] ?? 0);
+            $serverDiskMb = (int) ($_POST['server_disk_limit_mb'] ?? 0);
             if ($officialLimitMb < 1 || $officialLimitMb > 1048576) {
                 throw new RuntimeException('官方账户单文件上限需为 1 ~ 1048576 MB 之间的整数。');
             }
@@ -781,9 +782,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($stagingMb < 0 || $stagingMb > 1048576) {
                 throw new RuntimeException('待写入暂存上限需为 0 ~ 1048576 MB 之间的整数（0 表示不限）。');
             }
+            if ($serverDiskMb < 0 || $serverDiskMb > 1048576) {
+                throw new RuntimeException('全服防爆盘上限需为 0 ~ 1048576 MB 之间的整数（0 表示不限）。');
+            }
             Database::setConfig('official_single_file_limit_bytes', (string) ($officialLimitMb * 1024 * 1024));
             Database::setConfig('upload_chunk_size_mb', (string) $chunkMb);
             Database::setConfig('staging_limit_mb', (string) $stagingMb);
+            Database::setConfig('server_disk_limit_mb', (string) $serverDiskMb);
             $effective = uploadChunkSizeBytes();
             flash('success', $effective < $chunkMb * 1024 * 1024
                 ? sprintf('上传与容量设置已保存；受服务器 PHP 上传限制约束，分块实际生效值为 %s。', formatBytes($effective))
@@ -1151,6 +1156,8 @@ $chunkSizeMb = (int) Database::config('upload_chunk_size_mb', '10');
 $effectiveChunkBytes = uploadChunkSizeBytes();
 // 待写入暂存上限：上传先落服务器、后台再写 Notion，这里限制每用户同时占用服务器磁盘的额度（0 表示不限）
 $stagingLimitMb = (int) Database::config('staging_limit_mb', '1024');
+// 全服防爆盘上限：所有用户的「待写入暂存 + 在途分块」合计不得超过该值，超限时前端引导用户转为在线上传（0 表示不限）
+$serverDiskLimitMb = (int) Database::config('server_disk_limit_mb', '10240');
 // 公告管理：后台列出全部公告（含已停用），编辑态由 ?edit=<id> 预填表单
 $announcements = Database::connection()
     ->query('SELECT id, title, body, is_active, created_at, updated_at FROM announcements ORDER BY updated_at DESC, id DESC')
@@ -1599,6 +1606,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
                 <label><span>上传分块大小（MB）</span><input name="upload_chunk_size_mb" inputmode="numeric" value="<?= $chunkSizeMb ?>" required></label>
                 <label><span>实际生效单块</span><input value="<?= e(formatBytes($effectiveChunkBytes)) ?>" readonly></label>
                 <label><span>待写入暂存上限（MB）</span><input name="staging_limit_mb" inputmode="numeric" value="<?= $stagingLimitMb ?>" required><small>每个用户在服务器上「已上传、还没写完 Notion」的文件合计上限，默认 1024 MB；0 表示不限。写入未完成期间这些文件暂存在服务器，因此按磁盘余量设置。</small></label>
+                <label><span>全服防爆盘上限（MB）</span><input name="server_disk_limit_mb" inputmode="numeric" value="<?= $serverDiskLimitMb ?>" required><small>整个服务器（所有用户）的「待写入暂存 + 在途分块」合计上限，默认 10240 MB（10 GB）；0 表示不限。超限时普通上传会被拒绝，并提示用户改为「在线上传 Notion」（不占用服务器暂存）。</small></label>
                 <div class="form-actions"><button class="primary-button compact">保存设置</button></div>
             </form>
         </section>
@@ -1890,5 +1898,5 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         <?php endif; ?>
     </main>
     <?= siteCreditHtml() ?>
-    <div id="toast" class="toast"></div><script src="assets/app.js?v=32" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <div id="toast" class="toast"></div><script src="assets/app.js?v=33" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body></html>

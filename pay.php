@@ -254,6 +254,6 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
     </main>
     <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=32" defer></script>
+    <script src="assets/app.js?v=33" defer></script>
 </body>
 </html>

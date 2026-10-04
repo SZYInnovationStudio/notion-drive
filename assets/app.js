@@ -1075,12 +1075,24 @@
             status.textContent = `上传中 ${Math.round(value)}%`;
         };
 
+        const startFields = extra => ({ action: 'start', filename: file.name, size: file.size, duplicate_action: duplicateAction || '', folder_id: document.body.dataset.folder || '0', ...extra });
         let started;
         try {
             // 上传落到当前浏览的文件夹（data-folder 为 0 表示根目录）
-            started = await controlRequest({ action: 'start', filename: file.name, size: file.size, duplicate_action: duplicateAction || '', folder_id: document.body.dataset.folder || '0' });
+            started = await controlRequest(startFields());
         } catch (_) {
             return fail('网络连接失败，未能与服务器通信');
+        }
+        // 服务器暂存额度已满：询问是否改为「在线上传」（文件直传 Notion、不经服务器暂存）
+        if (!started.ok && started.data.code === 'server_disk_exceeded') {
+            const goOnline = await askConfirm(`${started.data.message || '服务器暂存空间已满，无可用额度。'}\n\n是否改为「在线上传 Notion」？上传不经服务器暂存，但无法进行自动内容审核。`);
+            if (!goOnline) return fail(failureText(started.status, started.data), false);
+            status.textContent = '正在准备在线上传';
+            try {
+                started = await controlRequest(startFields({ direct: '1' }));
+            } catch (_) {
+                return fail('网络连接失败，未能与服务器通信');
+            }
         }
         if (!started.ok || !started.data.ok) {
             // 关键词拦截：属于确定性拒绝，重试也不会通过，改为提示申诉号
@@ -1088,8 +1100,13 @@
                 held += 1;
                 return fail(failureText(started.status, started.data), false);
             }
+            // 服务器额度不足 / 在线上传不可用：确定性拒绝，重试也不会通过
+            if (['server_disk_exceeded', 'direct_not_allowed', 'direct_unavailable'].includes(started.data.code)) {
+                return fail(failureText(started.status, started.data), false);
+            }
             return fail(failureText(started.status, started.data));
         }
+        const onlineUpload = started.data.online === true;
 
         const token = started.data.upload_token;
         const chunkSize = Number(started.data.chunk_size) || file.size || 1;
@@ -1126,7 +1143,7 @@
         }
 
         bar.value = 99;
-        status.textContent = '正在写入存储';
+        status.textContent = onlineUpload ? '正在完成在线上传' : '正在写入存储';
         let finished;
         try {
             finished = await controlRequest({ action: 'finish', upload_token: token });
@@ -1135,12 +1152,20 @@
         }
         if (!finished.ok || !finished.data.ok) return fail(failureText(finished.status, finished.data));
 
+        uploaded += 1;
+        // 在线上传：finish 时已直接写入并落库（active），无需再轮询写入进度
+        if (finished.data.writing === false) {
+            bar.value = 100;
+            status.textContent = '已在线上传完成';
+            item.classList.add('complete');
+            return true;
+        }
+
         // 文件已入库：进度条交给「写入存储」阶段继续走（0% → 100%），由 waitForWrites() 轮询刷新；
         // 内容审核也在这个阶段之后由服务端完成，结论稍后可在文件列表 / 账户面板查看
         const uploadId = Number(finished.data.upload_id) || 0;
         bar.value = 0;
         status.textContent = '已提交，正在写入存储 0%';
-        uploaded += 1;
         if (uploadId > 0) pendingWrite.push({ uploadId, item, bar, status });
         return true;
     };

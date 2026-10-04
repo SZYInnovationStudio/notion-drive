@@ -85,6 +85,6 @@ $captchaRequired = $throttle['captcha'];
         </section>
     </main>
     <?= siteCreditHtml() ?>
-    <script src="assets/app.js?v=32" defer></script>
+    <script src="assets/app.js?v=33" defer></script>
 </body>
 </html>

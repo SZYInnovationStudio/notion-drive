@@ -28,6 +28,21 @@
 
 ---
 
+### [2026-10-04 15:12:19] 新增全服防爆盘额度限制与「在线上传 Notion」直传降级通道
+
+- 目的：①上传先落服务器暂存，只有「每用户」额度限制（staging_limit_mb），缺少「整台服务器」口径的总闸，多用户并发大文件仍能把服务器磁盘占满；要求新增全服默认 10 GB 的防爆盘上限，管理员可在后台「上传与容量」修改，超限时提示用户是否转为在线上传。②超限后用户被直接拒绝、没有出路；要求提供一条不占用服务器暂存的上传路径：分片不再在服务器拼整份文件，而是每收一块就立即转发给 Notion（服务器最多缓冲当前这一块），finish 时 complete + 挂页面 + 入库，全程不占暂存。
+- 验证：`php -l` 对本次改动的 14 个 PHP 文件执行，结果 `bad=0`；`node --check assets/app.js` 退出码 0。版本号：`app.js?v=32` 残留 0 处（10 处均为 `?v=33`）；全量 PHP 文件 BOM 检查 `bom=0`。遵守「本机禁止功能 / HTTP 测试」约定，未做真实上传 / 写入验证；直传链路的正确性由「start 建会话 → chunk 逐片转发（part_number = index+1）→ finish complete + 挂载 + commitReplicas」的代码路径保证。
+- 数据库结构影响：无新增表 / 列，旧库无需补列；仅新增配置项 `server_disk_limit_mb`（缺省按 10240 处理），由后台保存时写入 `config` 表。
+- 改动明细（行号为改动后当前行号）：
+  - `admin.php` L775-L786 — `save_limits` 新增 `server_disk_limit_mb` 读写与 0~1048576 校验（0 表示不限）；L791 — 写入配置；L1160 — 读取 `$serverDiskLimitMb`（默认 10240）；L1609 — 面板新增「全服防爆盘上限（MB）」输入项与说明。
+  - `src/Uploads/NotionWriteQueue.php` L87-L93 — 新增 `serverLimitBytes()`（读 `server_disk_limit_mb`，默认 10240 MB，0=不限）；L95-L103 — 新增 `stagedBytesAll()`（全用户 `SUM(file_size) WHERE status IN (writing, write_failed)`）；L346-L348 — `commitReplicas()` 由 `private` 改为 `public`，供直传路径在 finish 中直接回填副本转 active。
+  - `src/NotionClient.php` L58-L73 — `uploadAndAttach()` 改为复用下面四个新方法（行为不变）；L76-L105 — 新增 `initStreamSession()`：只建立 `file_uploads` 会话并返回 `id/upload_url/complete_url`，不传输内容；L107-L138 — 新增 `sendStreamPart()`：把服务器上的单个分片（或整份小文件）转发给直传会话，`part_number` 为 null 时走单分片模式，允许幂等重试；L140-L148 — 新增 `completeStreamSession()`（complete 非幂等，不做盲目重试）；L150-L169 — 新增 `attachFileUpload()`。原 `sendFile()` 私有方法删除（职责并入 `sendStreamPart()`）。
+  - `src/helpers.php` L908-L919 — 新增 `directStorageName()`：直传无本地文件可算哈希，用「用户 + 时间 + 随机数」生成唯一存储名；L921-L963 — 新增 `mimeForExtension()`：直传按扩展名映射推断 MIME（未知回退 `application/octet-stream`），替代必须读真实文件的 `finfo`。
+  - `api/upload.php` L200-L203 — `$pendingUploadBytes()` 跳过 `direct` 会话（直传不占服务器暂存）；L210-L229 — 新增 `$pendingChunkBytesAll()`：统计全服在途分块会话（`storage/chunks/*.json` 的 `size`，跳过 direct）；L252-L271 — 新增 `$assertServerDiskBudget()`：`stagedBytesAll() + 在途分块` 超限即返回 `server_disk_exceeded`（HTTP 507，附 `staged_bytes`/`server_limit`）；L273-L309 / L318-L343 — `$assertCapacity()` 与 `$assertTicketAttachmentCapacity()` 新增 `bool $direct` 参数（直传时跳过暂存与全服磁盘校验，仍校验单文件上限与个人配额）。
+  - `api/upload.php` L381-L588 — 新增 `$finishDirectUpload()` 闭包（直传收尾）：入库占位（writing）→ 逐目标 `complete` + `ensureUserSpacePage` + `attachFileUpload`（complete 放在自愈包装之外）→ `commitReplicas()` 转 active → 覆盖旧文件归档 → 无本地文件的降级审核（`Verdict::pending` 登记待人工复核 + 提醒管理员）；全部目标失败时删除占位记录，避免留下永远无法写入的条目。L684 — start 解析 `direct=1`（仅 drive）；L776-L858 — start 直传分支：重传锚定命中即拒绝直传、按 Notion 规则计算分片（单分片 ≤20 MB，否则 5~20 MB，`part_number ≤ 1000`）、为各目标建会话、写 meta（含 `direct/part_size/multi/storage_name/mime/targets`，**不写 Token**）并返回，不创建 `.part`；L931-L983 — chunk 直传分支：校验本片字节数后立即逐目标 `sendStreamPart()`（`part_number = index + 1`），不在服务器拼整份文件；L1053-L1118 — finish 直传分支：跳过整份文件字节数校验，带 `$direct` 走容量校验后转入 `$finishDirectUpload()`。
+  - `assets/app.js` L1078-L1109 — start 失败且 `code=server_disk_exceeded` 时弹确认「是否改为在线上传 Notion」，确认后带 `direct=1` 重试 start；`direct_not_allowed`/`direct_unavailable` 等确定性拒绝不再自动重试；L1146 — 直传时状态文案改为「正在完成在线上传」；L1155-L1162 — finish 返回 `writing=false` 时进度条直接置 100%（直传为同步完成，无需再轮询写入进度）。
+  - 资源版本号全站同步：`assets/app.js?v=32 → ?v=33`（10 处：`admin.php`、`admin_orders.php`、`account.php`、`dashboard.php`、`forgot.php`、`index.php`、`logs.php`、`pay.php`、`register.php`、`tickets.php`）。本次未改动 `assets/app.css`，其版本号保持 `?v=62` 不变。
+
 ### [2026-10-04 14:32:08] 新增「写入 Notion」真实进度条（按文件）与侧边栏「待写入暂存」额度展示
 
 - 目的：①异步写入改造后，上传弹窗的进度条只走到「分块上传完成」就跳 100%，最慢的「正在写入存储」一段完全没有反馈；用户要求上传时每个文件一条真实反映写入 Notion 进度的进度条。②上传先落服务器暂存，但用户看不到「本次被占用的服务器暂存额度」，不知道自己为何被暂存上限拦下；要求在用户信息（侧边栏「用量信息」）处展示已用 / 上限。
