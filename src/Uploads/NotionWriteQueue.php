@@ -552,12 +552,14 @@ final class NotionWriteQueue
     private function markFailed(array $upload, string $reason): void
     {
         $uploadId = (int) $upload['id'];
+        // 命名占位符在同一语句里不能重复（原生预处理会报 HY093 Invalid parameter number），故 SET 与 IN 用不同名字
         Database::connection()->prepare(
-            'UPDATE uploads SET status = :failed, write_progress = 0 WHERE id = :id AND status IN (:writing, :failed)'
+            'UPDATE uploads SET status = :failed_status, write_progress = 0 WHERE id = :id AND status IN (:writing, :failed_match)'
         )->execute([
-            'failed'  => self::STATUS_FAILED,
-            'id'      => $uploadId,
-            'writing' => self::STATUS_WRITING,
+            'failed_status' => self::STATUS_FAILED,
+            'id'            => $uploadId,
+            'writing'       => self::STATUS_WRITING,
+            'failed_match'  => self::STATUS_FAILED,
         ]);
 
         // 覆盖上传失败：把被覆盖的旧文件恢复可用，否则用户既拿不到新文件、旧文件也不在列表里

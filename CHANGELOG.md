@@ -28,6 +28,26 @@
 
 ---
 
+### [2026-10-04 16:11:34] 官方账户池不再要求先绑定自有账户；修正误导性报错与失败落库崩溃
+
+- 目的：生产日志显示官方账户用户上传失败并提示「当前账号尚未完成 Notion 账户绑定，请先到「账户管理」中绑定后再上传。」
+  （`[queue] 写入 Notion 失败，准备重试` ×3），随后 `markFailed` 又抛 `SQLSTATE[HY093] Invalid parameter number`。
+  实际诉求是**使用官方账户池时不应该被要求先绑定自有账户**，且失败原因不应被一律误报成「未绑定自有账户」。排查出四处问题：
+  ①管理员使用官方账户但未购买套餐时，`uploadBlockedReason()` 会把它当作降级用户拦下（与 `canUseOfficialSource()` 允许管理员的口径矛盾）；
+  ②来源为自有账户但尚未绑定时 `uploadTargets()` 直接返回空，即使该账号有官方池权限也不回落；
+  ③写入队列/上传接口把「无可用目标」一律报成「未绑定自有账户」，掩盖了套餐受限、官方池无可用账户等真实原因；
+  ④`markFailed()` 在同一条 SQL 中重复使用命名占位符 `:failed`，原生预处理下必然报 HY093，导致写入失败的记录无法落库为 write_failed。
+- 验证：`php -l` 对 `src/helpers.php`、`src/Uploads/NotionWriteQueue.php`、`api/upload.php` 三个文件执行，结果均为 `No syntax errors detected`。
+  遵守「本机禁止功能 / HTTP 测试」约定，未做真实上传验证；`uploadTargets()` 回落分支仅在 `canUseOfficialSource()`（管理员或有效期内的付费用户，且账户池有启用账户）为真时才会走到，非付费用户仍返回空，不会因此获得官方池写入权限。
+- 数据库结构影响：无。
+- 改动明细（行号为改动后当前行号）：
+  - `src/helpers.php` L1330-L1343 — `uploadBlockedReason()` 增加 `isAdmin($user)` 例外：管理员始终可用官方账户，与 `canUseOfficialSource()` 口径一致。
+  - `src/helpers.php` L1345-L1360 — 新增 `notionTargetsMissingReason()`：按「未绑定自有 / 套餐受限 / 官方池无可用账户」分别给出准确提示。
+  - `src/helpers.php` L1621-L1642 — `uploadTargets()` 自有分支改为「已绑定则用自有；未绑定且 `canUseOfficialSource()` 为真时回落到官方池；否则才返回空」。
+  - `src/helpers.php` L1800-L1803 — `writeNotionReplicas()` 无可用目标时改抛 `notionTargetsMissingReason($user)`，不再硬编码「未绑定自有账户」。
+  - `api/upload.php` L369 / L854 — `$assertUploadAllowed()` 与直传 start 的同一提示改用 `notionTargetsMissingReason($user)`。
+  - `src/Uploads/NotionWriteQueue.php` L552-L563 — `markFailed()` 的 UPDATE 改为 `:failed_status`（SET）与 `:failed_match`（IN）两个不同占位符，修复 HY093。
+
 ### [2026-10-04 15:53:36] 紧急修复：「我的文件」页面 500（列表查询分页参数未插值）
 
 - 目的：生产站点 `dashboard.php` 全线 500，nginx 错误日志显示

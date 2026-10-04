@@ -1330,7 +1330,9 @@ function notionSourceUsable(array $user): bool
 /** 当前账号是否被禁止上传新文件（降级为普通用户后官方账户来源被硬性禁用）；返回空串表示允许，否则返回提示文案。 */
 function uploadBlockedReason(array $user): string
 {
-    if (userNotionSource($user) !== 'official' || isPremiumUser($user)) {
+    // 管理员始终可用官方账户：与 canUseOfficialSource() 的口径保持一致，
+    // 否则「管理员 + 官方账户 + 未购套餐」会被当成降级用户拦下，且报错文案会误指向「未绑定自有账户」
+    if (userNotionSource($user) !== 'official' || isPremiumUser($user) || isAdmin($user)) {
         return '';
     }
 
@@ -1338,6 +1340,23 @@ function uploadBlockedReason(array $user): string
     return premiumExpiresAt($user) !== null
         ? '高级用户套餐已到期，官方账户上传已暂停；续费后即可恢复，也可以切换到自有账户继续上传。'
         : '官方账户仅对高级用户开放，当前无法用它上传新文件；开通高级套餐后即可使用，也可以切换到自有账户继续上传。';
+}
+
+/** 没有可用上传目标时的准确提示：按账户来源区分「未绑定自有账户」「套餐受限」「官方池无可用账户」，避免一律误报「未绑定」。 */
+function notionTargetsMissingReason(array $user): string
+{
+    if (userNotionSource($user) !== 'official') {
+        return '当前账号尚未完成 Notion 账户绑定，请先到「账户管理」中绑定后再上传。';
+    }
+
+    $blocked = uploadBlockedReason($user);
+    if ($blocked !== '') {
+        return $blocked;
+    }
+
+    return activeOfficialAccounts() === []
+        ? '官方账户池当前没有已启用的账户，请联系管理员在后台启用官方账户后再上传。'
+        : '官方账户池当前没有可用账户（账户被停用，或 Token / 根页面失效），请联系管理员。';
 }
 
 /** 绑定或更换自有的 Notion 账户（Token + 父页面）；Token 或父页面变化时会清除用户空间页缓存，避免沿用旧父页面下的页面。 */
@@ -1604,18 +1623,22 @@ function uploadTargets(array $user): array
     if (userNotionSource($user) === 'own') {
         $token = userNotionToken($user);
         $rootPageId = (string) ($user['notion_parent_page_id'] ?? '');
-        if ($token === '' || normalizePageId($rootPageId) === '') {
-            return [];
+        if ($token !== '' && normalizePageId($rootPageId) !== '') {
+            return [[
+                'type' => 'own',
+                'account_id' => null,
+                'token' => $token,
+                'root_page_id' => $rootPageId,
+                'label' => '自有账户',
+                'page_id' => (string) ($user['notion_page_id'] ?? ''),
+            ]];
         }
 
-        return [[
-            'type' => 'own',
-            'account_id' => null,
-            'token' => $token,
-            'root_page_id' => $rootPageId,
-            'label' => '自有账户',
-            'page_id' => (string) ($user['notion_page_id'] ?? ''),
-        ]];
+        // 自有账户尚未绑定：不直接失败，有官方池使用权限的账号直接回落到官方池，
+        // 避免「用官方池却被迫先绑定自有账户」；无权限的仍返回空，由上层给出准确提示
+        if (!canUseOfficialSource($user)) {
+            return [];
+        }
     }
 
     // 官方账户仅对有效期内的高级用户（与管理员）开放；降级后立即停止向官方账户写入
@@ -1776,7 +1799,7 @@ function writeNotionReplicas(array $user, string $temporaryPath, string $filenam
 {
     $targets = uploadTargets($user);
     if ($targets === []) {
-        throw new RuntimeException('当前账号尚未完成 Notion 账户绑定，请先在「账户管理」中绑定后再上传。');
+        throw new RuntimeException(notionTargetsMissingReason($user));
     }
 
     // 同一文件在所有账户中共用同一个存储名，便于人工在 Notion 中核对。

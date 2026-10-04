@@ -366,7 +366,7 @@ $assertUploadAllowed = static function () use ($fail, $user): void {
         $fail('upload_blocked', $blocked);
     }
     if (uploadTargets($user) === []) {
-        $fail('notion_not_configured', '当前账号尚未完成 Notion 账户绑定，请先到「账户管理」中绑定后再上传。');
+        $fail('notion_not_configured', notionTargetsMissingReason($user));
     }
 };
 
@@ -851,7 +851,7 @@ try {
                 ];
             }
             if ($sessions === []) {
-                $fail('notion_not_configured', '当前账号尚未完成 Notion 账户绑定，请先到「账户管理」中绑定后再上传。');
+                $fail('notion_not_configured', notionTargetsMissingReason($user));
             }
 
             $writeChunkMeta($token, [
