@@ -11,6 +11,11 @@
         window.location.replace(checkoutUrl);
     }
     const allowed = new Set(['aac','adts','mid','midi','mp3','mpga','m4a','m4b','mp4','oga','ogg','opus','wav','wma','weba','flac','pdf','txt','csv','json','js','ts','tsx','py','doc','dot','docx','dotx','xls','xlt','xla','xlsx','xltx','ppt','pot','pps','ppa','pptx','potx','rtf','md','markdown','html','htm','epub','xml','css','odt','ods','odp','ics','yaml','yml','tsv','zip','gz','gzip','tar','7z','bz2','rar','gif','heic','jpeg','jpg','png','svg','tif','tiff','webp','ico','bmp','avif','apng','amv','asf','wmv','avi','f4v','flv','gifv','m4v','mkv','webm','mov','qt','mpeg','ogv','3gp','3g2','dwg','dxf','dwf','rvt','rfa','fbx','3dm','step','stp','iges','igs','stl','obj','3mf','gltf','glb','dae','usdz']);
+    // 不支持的后缀统一用这一句：先明确「不支持」，再给出压缩包这条可行替代路径
+    const UNSUPPORTED_HINT = 'Notion 不支持该文件类型，可压缩为 ZIP / RAR 等压缩包后再上传';
+
+    /** 取小写扩展名（不含点）；没有扩展名时返回空串。 */
+    const extensionOf = file => (file.name.includes('.') ? file.name.split('.').pop().toLowerCase() : '');
 
     // CSP 的 style-src 未放开 'unsafe-inline'，HTML 里直接写 style="..." 会被浏览器丢弃。
     // 进度条宽度、评分百分比这类动态数值改用 data-* 承载，再由 JS 经 CSSOM 写入（CSSOM 不受 CSP 限制）。
@@ -743,9 +748,8 @@
         const ticketPending = [];
 
         const ticketValidate = file => {
-            const extension = file.name.includes('.') ? file.name.split('.').pop().toLowerCase() : '';
             if (new TextEncoder().encode(file.name).length > 900) return '文件名超过 900 字节';
-            if (!allowed.has(extension)) return 'Notion 不支持该文件类型';
+            if (!allowed.has(extensionOf(file))) return UNSUPPORTED_HINT;
             if (!file.size) return '不能上传空文件';
             return '';
         };
@@ -1012,9 +1016,8 @@
     const pendingWrite = [];
     const pending = [];
     const validate = file => {
-        const extension = file.name.includes('.') ? file.name.split('.').pop().toLowerCase() : '';
         if (new TextEncoder().encode(file.name).length > 900) return '文件名超过 900 字节';
-        if (!allowed.has(extension)) return 'Notion 不支持该文件类型';
+        if (!allowed.has(extensionOf(file))) return UNSUPPORTED_HINT;
         if (!file.size) return '不能上传空文件';
         if (limit <= 0) return '当前账户无法上传文件';
         if (remaining !== null && remaining <= 0) return '个人空间容量已用完';
@@ -1207,8 +1210,11 @@
         const dialog = document.createElement('dialog');
         dialog.className = 'duplicate-dialog folder-confirm';
         dialog.innerHTML = '<h2>确认上传文件夹</h2><p class="folder-confirm-summary"></p><div class="folder-confirm-toolbar"><label><input type="checkbox" data-check-all checked> 全选</label><span class="folder-confirm-selected"></span></div><div class="folder-confirm-list"></div><div class="duplicate-actions"><button type="button" class="secondary-button" data-choice="cancel">取消</button><button type="button" class="primary-button compact" data-choice="confirm">确认上传</button></div>';
+        // 后缀不支持的先在这里点明，避免用户勾着传完才在队列里一条条报错
+        const unsupportedCount = candidates.filter(item => !allowed.has(extensionOf(item.file))).length;
         dialog.querySelector('.folder-confirm-summary').textContent =
-            `共 ${candidates.length} 个文件、${dirCount} 个文件夹，合计 ${formatBytes(totalBytes)}。取消勾选可跳过不想上传的文件。`;
+            `共 ${candidates.length} 个文件、${dirCount} 个文件夹，合计 ${formatBytes(totalBytes)}。取消勾选可跳过不想上传的文件。`
+            + (unsupportedCount ? `其中 ${unsupportedCount} 个文件类型不支持，${UNSUPPORTED_HINT}。` : '');
 
         // 选中的下标集合，全选开关对全部文件生效（含未逐条列出的部分）
         const selected = new Set(candidates.map((_, index) => index));
@@ -1226,11 +1232,17 @@
         candidates.slice(0, MAX_ROWS).forEach((item, index) => {
             const row = document.createElement('label');
             row.className = 'folder-confirm-row';
-            row.innerHTML = '<input type="checkbox" checked><span class="folder-confirm-path"></span><span class="folder-confirm-size"></span>';
+            row.innerHTML = '<input type="checkbox" checked><span class="folder-confirm-path"></span><span class="folder-confirm-tag"></span><span class="folder-confirm-size"></span>';
             const path = item.relDir ? `${item.relDir}/${item.file.name}` : item.file.name;
             const pathNode = row.querySelector('.folder-confirm-path');
             pathNode.textContent = path;
             pathNode.title = path;
+            // 后缀不支持的逐条标「不支持」，悬停给出压缩包方案，让用户自行决定是否取消勾选
+            if (!allowed.has(extensionOf(item.file))) {
+                const tag = row.querySelector('.folder-confirm-tag');
+                tag.textContent = '不支持';
+                tag.title = UNSUPPORTED_HINT;
+            }
             row.querySelector('.folder-confirm-size').textContent = formatBytes(item.file.size);
             row.querySelector('input').addEventListener('change', event => {
                 if (event.target.checked) selected.add(index);
@@ -1589,7 +1601,12 @@
             if (!error || error.name !== 'AbortError') notify('无法读取该文件夹，请改用拖拽方式上传。', 'error');
         }
     });
-    dropZone.addEventListener('click', event => { if (!event.target.closest('button')) input.click(); });
+    // 只认用户真实点击：browseFolder 里 folderInput.click() 产生的合成点击会冒泡到这里，目标不是 button，
+    // 旧写法会顺手再点一次 #fileInput，弹出的文件窗把文件夹窗顶掉（现象就是「选择文件夹」变成了选文件）
+    dropZone.addEventListener('click', event => {
+        if (!event.isTrusted || event.target.closest('button')) return;
+        input.click();
+    });
     dropZone.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); input.click(); } });
     input.addEventListener('change', () => { addFiles(input.files); input.value = ''; });
     if (folderInput) folderInput.addEventListener('change', () => {

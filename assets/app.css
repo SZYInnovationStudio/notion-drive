@@ -472,6 +472,9 @@ body.drive-shell .site-credit .icp-license, body.drive-shell .site-credit .polic
 .folder-confirm-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: .78rem; border-bottom: 1px solid var(--line); cursor: pointer; }
 .folder-confirm-row:last-child { border-bottom: 0; }
 .folder-confirm-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 后缀不支持的标记：空文本时不占位，避免每行都出现空胶囊 */
+.folder-confirm-tag { flex: none; padding: 1px 7px; border-radius: 999px; color: #8a6100; background: #fdf4e3; font-size: .68rem; font-weight: 650; white-space: nowrap; }
+.folder-confirm-tag:empty { display: none; }
 .folder-confirm-size { color: var(--muted); font-variant-numeric: tabular-nums; }
 .folder-confirm-more { padding: 8px 10px; color: var(--muted); font-size: .76rem; }
 
@@ -841,6 +844,7 @@ tr.file-lost .display-name { text-decoration: line-through; }
     .write-badge-failed { background: #2a1a1c; color: #f0a0a0; border-color: #4a2a2c; }
     .restore-impact { color: #f0a0a0; border-color: #4a2a2c; }
     .folder-kind { background: #1c2c46; color: #7fb0e8; }
+    .folder-confirm-tag { color: #e0b463; background: #3a2f16; }
     /* 提示条 / 工单状态 / 邀请卡等浅色 tint */
     .alert.error { color: #f0a0a0; border-color: #4a2a2c; }
     .alert.success { background: #17301f; border-color: #245138; }

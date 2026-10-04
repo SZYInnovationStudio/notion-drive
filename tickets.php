@@ -217,7 +217,7 @@ if ($ticketId > 0) {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag($ticket === null ? ($isAdmin ? '工单管理' : '我的工单') : '工单详情') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=64"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag($ticket === null ? ($isAdmin ? '工单管理' : '我的工单') : '工单详情') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=65"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
@@ -590,6 +590,6 @@ if ($ticketId > 0) {
         <?php endif; ?>
     </main>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=37" defer></script>
+    <script src="assets/app.js?v=38" defer></script>
 </body>
 </html>

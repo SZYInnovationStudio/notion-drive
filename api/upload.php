@@ -142,11 +142,11 @@ $validateFilename = static function (string $filename, int $size) use ($fail, $s
 
     $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
     if ($extension === '') {
-        $fail('unsupported_type', sprintf('文件 %s 没有扩展名，无法判断类型；Notion 需要可识别的扩展名。', $filename));
+        $fail('unsupported_type', sprintf('文件 %s 没有扩展名，无法判断类型。Notion 不支持该文件，可压缩为 ZIP / RAR 等压缩包后再上传。', $filename));
     }
     if (!in_array($extension, $supported, true)) {
         $fail('unsupported_type', sprintf(
-            '文件类型 .%s 不在 Notion 支持范围内（支持文档、图片、音视频、压缩包及 CAD/3D 等 %d 种扩展名）。',
+            'Notion 不支持 .%s 这种文件类型（支持文档、图片、音视频、压缩包及 CAD/3D 等 %d 种扩展名），可压缩为 ZIP / RAR 等压缩包后再上传。',
             $extension,
             count($supported)
         ), ['extension' => $extension]);

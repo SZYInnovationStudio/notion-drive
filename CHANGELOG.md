@@ -28,6 +28,32 @@
 
 ---
 
+### [2026-10-04 19:42:36] 修复「选择文件夹」弹出文件窗（真因：合成点击冒泡）；不支持的后缀提示改用压缩包方案
+
+- 目的：用户反馈在 Chrome 点「选择文件夹」弹出的却是普通选文件窗。在用户机器上实测定位到真因，**与浏览器无关**：
+  事件日志为 `C:browseFolderButton → C:folderInput → C:fileInput → B:fileInput → B:folderInput`——
+  `#dropZone` 上「点击空白处打开文件选择」的监听（原 L1592）把 `folderInput.click()` **自身冒泡上来的合成点击**
+  也当成用户点击（其 `event.target` 是 `<input>`，`closest('button')` 为空），于是又调了一次 `input.click()`，
+  后弹出的文件窗把文件夹窗顶掉。按钮本身的 `stopPropagation()` 只能拦住该事件向上传播，拦不住它自己派生的新事件。
+  实测证据：`#folderInput.webkitdirectory === true`、`'webkitdirectory' in input === true`、Chrome 154，
+  即 DOM 侧完全正常，问题只出在这个重复点击。同时按用户要求，把不支持的后缀提示补上「可压缩包上传」的替代方案。
+- 验证：`node --check assets/app.js` 退出码 0；`php -l api/upload.php` 无语法错误；
+  版本号一致性：`app.js?v=37` / `app.css?v=64` 残留 **0 处**，新值 `app.js?v=38` = 10 处、`app.css?v=65` = 12 处。
+  部署后在用户 Chrome 中重新加载页面并点击「选择文件夹」，确认弹出的是**文件夹选择窗**（标题/按钮为「选择文件夹」），
+  且只请求一个选择器（无文件窗顶替）。
+- 数据库结构影响：无（纯前端 + 一处提示文案）。
+- 改动明细（行号为改动后当前行号）：
+  - `assets/app.js` L1595-L1600 — `#dropZone` 的 click 监听加 `!event.isTrusted` 守卫：只响应用户真实点击，
+    忽略 `.click()` 派生的合成事件，从根上消除「点选择文件夹却弹文件窗」的重复触发（原 L1592 单行删除）。
+  - `assets/app.js` L14-L18 — 新增 `UNSUPPORTED_HINT` 常量（不支持 + 压缩包方案）与 `extensionOf()` 取扩展名助手。
+  - `assets/app.js` L750-L755 / L1018-L1020 — 工单附件与我的文件两处校验改用 `extensionOf()` + `UNSUPPORTED_HINT`，
+    后缀不支持时明确说「不支持」并给出压缩包上传建议（原提示只有「Notion 不支持该文件类型」）。
+  - `assets/app.js` L1213-L1217、L1240-L1245 — 文件夹确认窗统计并逐条标记「不支持」（悬停提示压缩包方案），
+    让用户在勾选阶段就能看到，而不是传完才逐条报错。
+  - `assets/app.css` L475-L477、L847 — 新增 `.folder-confirm-tag` 样式（`:empty` 时不占位）与暗色模式配色。
+  - `api/upload.php` L143-L153 — 无扩展名与不支持后缀两条服务端提示补上压缩包方案，与前端口径一致。
+  - 12 个页面 `app.js?v=37→38`、`app.css?v=64→65` 全站同步。
+
 ### [2026-10-04 19:22:59] 上传文件夹：新增上传前确认/勾选窗口；修复部分浏览器「选择文件夹」退化成选文件
 
 - 目的：用户反馈两点。其一，上传文件夹应**先弹确认窗口**，列出待上传内容并允许用户**勾选要不要传**，
@@ -39,6 +65,8 @@
   新值 `app.js?v=37` = 10 处、`app.css?v=64` = 12 处；`git diff --stat` 确认 12 个页面仅改版本号（各 2-4 行），
   无整文件重写。**真实交互（确认窗勾选、降级浏览器下选目录）需人工实测。**
 - 数据库结构影响：无（纯前端改动，未新增表/列）。
+- 更正（2026-10-04 19:42）：本条把「选择文件夹退化成选文件」归因为浏览器不支持 `webkitdirectory`，**该判断有误**，
+  实为 `#dropZone` 合成点击冒泡导致的重复触发；已按真因修复，详见上一条记录（`!event.isTrusted` 守卫）。
 - 改动明细（行号为改动后当前行号）：
   - `assets/app.js` L936-L939 — 新增 `dirPickerSupported`（探测 `webkitdirectory`）与 `dirPickerFallback`
     （探测 `showDirectoryPicker`）两个能力标志，供按钮点击与降级分支判断。
