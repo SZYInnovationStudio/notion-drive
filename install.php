@@ -151,6 +151,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 status VARCHAR(20) NOT NULL DEFAULT \'active\',
                 data_lost TINYINT(1) NOT NULL DEFAULT 0,
                 write_attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                overwrite_upload_id BIGINT UNSIGNED NULL DEFAULT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_uploads_user_created (user_id, created_at),

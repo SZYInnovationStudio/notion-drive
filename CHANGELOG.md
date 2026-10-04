@@ -28,6 +28,26 @@
 
 ---
 
+### [2026-10-04 14:13:33] 修复异步写入改动的 4 处缺陷（覆盖上传空窗、非 FPM 不秒回、Windows 暂存删不掉、懒清扫被单条记录中断）
+
+- 目的：对上一版「先落服务器暂存、后台异步写入 Notion」自审后修复以下问题。①**严重**：覆盖同名文件时，改造后是「新文件只入库 writing（还没写进 Notion）、旧文件的 Notion 副本却立刻被归档」，出现「新的没进、旧的已删」的空窗——后台写入最终失败时两代内容都不在 Notion。②中：`jsonResponseThen()` 只 `flush()` 未声明 `Content-Length`，非 FPM（mod_php / 内置服务器）环境下浏览器要等连接关闭（即后台写完）才结束请求，「秒回」在非 FPM 环境完全失效。③中：`process()` 全程持有暂存文件的 `flock` 句柄，而 Windows 无法删除仍被本进程打开的文件，导致 `discard()` 静默失败、暂存文件要等下一次懒清扫才被清掉。④轻：`sweep()` 逐条调用 `process()` 未做隔离，单条记录出错（如数据库异常）会中断对其余掉线记录的接管。
+- 验证：`php -l` 对仓库全部 48 个 `*.php` 执行，结果 `BAD=0 TOTAL=48`；`node --check assets/app.js` 退出码 0。遵守「本机禁止功能 / HTTP 测试」约定，未做 HTTP / 上传验证。逻辑自查（覆盖上传的三条出口）：写入成功 → `finalizeOverwrite()` 归档旧副本并清空标记；写入最终失败或新文件在写入期间被删除 → `rollbackOverwrite()` 把旧文件恢复为 `active`（其副本一直在 Notion，立即可下载）；用户在写入失败后手动删除新文件 → `api/file.php` 的删除分支同样调用 `rollbackOverwrite()`，避免两代文件都从列表消失。
+- 改动明细（行号为改动后当前行号）：
+  - `src/Schema.php` L11 — `CURRENT_VERSION` 22 → 23；L259-L264 — 新增 v23 迁移：`uploads.overwrite_upload_id`（`BIGINT UNSIGNED NULL DEFAULT NULL`），记录被覆盖的旧文件 id。旧库访问即自动补列，无需手工执行。
+  - `install.php` L154 — 全新建库同步补 `overwrite_upload_id` 列。
+  - `api/upload.php` L721-L742 — INSERT 增加 `overwrite_upload_id`（覆盖时写入被覆盖旧文件的 id，否则 NULL）。
+  - `api/upload.php` L763-L768 — 覆盖处理改为**只把旧记录置为 deleted**（从列表移除），不再在此处 `archiveUploadReplicas()`；归档交给队列在新文件写入成功后执行。
+  - `src/Uploads/NotionWriteQueue.php` L453-L479、L481-L498、L500-L511 — 新增 `finalizeOverwrite()`（写入成功后归档旧副本并清空标记）、`rollbackOverwrite()`（写入未成功时把旧文件恢复为 `active`，供失败与删除两条路径复用）、`clearOverwriteMark()`、`findUpload()`。
+  - `src/Uploads/NotionWriteQueue.php` L286（新文件在写入期间被删除）、L302（写入成功）、L528（`markFailed()` 内）— 三处接入上述覆盖处理。
+  - `api/file.php` L364-L370 — 删除「尚未写入存储」的文件时，若该行带 `overwrite_upload_id`，先 `rollbackOverwrite()` 再删暂存文件。
+  - `src/helpers.php` L378-L382 — `jsonResponseThen()` 显式声明 `Content-Length`，浏览器收到完整响应即可结束请求，使非 FPM 环境的「秒回」也能成立（FPM 下仍由 `fastcgi_finish_request()` 断连）。
+  - `src/Uploads/NotionWriteQueue.php` L129-L177 — `process()` 在释放 `flock` 句柄后补调 `discardIfSettled()`：记录已不是待写入状态（成功 / 隔离 / 删除）时再删一次暂存文件，解决 Windows 下删除被占用文件失败的问题；该补删是幂等的。
+  - `src/Uploads/NotionWriteQueue.php` L211-L224 — `sweep()` 逐条 `process()` 包 try/catch，单条出错只记 `Logger::error`，不中断其余记录的接管。
+- 数据库结构影响：`uploads` 新增 `overwrite_upload_id BIGINT UNSIGNED NULL DEFAULT NULL`；`status` 列无需改动。旧库由 `Schema::migrate()` 自动补列（`schema_version` 22 → 23），**无需手工执行，也不会清库**。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+---
+
 ### [2026-10-04 13:50:15] 上传改为「先落服务器暂存、后台异步写入 Notion」，文件秒级可见可用
 
 - 目的：写入 Notion 很慢（大文件要几十秒到数分钟），改造前 `finish` 阶段必须同步写完 Notion 再跑内容审核，用户全程只能盯着进度条。现改为：上传完成后文件先暂存在服务器本地并入库为 `writing`（正在写入存储），浏览器立刻拿到成功响应，文件在「我的文件」中立刻可见，并可**预览、下载、重命名、移动、删除**；Notion 写入与内容审核交给后台队列，写完自动转 `active` 并删除服务器上的暂存文件。同时按用户限制服务器暂存占用（后台可配，默认 1 GB），避免大文件并发上传把磁盘占满。

@@ -8,7 +8,7 @@ use PDO;
 
 final class Schema
 {
-    public const CURRENT_VERSION = 22;
+    public const CURRENT_VERSION = 23;
 
     /** 内置权限组：名称、组容量、单文件上限、是否管理员、等级。首个必须保持为管理员组。 */
     public const BUILTIN_GROUPS = [
@@ -254,6 +254,13 @@ final class Schema
             // 达到上限即置为 write_failed（写入失败）并告警管理员，等用户手动重试
             self::addColumn($pdo, 'uploads', 'write_attempts', 'TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER data_lost');
             self::addIndex($pdo, 'uploads', 'idx_uploads_status_id', '`status`, `id`');
+        }
+
+        if ($version < 23) {
+            // 覆盖上传的延后清理：新文件先入库为 writing，被覆盖的旧文件只从列表移除，
+            // 其 Notion 副本留到新文件写入成功后再归档——否则「新的还没写进 Notion、旧的已从 Notion 删掉」，
+            // 一旦后台写入最终失败，两代内容就都不在 Notion 了。本列记录被覆盖的旧文件 id
+            self::addColumn($pdo, 'uploads', 'overwrite_upload_id', 'BIGINT UNSIGNED NULL DEFAULT NULL AFTER write_attempts');
         }
 
         Database::setConfig('schema_version', (string) self::CURRENT_VERSION);

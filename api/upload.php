@@ -719,8 +719,8 @@ try {
                 }
 
                 $pdo->prepare(
-                    'INSERT INTO uploads (user_id, scope, folder_id, ticket_id, filename, display_name, storage_name, file_size, mime_type, notion_file_upload_id, notion_block_id, status)
-                     VALUES (:user_id, :scope, :folder_id, :ticket_id, :filename, :display_name, :storage_name, :file_size, :mime_type, :notion_file_upload_id, :notion_block_id, :status)'
+                    'INSERT INTO uploads (user_id, scope, folder_id, ticket_id, filename, display_name, storage_name, file_size, mime_type, notion_file_upload_id, notion_block_id, status, overwrite_upload_id)
+                     VALUES (:user_id, :scope, :folder_id, :ticket_id, :filename, :display_name, :storage_name, :file_size, :mime_type, :notion_file_upload_id, :notion_block_id, :status, :overwrite_upload_id)'
                 )->execute([
                     'user_id' => $user['id'],
                     'scope' => $scope,
@@ -735,6 +735,10 @@ try {
                     'notion_file_upload_id' => '',
                     'notion_block_id' => null,
                     'status' => NotionWriteQueue::STATUS_WRITING,
+                    // 覆盖上传：记下被覆盖的旧文件，等本文件写入成功后再归档它的副本（失败则恢复旧文件）
+                    'overwrite_upload_id' => $resolved['handled'] === 'overwrite' && $resolved['duplicate'] !== null
+                        ? (int) $resolved['duplicate']['id']
+                        : null,
                 ]);
                 $uploadId = (int) $pdo->lastInsertId();
 
@@ -756,21 +760,11 @@ try {
 
         $cleanupChunkTokens[$token] = true;
 
-        // 新文件已就位后再清理旧文件，避免上传失败却先删掉旧文件
+        // 覆盖同名旧文件：这里只把它从列表移除，Notion 副本留到新文件写入成功后再归档（见 NotionWriteQueue）。
+        // 若在此处就归档，会出现「新的还没写进 Notion、旧的已从 Notion 删掉」的空窗，写入失败即两代内容都不在 Notion
         if ($resolved['handled'] === 'overwrite' && $resolved['duplicate'] !== null) {
-            $duplicate = $resolved['duplicate'];
-            try {
-                archiveUploadReplicas($duplicate, $user);
-                Database::connection()->prepare("UPDATE uploads SET status = 'deleted' WHERE id = :id")
-                    ->execute(['id' => (int) $duplicate['id']]);
-            } catch (Throwable $exception) {
-                Logger::warning('upload', sprintf(
-                    '新文件 %s 已上传，但清理被覆盖的旧文件（#%d）失败：%s',
-                    $filename,
-                    (int) $duplicate['id'],
-                    $exception->getMessage()
-                ), $context + ['code' => 'overwrite_cleanup_failed', 'old_upload_id' => (int) $duplicate['id']]);
-            }
+            Database::connection()->prepare("UPDATE uploads SET status = 'deleted' WHERE id = :id")
+                ->execute(['id' => (int) $resolved['duplicate']['id']]);
         }
 
         // 重传凭证一次性消费：锚定校验通过且文件已成功落库后，撤销该文件名的重传放行，

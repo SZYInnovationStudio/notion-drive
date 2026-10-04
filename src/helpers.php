@@ -375,7 +375,11 @@ function jsonResponseThen(array $data, callable $after, int $status = 200): neve
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
     header('Connection: close');
-    echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    // 声明长度，浏览器收到完整响应即可结束本次请求，不必等脚本（后台写入）真正跑完才收到 EOF；
+    // 非 FPM 环境没有 fastcgi_finish_request，这一步是「秒回」能否成立的关键
+    $body = (string) json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    header('Content-Length: ' . strlen($body));
+    echo $body;
     finishResponseThen($after);
     exit;
 }

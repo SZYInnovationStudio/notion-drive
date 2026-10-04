@@ -362,6 +362,10 @@ try {
         // 尚未写入存储的文件没有 Notion 副本，删掉服务器上的暂存文件即可；
         // 若后台此刻正在写，其回填 UPDATE 会因状态不符影响 0 行，并把刚写入的副本自行归档
         if ($stagingPending) {
+            // 覆盖上传失败后又把新文件删掉：把被覆盖的旧文件恢复可用，避免两代文件都从列表里消失
+            if ((int) ($file['overwrite_upload_id'] ?? 0) > 0) {
+                NotionWriteQueue::create()->rollbackOverwrite($file);
+            }
             NotionWriteQueue::create()->discard((int) $file['user_id'], $id);
         }
         // 逐个账户归档全部副本；单份失败只记日志并告警，不影响删除结果

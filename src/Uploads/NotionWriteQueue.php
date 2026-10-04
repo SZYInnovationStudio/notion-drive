@@ -158,6 +158,22 @@ final class NotionWriteQueue
             flock($lock, LOCK_UN);
             fclose($lock);
         }
+
+        // Windows 上无法删除仍被本进程打开的文件，而 write() 内部删暂存时锁句柄还没释放；
+        // 这里释放后再补一次（已删则无副作用），避免暂存文件要等下一次懒清扫才被清掉
+        $this->discardIfSettled($userId, $uploadId);
+    }
+
+    /** 记录已不再是「待写入」状态（已写入成功 / 已隔离 / 已删除）时删除暂存文件。 */
+    private function discardIfSettled(int $userId, int $uploadId): void
+    {
+        $upload = $this->findUpload($uploadId);
+        if ($upload !== null
+            && in_array((string) $upload['status'], [self::STATUS_WRITING, self::STATUS_FAILED], true)) {
+            return;
+        }
+
+        $this->discard($userId, $uploadId);
     }
 
     /** 手动重试：把「写入失败」的记录重新置为待写入并清零尝试次数；返回是否受理。 */
@@ -196,7 +212,15 @@ final class NotionWriteQueue
             if (time() >= $deadline) {
                 break;
             }
-            $this->process((int) $row['id']);
+            try {
+                $this->process((int) $row['id']);
+            } catch (Throwable $exception) {
+                // 单条记录出错不应中断对其余记录的接管
+                Logger::error('queue', '懒清扫处理待写入记录时出错。', [
+                    'upload_id' => (int) $row['id'],
+                    'error'     => $exception->getMessage(),
+                ]);
+            }
         }
 
         $this->discardOrphans();
@@ -258,6 +282,8 @@ final class NotionWriteQueue
             if (!$committed) {
                 archiveWrittenReplicas($owner, $stored['replicas']);
                 Logger::info('queue', '文件在写入存储期间被删除，已归档刚写入的副本。', ['upload_id' => $uploadId]);
+                // 覆盖上传的新文件被删掉：把被覆盖的旧文件恢复可用，否则两代文件都会从用户视野里消失
+                $this->rollbackOverwrite($upload);
                 $this->discard($userId, $uploadId);
 
                 return;
@@ -271,6 +297,9 @@ final class NotionWriteQueue
             'user_id'   => $userId,
             'attempts'  => $attempts,
         ]);
+
+        // 新文件已确认写入 Notion，此时才归档被覆盖旧文件的副本（失败则恢复旧文件，见 markFailed）
+        $this->finalizeOverwrite($upload);
 
         // 内容审核放在写入完成之后：命中违规时把文件置为隔离（quarantined），与改造前「先存储后隔离」的语义一致
         $this->moderate($upload, $owner, $filename, $mime, $size, $stagingPath);
@@ -417,6 +446,72 @@ final class NotionWriteQueue
         }
     }
 
+    /**
+     * 覆盖上传成功：归档被覆盖旧文件的 Notion 副本，并清空本行的覆盖标记。
+     * 旧行此时已是 deleted（不在「我的文件」里），但它的 upload_replicas 仍是 active，据此逐个归档。
+     */
+    private function finalizeOverwrite(array $upload): void
+    {
+        $uploadId = (int) $upload['id'];
+        $previousId = (int) ($upload['overwrite_upload_id'] ?? 0);
+        if ($previousId <= 0) {
+            return;
+        }
+
+        try {
+            $previous = $this->findUpload($previousId);
+            if ($previous !== null) {
+                archiveUploadReplicas($previous, $this->owner((int) $previous['user_id']));
+            }
+        } catch (Throwable $exception) {
+            Logger::warning('queue', '清理被覆盖旧文件的 Notion 副本失败，旧副本可能残留。', [
+                'upload_id'          => $uploadId,
+                'previous_upload_id' => $previousId,
+                'reason'             => $exception->getMessage(),
+            ]);
+        }
+
+        $this->clearOverwriteMark($uploadId);
+    }
+
+    /**
+     * 覆盖上传未成功（写入失败，或新文件在写入期间被删除）：把被覆盖的旧文件恢复为可用。
+     * 旧文件的 Notion 副本此前一直被保留，因此恢复后立即可下载，用户不会两代内容都拿不到。
+     */
+    public function rollbackOverwrite(array $upload): void
+    {
+        $uploadId = (int) $upload['id'];
+        $previousId = (int) ($upload['overwrite_upload_id'] ?? 0);
+        if ($previousId <= 0) {
+            return;
+        }
+
+        Database::connection()->prepare(
+            "UPDATE uploads SET status = 'active' WHERE id = :id AND status = 'deleted'"
+        )->execute(['id' => $previousId]);
+        $this->clearOverwriteMark($uploadId);
+
+        Logger::info('queue', '覆盖上传未成功，已把被覆盖的旧文件恢复为可用。', [
+            'upload_id'          => $uploadId,
+            'previous_upload_id' => $previousId,
+        ]);
+    }
+
+    private function clearOverwriteMark(int $uploadId): void
+    {
+        Database::connection()->prepare('UPDATE uploads SET overwrite_upload_id = NULL WHERE id = :id')
+            ->execute(['id' => $uploadId]);
+    }
+
+    private function findUpload(int $uploadId): ?array
+    {
+        $statement = Database::connection()->prepare('SELECT * FROM uploads WHERE id = :id LIMIT 1');
+        $statement->execute(['id' => $uploadId]);
+        $row = $statement->fetch();
+
+        return is_array($row) ? $row : null;
+    }
+
     /** 置为「写入失败」并告警管理员；暂存文件保留，用户可手动重试。 */
     private function markFailed(array $upload, string $reason): void
     {
@@ -428,6 +523,9 @@ final class NotionWriteQueue
             'id'      => $uploadId,
             'writing' => self::STATUS_WRITING,
         ]);
+
+        // 覆盖上传失败：把被覆盖的旧文件恢复可用，否则用户既拿不到新文件、旧文件也不在列表里
+        $this->rollbackOverwrite($upload);
 
         Logger::error('queue', '写入 Notion 最终失败，文件已标记为写入失败。', ['upload_id' => $uploadId, 'reason' => $reason]);
         raiseAdminAlert('error', sprintf(
