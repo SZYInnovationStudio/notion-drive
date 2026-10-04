@@ -28,6 +28,24 @@
 
 ---
 
+### [2026-10-04 21:55:35] 修复直链地址被错加 /api 前缀（siteUrl 未识别入口脚本目录）
+
+- 目的：用户在「我的文件 → 直链 → 复制」拿到的地址是 `https://…/api/s.php?t=…`，访问 404。
+  根因：`siteUrl()` 的回退分支用 `dirname($_SERVER['SCRIPT_NAME'])` 推断部署基址。请求由
+  `api/share.php` 处理时 `SCRIPT_NAME` 为 `/api/share.php`，其目录 `/api` 被误当成应用基址，
+  于是 `linkUrl()`（`siteUrl() . '/s.php'`）生成 `…/api/s.php`——而 `s.php` 实际位于站点根。
+  根目录脚本（`dashboard.php`、`s.php`）的 `SCRIPT_NAME` 目录为 `/`，不受影响，所以此前从根脚本
+  自测（只读探针、直链访问）均正常，只有 `api/share.php` 返回的 URL 出错，具有强迷惑性。
+- 验证：本地字符串用例覆盖三种入口——`/api/share.php` → 空基址、`/dashboard.php` → 空基址、
+  真实子目录部署 `/nd/api/share.php` → `/nd`；`php -l` 通过。上传生产并清 OPcache 后在 Chrome 实测
+  「我的文件 → 直链 → 复制」，剪贴板得到 `https://notiondrive.szystudio.cn/s.php?t=…`（无 /api）；
+  `curl -r 0-1` 对该地址返回 `206 image/png`。
+- 改动明细：
+  - `src/helpers.php` L2251-L2271 — `siteUrl()` 回退分支改为以项目根（`dirname(__DIR__)`）为基准算基址：
+    用 `SCRIPT_FILENAME` 去掉相对项目根的路径得到应用相对路径，再从 `SCRIPT_NAME` 尾部裁掉它，
+    得到真正的部署基址，不再依赖「当前脚本所在目录」。配置了 `site_url` 时仍优先用配置，行为不变。
+- 数据库：无结构改动。
+
 ### [2026-10-04 21:31:46] 新增文件公开直链（服务器中转代理）与「直链包」商业化
 
 - 目的：直链是免登录即可下载 / 预览的公开地址，用服务器中转代理（非跳转 Notion 签名直链），

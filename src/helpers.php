@@ -2250,13 +2250,24 @@ function siteUrl(): string
 
     $scheme = requestIsHttps() ? 'https://' : 'http://';
 
-    // 应用可能部署在子目录，需要把脚本所在目录一并带上
-    $scriptDir = str_replace('\\', '/', dirname((string) ($_SERVER['SCRIPT_NAME'] ?? '/')));
-    if ($scriptDir === '/' || $scriptDir === '.') {
-        $scriptDir = '';
+    // 应用可能部署在子目录：基址 = 入口脚本 URL 去掉「脚本相对项目根的路径」。
+    // 不能用 dirname(SCRIPT_NAME)：入口脚本既有根目录的（dashboard.php、s.php），也有子目录的
+    // （api/share.php），直接取脚本所在目录会把 /api 之类前缀带进直链与回调地址。
+    $baseDir = '';
+    $scriptName = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? ''));
+    $scriptFile = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_FILENAME'] ?? ''));
+    $appRoot = str_replace('\\', '/', dirname(__DIR__)); // 本文件位于 src/，其上一级即项目根
+    if ($scriptName !== '' && $scriptFile !== '' && str_starts_with($scriptFile, $appRoot . '/')) {
+        $relative = substr($scriptFile, strlen($appRoot)); // 例如 /api/share.php
+        if (str_ends_with($scriptName, $relative)) {
+            $baseDir = substr($scriptName, 0, strlen($scriptName) - strlen($relative));
+        }
+    }
+    if ($baseDir === '/') {
+        $baseDir = '';
     }
 
-    return $scheme . $host . $scriptDir;
+    return $scheme . $host . $baseDir;
 }
 
 function absoluteUrl(string $path): string
