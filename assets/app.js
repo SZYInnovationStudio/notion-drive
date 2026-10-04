@@ -930,6 +930,8 @@
     let held = 0;
     // 文件已提交、等待后台写入 Notion 的条目（每条一个进度条）与最终写入失败数
     let writeFailed = 0;
+    // 通过「在线上传」直传、提交时即已写入 Notion 的文件数（不计入待写入轮询）
+    let onlineDone = 0;
     const pendingWrite = [];
     const pending = [];
     const validate = file => {
@@ -1086,7 +1088,8 @@
         // 服务器暂存额度已满：询问是否改为「在线上传」（文件直传 Notion、不经服务器暂存）
         if (!started.ok && started.data.code === 'server_disk_exceeded') {
             const goOnline = await askConfirm(`${started.data.message || '服务器暂存空间已满，无可用额度。'}\n\n是否改为「在线上传 Notion」？上传不经服务器暂存，但无法进行自动内容审核。`);
-            if (!goOnline) return fail(failureText(started.status, started.data), false);
+            // 拒绝或额度随后释放：保留重试按钮，用户可稍后再试（额度可能已恢复）
+            if (!goOnline) return fail(failureText(started.status, started.data));
             status.textContent = '正在准备在线上传';
             try {
                 started = await controlRequest(startFields({ direct: '1' }));
@@ -1100,8 +1103,8 @@
                 held += 1;
                 return fail(failureText(started.status, started.data), false);
             }
-            // 服务器额度不足 / 在线上传不可用：确定性拒绝，重试也不会通过
-            if (['server_disk_exceeded', 'direct_not_allowed', 'direct_unavailable'].includes(started.data.code)) {
+            // 在线上传不可用：确定性拒绝，重试也不会通过
+            if (['direct_not_allowed', 'direct_unavailable'].includes(started.data.code)) {
                 return fail(failureText(started.status, started.data), false);
             }
             return fail(failureText(started.status, started.data));
@@ -1155,6 +1158,7 @@
         uploaded += 1;
         // 在线上传：finish 时已直接写入并落库（active），无需再轮询写入进度
         if (finished.data.writing === false) {
+            onlineDone += 1;
             bar.value = 100;
             status.textContent = '已在线上传完成';
             item.classList.add('complete');
@@ -1249,12 +1253,17 @@
 
         if (uploaded > 0) {
             const extras = [];
+            if (onlineDone) extras.push(`${onlineDone} 个文件通过「在线上传」直接写入 Notion`);
             if (overwritten) extras.push(`覆盖 ${overwritten} 个同名文件`);
             if (renamed) extras.push(`自动编号 ${renamed} 个同名文件`);
             if (held) extras.push(`${held} 个文件未通过内容审核，已暂停使用（首页可查看申诉号）`);
             if (writeFailed) extras.push(`${writeFailed} 个文件写入存储失败，可在列表中点击「重试写入」`);
             const suffix = extras.length ? `（${extras.join('，')}）` : '';
-            window.sessionStorage.setItem('uploadNotice', `上传成功：已提交 ${uploaded} 个文件，正在写入存储，完成后自动转为 Notion 副本。${suffix}`);
+            // 全部为在线上传时已同步写完，不再说「正在写入存储」，避免与事实不符
+            const headline = uploaded - onlineDone > 0
+                ? `已提交 ${uploaded} 个文件，正在写入存储，完成后自动转为 Notion 副本。`
+                : `已在线上传 Notion 完成 ${uploaded} 个文件。`;
+            window.sessionStorage.setItem('uploadNotice', `上传成功：${headline}${suffix}`);
             // 新文件按时间倒序排在第一页，若停在后面的页码会看不到刚上传的文件，因此回到第一页
             const url = new URL(window.location.href);
             url.searchParams.delete('page');

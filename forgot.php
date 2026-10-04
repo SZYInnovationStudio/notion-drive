@@ -110,7 +110,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $mailReady) {
         </section>
     </main>
     <?= siteCreditHtml() ?>
-    <script src="assets/app.js?v=33" defer></script>
+    <script src="assets/app.js?v=34" defer></script>
     <?php if ($mailReady && !$done): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>
 </html>
