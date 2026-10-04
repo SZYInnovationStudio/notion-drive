@@ -351,6 +351,6 @@ $statusLabels = ['' => '全部状态', 'pending' => '待支付', 'paid' => '已�
     </main>
     <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=34" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <script src="assets/app.js?v=35" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body>
 </html>

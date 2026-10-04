@@ -184,6 +184,30 @@ final class TicketService
 
         $pdo = Database::connection();
 
+        // 防重复提交：提交工单时若响应偏慢，用户连点会建出多张内容完全相同的工单。
+        // 同用户 + 同类别 + 同标题 + 同首条内容，且创建于最近 60 秒内，视为同一次提交的重复请求，
+        // 直接复用已建工单（幂等），不再新建。
+        $duplicateStatement = $pdo->prepare(
+            'SELECT t.id FROM tickets t
+              JOIN ticket_messages m ON m.ticket_id = t.id
+             WHERE t.user_id = :user_id AND t.category = :category AND t.subject = :subject
+               AND t.created_at >= DATE_SUB(NOW(), INTERVAL 60 SECOND)
+               AND m.author_role = :author_role AND m.body = :body
+               AND m.id = (SELECT MIN(m2.id) FROM ticket_messages m2 WHERE m2.ticket_id = t.id)
+             ORDER BY t.id DESC LIMIT 1'
+        );
+        $duplicateStatement->execute([
+            'user_id'     => $userId,
+            'category'    => $category,
+            'subject'     => mb_substr($subject, 0, self::MAX_SUBJECT_LENGTH),
+            'author_role' => self::ROLE_USER,
+            'body'        => mb_substr($body, 0, self::MAX_BODY_LENGTH),
+        ]);
+        $existingId = $duplicateStatement->fetchColumn();
+        if ($existingId !== false && $existingId !== null) {
+            return (int) $existingId;
+        }
+
         for ($attempt = 0; $attempt < 5; $attempt++) {
             $ticketNo = self::generateTicketNo();
             try {

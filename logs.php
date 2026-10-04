@@ -122,5 +122,5 @@ $levelLabels = ['ALL' => '全部级别', 'ERROR' => '仅 ERROR', 'WARNING' => '�
         <?php endif; ?>
     </main>
     <?= siteCreditHtml() ?>
-    <div id="toast" class="toast"></div><script src="assets/app.js?v=34" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <div id="toast" class="toast"></div><script src="assets/app.js?v=35" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body></html>

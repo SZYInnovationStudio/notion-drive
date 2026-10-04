@@ -419,6 +419,43 @@ function finishResponseThen(callable $after): void
     }
 }
 
+/**
+ * 把耗时任务（如 SMTP 发信）推迟到响应发给浏览器之后再执行，用户不必干等。
+ * 与 finishResponseThen 的区别：本函数在**脚本结束时**（shutdown）才断连并执行，
+ * 因此调用方在这之后仍可继续设置响应头（如提交成功后 `header('Location: ...')` 跳转），不会破坏响应。
+ * 非 FPM 环境没有 fastcgi_finish_request，退化为请求结束时执行，与改造前行为一致。
+ */
+function deferAfterResponse(callable $task): void
+{
+    /** @var list<callable> $queue */
+    static $queue = [];
+    static $registered = false;
+
+    $queue[] = $task;
+    if ($registered) {
+        return;
+    }
+    $registered = true;
+
+    register_shutdown_function(static function () use (&$queue): void {
+        if ($queue === []) {
+            return;
+        }
+        $tasks = $queue;
+        $queue = [];
+        // 复用 finishResponseThen：FPM 下先把已生成的响应（含 Location 头）发给浏览器，再跑后台任务
+        finishResponseThen(static function () use ($tasks): void {
+            foreach ($tasks as $task) {
+                try {
+                    $task();
+                } catch (Throwable $exception) {
+                    Logger::warning('alert', '响应后置任务执行失败。', ['reason' => $exception->getMessage()]);
+                }
+            }
+        });
+    });
+}
+
 function appConfig(): array
 {
     $config = require dirname(__DIR__) . '/config/database.php';
@@ -1527,9 +1564,12 @@ function raiseAdminAlert(string $level, string $message, array $context = []): v
         Logger::warning('alert', '写入后台告警失败。', ['reason' => $exception->getMessage()]);
     }
 
-    // 只在新告警时发邮件，避免重复提醒；同一请求内相同内容也只发一次
+    // 只在新告警时发邮件，避免重复提醒；同一请求内相同内容也只发一次。
+    // 发信走 SMTP 可达数秒，推迟到响应发出后再发，避免用户提交工单/删除文件等操作时干等
     if ($inserted) {
-        sendAdminAlertMail($level, $message, $context);
+        deferAfterResponse(static function () use ($level, $message, $context): void {
+            sendAdminAlertMail($level, $message, $context);
+        });
     }
 
     // 告警保留期：已读告警保留 30 天、全部告警保留 180 天，避免表无限增长（懒清理，无 cron）

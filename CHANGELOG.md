@@ -28,6 +28,36 @@
 
 ---
 
+### [2026-10-04 18:23:11] 修复工单提交卡顿与连点重复建单
+
+- 目的：用户反馈「工单提交时卡顿，如果多按，会多个」。排查出两个独立根因：
+  ①**卡顿**：`TicketService::openTicket()` 在返回响应前同步调用 `raiseAdminAlert()`，后者经
+  `sendAdminAlertMail()` 用 SMTP **当场发信**给全部管理员（多收件人时多次往返），用户必须等发信结束才跳转；
+  ②**重复建单**：工单表单是普通 POST，前端提交监听只在按钮带 `data-confirm` 时才拦截，且无任何防重；
+  卡顿期间连点会各自独立 INSERT（`generateTicketNo()` 重试循环保证都能成功），于是出现多张相同工单。
+- 验证：`php -l` 对 12 个改动/受影响 PHP 文件执行 `bad=0`；`node --check assets/app.js` 退出码 0。
+  在生产服务器用只读探针实跑新增去重 SQL（参数取不可能命中的值）：`sql_ok=1 result=false`
+  （证明列名/语法正确、无匹配时不误判），`tickets_total=16`、`tickets_last60s=0`；探针已删除、无残留。
+  另用探针实测「`register_shutdown_function` + `fastcgi_finish_request()`」能否提前断连：
+  响应体声明 `Content-Length: 2` 后在 shutdown 内睡 3 秒，`curl` 实测 `time_total=0.491803s`，
+  证明该机制确实能在脚本结束阶段先把响应发给浏览器再跑后台任务（这是本改动能「秒回」的前提）。
+  生产端实际「提交不再卡顿、连点只建一单」需人工点一次工单提交确认。
+- 数据库结构影响：无（去重只做 SELECT，不新增表/列/索引）。
+- 改动明细（行号为改动后当前行号）：
+  - `src/helpers.php` L422-L457 — 新增 `deferAfterResponse()`：把耗时任务排到 `register_shutdown_function`
+    里，在脚本结束时先 `finishResponseThen()`（FPM 下 `fastcgi_finish_request` 先断连）再执行。
+    与 `finishResponseThen` 的关键区别是**在脚本结束时才断连**，因此调用方之后仍可 `header('Location: ...')` 跳转。
+  - `src/helpers.php` L1567-L1573 — `raiseAdminAlert()` 中 `sendAdminAlertMail()` 改为经 `deferAfterResponse()`
+    推迟执行；告警落库（`admin_alerts`）仍在响应前完成，语义与邮件去重行为不变。
+  - `src/Tickets/TicketService.php` L187-L209 — `openTicket()` 在 INSERT 前新增幂等去重：同用户 + 同类别 +
+    同标题 + 同首条留言内容、且创建于最近 60 秒内，直接返回既有工单 id 而不新建。
+  - `assets/app.js` L614-L634 — submit 委托新增 `submitLocked` 防重锁：拦截同一表单的第二次提交；
+    只拦截后续提交、**不禁用按钮**，避免带 `name/value` 的提交按钮因 `disabled` 丢失取值；
+    二次确认通过的路径（`confirmPassed`）与无需确认的表单都会在上锁后放行首次提交。
+  - 资源版本号：因改动 `assets/app.js`，全局 `app.js?v=34 → ?v=35`（10 页：`account.php` L385、
+    `admin.php` L1901、`admin_orders.php` L354、`dashboard.php` L407、`forgot.php` L113、`index.php` L88、
+    `logs.php` L125、`pay.php` L257、`register.php` L185、`tickets.php` L593）；`app.css` 未动，保持 `?v=62`。
+
 ### [2026-10-04 17:09:43] 移除 PHP 8.5 已弃用的 curl_close() / curl_share_close() 调用
 
 - 目的：生产日志被大量 `Deprecated: Function curl_close() is deprecated since 8.5` 与

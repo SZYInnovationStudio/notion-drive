@@ -404,7 +404,7 @@ $premiumNotice = premiumNotice($user);
         </div>
     </div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=34" defer></script>
+    <script src="assets/app.js?v=35" defer></script>
 </body>
 </html>
 <?php

@@ -613,13 +613,25 @@
     // 「删除」时，点保存会被误套上删除按钮的确认，甚至以删除动作提交。
     document.addEventListener('submit', async event => {
         const form = event.target;
+        // 防重复提交：服务端处理偏慢时用户连点会重复提交（例如连开多张工单），锁住后只放行第一次。
+        // 只拦截后续提交、不禁用按钮，避免带 name/value 的提交按钮因 disabled 而丢失取值。
+        if (form.dataset.submitLocked === '1') {
+            event.preventDefault();
+            return;
+        }
         if (form.dataset.confirmPassed === '1') {
+            // 二次确认已通过，本次是真正提交：上锁后放行
             delete form.dataset.confirmPassed;
+            form.dataset.submitLocked = '1';
             return;
         }
         const trigger = event.submitter
             || form.querySelector('button:not([type="button"]):not([type="reset"]), input[type="submit"]');
-        if (!trigger || !trigger.matches('[data-confirm]')) return;
+        if (!trigger || !trigger.matches('[data-confirm]')) {
+            // 无需二次确认的表单：本次提交直接放行，上锁防止连点重复提交
+            form.dataset.submitLocked = '1';
+            return;
+        }
         event.preventDefault();
         if (document.querySelector('.confirm-overlay')) return;
         if (!(await askConfirm(trigger.dataset.confirm))) return;
