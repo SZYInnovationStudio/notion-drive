@@ -37,9 +37,12 @@
   `pay.php` 退化为结算入口。
 - 验证：`php -l` 全部改动文件无语法错误（pricing/pay/admin_orders/admin/helpers/dashboard/account/tickets）；
   版本号一致性：`app.js?v=40` = 11 处、`app.css?v=67` = 14 处，无残留旧版本号。
-  **迁移与线上实测待部署后执行**：v25 迁移建 `share_links` 表与新增列；无痕窗口验证
-  pricing.php 下单 → pay.php 收银台 → 返回开通；后台「直链分享」设置与人工发放直链包；
-  公开直链 `s.php?t=token` 在未登录状态下可下载 / 预览，撤销后立即失效。
+  部署后经只读探针（已删）实测生产：`opcache_reset()` 返回 true、OPcache 已启用；
+  `schema_version=25`，`share_links` 表与 `users.share_links_quota`、`orders.product_type`、
+  `orders.product_meta` 均存在；config 预置 `share_enabled=0`、`share_default_days=7`、
+  `share_packs` 为 3 档（50/100/200，price 空、enabled=1）。PHP 8.5.10。
+  **浏览器端交互（pricing.php 下单 → pay.php 收银台 → 返回开通、后台直链分享设置与人工发放、
+  公开直链 `s.php?t=token` 未登录可下载/预览且撤销后立即失效）仍需人工在无痕窗口实测。**
 - 数据库结构影响：`Schema::CURRENT_VERSION` 24 → 25。新增表 `share_links`；
   `users` 新增列 `share_links_quota INT NOT NULL DEFAULT 0`；
   `orders` 新增列 `product_type VARCHAR(20) NOT NULL DEFAULT 'premium'`、
