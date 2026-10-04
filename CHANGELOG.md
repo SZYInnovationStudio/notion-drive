@@ -28,6 +28,29 @@
 
 ---
 
+### [2026-10-04 11:51:40] 新增 .user.ini 提高 PHP 上传限制，缓解大文件上传过慢
+
+- 目的：用户反馈上传文件很慢。查明上传是「浏览器逐块串行提交」（`assets/app.js` L755-L760 的 `while (index < total)` 依次 `await sendChunk`），单块大小由 `uploadChunkSizeBytes()` 取「后台配置的分块大小」与 `upload_max_filesize` / `post_max_size` 的较小值（`src/helpers.php` L553-L568）。服务器沿用 PHP 默认限制（常见 2M / 8M）时单块被压到 2 MB 以下，1 GB 文件要串行发出 500 多个请求，耗时被请求往返放大。故新增 `.user.ini` 提高限制，使后台设置的分块大小不再被 ini 收敛。
+- 验证：本改动无 PHP 逻辑变更（新增 ini 与文档），未做 `php -l`。核对 `.htaccess` L13-L15 已有 `<FilesMatch "^\."> Require all denied`，`.user.ini` 不会被外部读取。遵守「本机禁止功能 / HTTP 测试」约定，未做 HTTP 验证；`upload_max_filesize` 实际生效值可在后台「上传与容量」面板（`admin.php` L1588）查看。备注：PHP 内置服务器与 Apache mod_php 不读取 `.user.ini`，届时后台面板仍显示旧值，需改服务器 `php.ini`。
+- 改动明细（行号为改动后当前行号）：
+  - `.user.ini` L1-L12 — 新增：`upload_max_filesize = 5120M`、`post_max_size = 5120M`、`max_execution_time = 1800`、`max_input_time = 1800`、`memory_limit = 256M`，取值与 README「部署」示例一致；改动后需等 `user_ini.cache_ttl`（默认 300 秒）到期或重启 PHP 才生效。
+  - `README.md` L51 — 「部署」第 3 步补充：说明仓库根目录已附带 `.user.ini`、哪些 SAPI 会读取，并提示后台分块大小默认 10 MB 可按需调大。
+- 数据库结构影响：**无**（仅 PHP 运行配置与文档）。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+---
+
+### [2026-10-04 11:51:23] 工单对话署名统一为「身份 · 用户名 · 时间」
+
+- 目的：工单对话里管理员消息只显示「管理员」+ 时间，看不出是哪位管理员回复的；用户消息则只显示用户名，双方格式不一致。统一为「身份 · 用户名 · 时间」，其中管理员的用户名取自 `ticket_messages.author_id` 关联的 `users.username`（`src/Tickets/TicketService.php` L637-L649 的 `messages()` 已 `LEFT JOIN users`，无需改查询）。
+- 验证：`php -l tickets.php` → `No syntax errors detected`（退出码 0）。遵守「本机禁止功能 / HTTP 测试」约定，未做 HTTP 验证。无 CSS / JS 改动，故未调整资源版本号。
+- 改动明细（行号为改动后当前行号）：
+  - `tickets.php` L441-L449 — 消息头由「管理员消息只显示『管理员』、用户消息只显示用户名」改为统一输出 `管理员|用户 · 用户名 · Y-m-d H:i`；用户名缺失（作者已删除）时回退为身份标签。
+- 数据库结构影响：**无**（复用既有 `ticket_messages.author_id` → `users.username` 关联）。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+---
+
 ### [2026-10-04 11:27:52] 修复移动文件报「Unexpected token '<'」及非 JSON 响应的异常提示
 
 - 目的：用户反馈点击文件「移动」后 toast 报 `Unexpected token '<', "<html> <h"... is not valid JSON`。根因是前后端参数契约不一致：`assets/app.js` 的文件操作分支用通用 `body = new URLSearchParams({ id, action })` 提交，`move` 分支只补了 `folder_id`，而 `api/folder.php` 的 `move_file` 分支读的是 `$_POST['file_id']`，导致 `$fileId` 恒为 `0`，恒命中「文件不存在或无权访问」返回 **404 JSON**；部署服务器又把 PHP 的 4xx/5xx 响应体替换成 HTML 错误页（形如 `<html>\r\n<head>...`），前端 `response.json()` 直接抛 `Unexpected token '<'`。①修正前端字段名：`move` 分支删除通用 `id`、改发 `file_id`；②新增 `readJson()` 统一解析响应，服务端返回非 JSON（HTML 错误页 / 网关页）时转成带 HTTP 状态码的可读提示，避免用户再看到无从理解的报错。

@@ -439,9 +439,14 @@ if ($ticketId > 0) {
 
             <div class="ticket-thread">
                 <?php foreach ($messages as $message): ?>
-                <?php $fromAdmin = (string) $message['author_role'] === TicketService::ROLE_ADMIN; ?>
+                <?php
+                    $fromAdmin = (string) $message['author_role'] === TicketService::ROLE_ADMIN;
+                    // 署名统一为「身份 · 用户名 · 时间」：管理员消息此前只显示「管理员」，看不出具体是哪位
+                    $roleLabel = $fromAdmin ? '管理员' : '用户';
+                    $authorName = (string) ($message['username'] ?? '');
+                ?>
                 <div class="ticket-msg <?= $fromAdmin ? 'from-admin' : 'from-user' ?>">
-                    <div class="ticket-msg-meta"><?= $fromAdmin ? '管理员' : e((string) ($message['username'] ?? '用户')) ?> · <?= e(date('Y-m-d H:i', (int) strtotime((string) $message['created_at']))) ?></div>
+                    <div class="ticket-msg-meta"><?= $roleLabel ?> · <?= e($authorName !== '' ? $authorName : $roleLabel) ?> · <?= e(date('Y-m-d H:i', (int) strtotime((string) $message['created_at']))) ?></div>
                     <div class="ticket-msg-body"><?= nl2br(e((string) $message['body'])) ?></div>
                 </div>
                 <?php endforeach; ?>
