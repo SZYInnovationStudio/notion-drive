@@ -28,6 +28,25 @@
 
 ---
 
+### [2026-10-04 16:55:00] 修复管理员/高级用户仍被「官方账户仅对高级用户开放」拦下的根因：部分路径加载用户时缺少 group_is_admin
+
+- 目的：上一版（见下条 16:11:34）给 `uploadBlockedReason()` 加了 `isAdmin()` 例外后，生产上管理员 `beibing` 上传**仍然**失败，
+  日志稳定复现 `[queue] 写入 Notion 失败，准备重试 … reason=官方账户仅对高级用户开放…`，且次数×3 后落为写入失败。
+  实测定位到真正的根因：`group_is_admin` 并非 `users` 表字段，而是 `groups.is_admin` 的 JOIN 别名
+  （见 `Auth.php` L21、`helpers.php` L2342/L2355 中的 `g.is_admin AS group_is_admin`）。
+  写入队列 `NotionWriteQueue::owner()` 与空间巡检 `SpacePatrol::findUser()` 用的是裸 `SELECT * FROM users`，拿不到该键，
+  导致 `isAdmin()` 恒为 `false`；又因 `isPremiumUser()` 首行即 `if (isAdmin($user)) return true;`，
+  管理员与高级身份被**同时**误判掉 → `uploadBlockedReason()` 返回「仅对高级用户开放」、`uploadTargets()` 返回空。
+  生产实测：同一用户 `findUserById()` 路径 `isAdmin=1/targets=2/blocked=空`，而 `SELECT * FROM users` 路径
+  `group_is_admin=NO/isAdmin=0/isPremium=0/targets=0/blocked=官方账户仅对高级用户开放…`，与线上报错逐字吻合。
+- 验证：`php -l` 对两个改动文件执行均为 `No syntax errors detected`。
+  生产服务器经 SSH 实测两条加载路径的差异（见上），确认根因与修复方向；
+  两处改为复用带 JOIN 的 `findUserById()`（不改 SQL 语义，仅补上缺失的组管理员标记）。
+- 数据库结构影响：无（仅查询方式变更）。
+- 改动明细（行号为改动后当前行号）：
+  - `src/Uploads/NotionWriteQueue.php` L643-L654 — `owner()` 改用 `findUserById($userId)`，确保返回的行带 `group_is_admin`。
+  - `src/Space/SpacePatrol.php` L376-L386 — `findUser()` 改用 `\findUserById($userId)`，同一原因（该行会传入 `uploadTargets()`）。
+
 ### [2026-10-04 16:11:34] 官方账户池不再要求先绑定自有账户；修正误导性报错与失败落库崩溃
 
 - 目的：生产日志显示官方账户用户上传失败并提示「当前账号尚未完成 Notion 账户绑定，请先到「账户管理」中绑定后再上传。」

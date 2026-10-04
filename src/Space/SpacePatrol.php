@@ -379,10 +379,9 @@ final class SpacePatrol
         if ($userId <= 0) {
             return null;
         }
-        $statement = Database::connection()->prepare('SELECT * FROM users WHERE id = :id LIMIT 1');
-        $statement->execute(['id' => $userId]);
-        $row = $statement->fetch();
 
-        return is_array($row) ? $row : null;
+        // 带上权限组的管理员标记：uploadTargets() 内部要按 isAdmin() 判断官方池可用性，
+        // 直接 SELECT * FROM users 缺少 group_is_admin，会把管理员误判为受限用户
+        return \findUserById($userId);
     }
 }

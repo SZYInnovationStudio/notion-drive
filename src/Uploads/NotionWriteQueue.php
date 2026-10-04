@@ -642,13 +642,14 @@ final class NotionWriteQueue
 
     private function owner(int $userId): array
     {
-        $statement = Database::connection()->prepare('SELECT * FROM users WHERE id = :id LIMIT 1');
-        $statement->execute(['id' => $userId]);
-        $row = $statement->fetch();
-        if (!is_array($row)) {
+        // 必须带上权限组的管理员标记：group_is_admin 来自 `groups`.is_admin 的 JOIN，
+        // 直接 SELECT * FROM users 拿不到该键，isAdmin() 会误判为 false，
+        // 导致管理员在队列写入阶段被「官方账户仅对高级用户开放」拦下
+        $owner = findUserById($userId);
+        if ($owner === null) {
             throw new RuntimeException('文件所属用户不存在。');
         }
 
-        return $row;
+        return $owner;
     }
 }
