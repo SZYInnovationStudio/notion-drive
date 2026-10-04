@@ -48,6 +48,108 @@ try {
         jsonResponse(['ok' => true, 'message' => '文件夹已创建。', 'id' => (int) $connection->lastInsertId(), 'name' => $name]);
     }
 
+    // 「上传文件夹」用：一次请求按相对路径建好整棵目录树，避免一个文件夹一个请求。
+    // paths 形如 ["A","A/B","A/B/C"]（父先于子）；inspect=1 时只探测哪些路径已存在（供前端让用户选合并/新建），不写库；
+    // merges 列出用户选择「合并进已有」的路径，其余已存在路径则新建同名文件夹。
+    if ($action === 'create_tree') {
+        $rootId = max(0, (int) ($_POST['parent_id'] ?? 0));
+        if ($rootId > 0 && folderRow($userId, $rootId) === null) {
+            throw new RuntimeException('上级文件夹不存在。');
+        }
+        $paths = json_decode((string) ($_POST['paths'] ?? '[]'), true);
+        if (!is_array($paths) || $paths === []) {
+            throw new RuntimeException('没有需要创建的文件夹。');
+        }
+        // 路径必须父先于子：短的排前面，同长度按名称稳定排序，保证父目录先被解析出 id
+        $paths = array_values(array_unique(array_filter(array_map(
+            static fn ($path): string => is_string($path) ? trim($path) : '',
+            $paths
+        ), static fn (string $path): bool => $path !== '')));
+        usort($paths, static function (string $a, string $b): int {
+            return strlen($a) <=> strlen($b) ?: strcmp($a, $b);
+        });
+
+        $inspect = (string) ($_POST['inspect'] ?? '') === '1';
+        $merges = json_decode((string) ($_POST['merges'] ?? '[]'), true);
+        $mergeSet = [];
+        foreach (is_array($merges) ? $merges : [] as $merge) {
+            if (is_string($merge)) {
+                $mergeSet[$merge] = true;
+            }
+        }
+
+        $findChild = $connection->prepare(
+            'SELECT id FROM folders WHERE user_id = :user_id AND parent_id <=> :parent_id AND name = :name LIMIT 1'
+        );
+        $insert = $connection->prepare(
+            'INSERT INTO folders (user_id, parent_id, name) VALUES (:user_id, :parent_id, :name)'
+        );
+
+        // 已解析出的「相对路径 → 文件夹 id」；空串代表起点（当前所在文件夹）
+        $resolved = ['' => $rootId];
+        $conflicts = [];
+
+        foreach ($paths as $path) {
+            $segments = array_values(array_filter(explode('/', str_replace('\\', '/', $path)), static fn (string $s): bool => $s !== ''));
+            if ($segments === []) {
+                continue;
+            }
+            $parentId = $rootId;
+            $currentPath = '';
+            foreach ($segments as $segment) {
+                $segment = normalizeFolderName($segment);
+                $currentPath = $currentPath === '' ? $segment : $currentPath . '/' . $segment;
+                // 本层已在本请求内解析过，直接复用，避免父目录被创建两次
+                if (array_key_exists($currentPath, $resolved)) {
+                    $parentId = $resolved[$currentPath];
+                    continue;
+                }
+                $findChild->execute([
+                    'user_id'   => $userId,
+                    'parent_id' => $parentId > 0 ? $parentId : null,
+                    'name'      => $segment,
+                ]);
+                $existingId = $findChild->fetchColumn();
+                $existingId = $existingId === false ? 0 : (int) $existingId;
+
+                if ($existingId > 0) {
+                    if ($inspect) {
+                        // 探测阶段：登记冲突后按「合并」继续向下走，这样嵌套层级的冲突也能被发现。
+                        // 用户若对上层改选「新建」，下层的 merge 决策会在真正创建时因目标不存在而自然落空
+                        $conflicts[] = $currentPath;
+                        $resolved[$currentPath] = $existingId;
+                        $parentId = $existingId;
+                        continue;
+                    }
+                    if (isset($mergeSet[$currentPath])) {
+                        $resolved[$currentPath] = $existingId;
+                        $parentId = $existingId;
+                        continue;
+                    }
+                } elseif ($inspect) {
+                    // 探测阶段遇到不存在的目录：其下层不可能是「已存在」，无需继续
+                    break;
+                }
+
+                $insert->execute([
+                    'user_id'   => $userId,
+                    'parent_id' => $parentId > 0 ? $parentId : null,
+                    'name'      => $segment,
+                ]);
+                $newId = (int) $connection->lastInsertId();
+                $resolved[$currentPath] = $newId;
+                $parentId = $newId;
+            }
+        }
+
+        if ($inspect) {
+            jsonResponse(['ok' => true, 'conflicts' => array_values(array_unique($conflicts))]);
+        }
+        // 全量回传「相对路径 → 文件夹 id」（含中间层级），前端据此把每个文件放进对应目录
+        unset($resolved['']);
+        jsonResponse(['ok' => true, 'message' => '文件夹结构已就绪。', 'folders' => $resolved === [] ? new \stdClass() : $resolved]);
+    }
+
     if ($action === 'move_file') {
         $fileId = (int) ($_POST['file_id'] ?? 0);
         // 0 表示移到根目录（即「移出文件夹」）

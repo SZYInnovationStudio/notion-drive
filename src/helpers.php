@@ -999,22 +999,28 @@ function mimeForExtension(string $extension): string
     return $map[strtolower($extension)] ?? 'application/octet-stream';
 }
 
-function findActiveUploadByName(int $userId, string $name): ?array
+function findActiveUploadByName(int $userId, string $name, int $folderId = 0): ?array
 {
+    // 重名按文件夹隔离：同名文件可在不同文件夹共存；folder_id <=> NULL 是 NULL 安全等值，能命中根目录（未归类）的文件
     $statement = Database::connection()->prepare(
         "SELECT id, filename, display_name, file_size, notion_block_id FROM uploads
          WHERE user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ")
            AND COALESCE(NULLIF(display_name, ''), filename) = :name
+           AND folder_id <=> :folder_id
          ORDER BY id DESC LIMIT 1"
     );
-    $statement->execute(['user_id' => $userId, 'name' => $name]);
+    $statement->execute([
+        'user_id'   => $userId,
+        'name'      => $name,
+        'folder_id' => $folderId > 0 ? $folderId : null,
+    ]);
     $row = $statement->fetch();
 
     return is_array($row) ? $row : null;
 }
 
-/** 重名自动编号：编号始终插在扩展名之前，不占用扩展名。 */
-function nextAvailableFilename(int $userId, string $name): string
+/** 重名自动编号：编号始终插在扩展名之前，不占用扩展名。查重同样限定在同一文件夹内。 */
+function nextAvailableFilename(int $userId, string $name, int $folderId = 0): string
 {
     $extension = pathinfo($name, PATHINFO_EXTENSION);
     $stem = pathinfo($name, PATHINFO_FILENAME);
@@ -1024,7 +1030,7 @@ function nextAvailableFilename(int $userId, string $name): string
         $marker = '(' . $index . ')';
         $limit = max(1, 900 - strlen($suffix) - strlen($marker));
         $candidate = mb_strcut($stem, 0, $limit, 'UTF-8') . $marker . $suffix;
-        if (findActiveUploadByName($userId, $candidate) === null) {
+        if (findActiveUploadByName($userId, $candidate, $folderId) === null) {
             return $candidate;
         }
     }

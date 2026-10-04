@@ -269,6 +269,9 @@ body.drive-shell .site-credit .icp-license, body.drive-shell .site-credit .polic
 .drop-zone strong { margin-top: 9px; font-size: .88rem; }
 .drop-zone small { color: var(--muted); font-size: .72rem; }
 .drop-zone button { margin-top: 12px; min-height: var(--control-h); padding: 0 14px; border: 1px solid var(--line-strong); border-radius: var(--control-radius); background: var(--surface); color: var(--control-text); }
+/* 「选择文件」与「选择文件夹」并排：按钮自身的 margin-top 由容器统一给，避免两个按钮各自撑开间距 */
+.drop-zone-actions { display: flex; gap: 8px; margin-top: 12px; }
+.drop-zone-actions button { margin-top: 0; }
 .upload-queue { grid-column: 1 / -1; display: grid; gap: 7px; }
 /* 工单详情：面板内容与下方上传区/提示条的上间距统一为 12px（与 .panel-title 的下间距一致） */
 #ticketAttachments { margin-top: 12px; display: grid; gap: 8px; }
@@ -277,6 +280,8 @@ body.drive-shell .site-credit .icp-license, body.drive-shell .site-credit .polic
 .queue-meta { min-width: 0; flex: 1; display: grid; }
 .queue-meta b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; }
 .queue-meta small, .queue-status { color: var(--muted); font-size: .7rem; }
+/* 上传文件夹时副标题是相对目录：过长同样截断，完整路径放在 title 里由悬停查看 */
+.queue-meta small.queue-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-status { max-width: 300px; text-align: right; }
 .queue-item.failed .queue-status { color: var(--danger); white-space: normal; word-break: break-word; line-height: 1.45; }
 .queue-item.complete .queue-status { color: var(--success); }

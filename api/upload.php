@@ -155,9 +155,10 @@ $validateFilename = static function (string $filename, int $size) use ($fail, $s
     return $extension;
 };
 
-/** 处理重名：确认覆盖则保留原名并释放旧文件占用，否则自动编号（1.txt → 1(1).txt）。 */
-$resolveDuplicate = static function (string $filename, string $duplicateAction) use ($user): array {
-    $duplicate = findActiveUploadByName((int) $user['id'], $filename);
+/** 处理重名：确认覆盖则保留原名并释放旧文件占用，否则自动编号（1.txt → 1(1).txt）。
+ *  查重限定在目标文件夹内，避免不同文件夹的同名文件互相覆盖（尤其是「上传文件夹」批量上传时）。 */
+$resolveDuplicate = static function (string $filename, string $duplicateAction, int $folderId = 0) use ($user): array {
+    $duplicate = findActiveUploadByName((int) $user['id'], $filename, $folderId);
     if ($duplicate === null) {
         return ['filename' => $filename, 'handled' => '', 'freed_bytes' => 0, 'renamed_to' => '', 'duplicate' => null];
     }
@@ -171,7 +172,7 @@ $resolveDuplicate = static function (string $filename, string $duplicateAction) 
         ];
     }
 
-    $renamed = nextAvailableFilename((int) $user['id'], $filename);
+    $renamed = nextAvailableFilename((int) $user['id'], $filename, $folderId);
 
     return ['filename' => $renamed, 'handled' => 'rename', 'freed_bytes' => 0, 'renamed_to' => $renamed, 'duplicate' => null];
 };
@@ -419,7 +420,7 @@ $finishDirectUpload = static function (
         try {
             // 与常规路径一致：锁定用户行，串行化同一用户的并发落库（配额与重名判定）
             $pdo->prepare('SELECT id FROM users WHERE id = :id FOR UPDATE')->execute(['id' => (int) $user['id']]);
-            $resolved = $resolveDuplicate((string) $meta['filename'], (string) ($meta['duplicate_action'] ?? ''));
+            $resolved = $resolveDuplicate((string) $meta['filename'], (string) ($meta['duplicate_action'] ?? ''), $folderId);
             $filename = $resolved['filename'];
             if ($resolved['handled'] !== '') {
                 $context['duplicate'] = $resolved['handled'];
@@ -625,15 +626,36 @@ try {
 
     // 上传前的重名预检：只提交文件名，供前端决定「覆盖旧文件」还是「自动编号」
     if (($_POST['mode'] ?? '') === 'check') {
-        $names = json_decode((string) ($_POST['names'] ?? '[]'), true);
+        // 优先用 items（[{name, folder_id}]）：文件夹上传时每个文件的目标目录不同，重名必须各按自己的文件夹判定。
+        // 未传 items 时回退旧的 names 契约（单个 folder_id），兼容旧缓存前端。
+        $items = json_decode((string) ($_POST['items'] ?? ''), true);
+        if (!is_array($items) || $items === []) {
+            $legacyFolderId = max(0, (int) ($_POST['folder_id'] ?? 0));
+            $names = json_decode((string) ($_POST['names'] ?? '[]'), true);
+            $items = [];
+            foreach (is_array($names) ? $names : [] as $name) {
+                $items[] = ['name' => $name, 'folder_id' => $legacyFolderId];
+            }
+        }
         $duplicates = [];
-        foreach (is_array($names) ? $names : [] as $name) {
-            $name = basename(trim((string) $name));
-            if ($name === '' || in_array($name, $duplicates, true)) {
+        $checked = [];
+        foreach ($items as $item) {
+            if (!is_string($item) && !is_array($item)) {
                 continue;
             }
-            if (findActiveUploadByName((int) $user['id'], $name) !== null) {
-                $duplicates[] = $name;
+            $name = basename(trim((string) (is_array($item) ? ($item['name'] ?? '') : $item)));
+            if ($name === '') {
+                continue;
+            }
+            $folderId = max(0, (int) (is_array($item) ? ($item['folder_id'] ?? 0) : 0));
+            // 同一「文件夹 + 文件名」只需查一次
+            $key = $folderId . '|' . $name;
+            if (isset($checked[$key])) {
+                continue;
+            }
+            $checked[$key] = true;
+            if (findActiveUploadByName((int) $user['id'], $name, $folderId) !== null) {
+                $duplicates[] = ['name' => $name, 'folder_id' => $folderId];
             }
         }
         jsonResponse(['ok' => true, 'duplicates' => $duplicates]);
@@ -1104,12 +1126,21 @@ try {
 
         // 重新校验：分块期间文件名与配额可能已被并发上传改变
         $extension = $validateFilename($filename, $size);
+        // 重名裁决必须先知道目标文件夹（查重按文件夹隔离），故把文件夹解析提到 $resolveDuplicate 之前
+        $folderId = 0;
+        if ($scope === 'drive') {
+            // 分块期间目标文件夹可能已被删除，落库前再确认一次，失效则落到根目录而不是让整条 INSERT 失败；工单附件固定在根目录
+            $folderId = max(0, (int) ($meta['folder_id'] ?? 0));
+            if ($folderId > 0 && folderRow((int) $user['id'], $folderId) === null) {
+                $folderId = 0;
+            }
+        }
         if ($scope === 'ticket') {
             // 工单附件不做重名处理，也不计入个人配额，但仍复核单文件上限与单张工单的附件数量
             $resolved = ['filename' => $filename, 'handled' => '', 'freed_bytes' => 0, 'renamed_to' => '', 'duplicate' => null];
             $assertTicketAttachmentCapacity($ticketId, $filename, $size, $token, $isDirect);
         } else {
-            $resolved = $resolveDuplicate($filename, (string) ($meta['duplicate_action'] ?? ''));
+            $resolved = $resolveDuplicate($filename, (string) ($meta['duplicate_action'] ?? ''), $folderId);
             $filename = $resolved['filename'];
             if ($resolved['handled'] !== '') {
                 $context['duplicate'] = $resolved['handled'];
@@ -1121,15 +1152,6 @@ try {
 
             // 本次会话的元数据仍在，须排除自身，否则会把本文件重复计入在途占用（直传会话同样按此排除后单独计入 $size）
             $assertCapacity($filename, $size, $resolved['freed_bytes'], $token, $isDirect);
-        }
-
-        // 分块期间目标文件夹可能已被删除，落库前再确认一次，失效则落到根目录而不是让整条 INSERT 失败；工单附件固定在根目录
-        $folderId = 0;
-        if ($scope === 'drive') {
-            $folderId = max(0, (int) ($meta['folder_id'] ?? 0));
-            if ($folderId > 0 && folderRow((int) $user['id'], $folderId) === null) {
-                $folderId = 0;
-            }
         }
 
         if (uploadTargets($user) === []) {
@@ -1196,7 +1218,7 @@ try {
                 $pdo->prepare('SELECT id FROM users WHERE id = :id FOR UPDATE')->execute(['id' => (int) $user['id']]);
                 if ($scope === 'drive') {
                     // 持锁后以原始文件名重新裁决重名，避免并发同名上传各写一条可用文件
-                    $resolved = $resolveDuplicate((string) $meta['filename'], (string) ($meta['duplicate_action'] ?? ''));
+                    $resolved = $resolveDuplicate((string) $meta['filename'], (string) ($meta['duplicate_action'] ?? ''), $folderId);
                     $filename = $resolved['filename'];
                     if ($resolved['handled'] !== '') {
                         $context['duplicate'] = $resolved['handled'];

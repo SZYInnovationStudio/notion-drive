@@ -133,7 +133,7 @@ $premiumNotice = premiumNotice($user);
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <?= siteTitleTag('我的文件') ?>
     <?= siteFaviconTag() ?>
-    <link rel="stylesheet" href="assets/app.css?v=62">
+    <link rel="stylesheet" href="assets/app.css?v=63">
 </head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>" data-limit="<?= $singleLimit ?>" data-remaining="<?= $remainingBytes === null ? '' : $remainingBytes ?>" data-folder="<?= $currentFolderId ?>">
     <aside class="drive-sidebar">
@@ -272,10 +272,11 @@ $premiumNotice = premiumNotice($user);
                 </ul>
                 <details class="type-details"><summary>查看支持的文件类型</summary><p>文档：PDF、Word、Excel、PPT、TXT、Markdown、CSV、JSON、压缩包；图片：JPG、PNG、GIF、SVG、WebP；音视频：MP3、WAV、MP4、MOV、WebM；以及 Notion 支持的 CAD/3D 文件。</p></details>
             </div>
-            <div id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="选择上传文件">
+            <div id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="选择上传文件或文件夹">
                 <input id="fileInput" type="file" multiple hidden>
-                <span class="upload-icon">↑</span><strong>拖放文件到这里</strong><small>或点击选择文件</small>
-                <button type="button" id="browseButton">选择文件</button>
+                <input id="folderInput" type="file" webkitdirectory directory multiple hidden>
+                <span class="upload-icon">↑</span><strong>拖放文件或文件夹到这里</strong><small>或点击下方按钮选择</small>
+                <span class="drop-zone-actions"><button type="button" id="browseButton">选择文件</button><button type="button" id="browseFolderButton" class="secondary-button">选择文件夹</button></span>
             </div>
             <div id="queue" class="upload-queue" aria-live="polite"></div>
         </section>
@@ -404,7 +405,7 @@ $premiumNotice = premiumNotice($user);
         </div>
     </div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=35" defer></script>
+    <script src="assets/app.js?v=36" defer></script>
 </body>
 </html>
 <?php

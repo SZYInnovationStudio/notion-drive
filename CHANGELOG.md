@@ -28,6 +28,54 @@
 
 ---
 
+### [2026-10-04 18:56:03] 新增「上传文件夹」：选目录/拖目录自动还原目录结构；重名改为按文件夹隔离
+
+- 目的：用户反馈只能逐个选文件，希望像网盘一样**直接上传整个文件夹并保留目录结构**。经确认还需：
+  同名文件夹冲突时**由用户选择**「合并进去 / 新建一个」、同时支持**拖拽文件夹**，并把文件重名检查改为**按文件夹隔离**。
+  最后一项是本功能的必要前提：原 `findActiveUploadByName()` / `nextAvailableFilename()` 只按 `user_id` 查重，
+  不同子目录的同名文件（如 `a/readme.txt`、`b/readme.txt`）会互相判定为重复，用户若选「覆盖并上传」
+  会把**另一个子目录里的同名文件**当作旧文件释放/覆盖，属数据误删风险。
+- 验证：`php -l` 对 15 个改动/受影响 PHP 文件执行 `bad=0`；`node --check assets/app.js` 退出码 0；
+  12 个页面 BOM 检查 `bom=0`；版本号一致性：`app.js?v=35` 与 `app.css?v=62` 残留 **0 处**，
+  新值计数 `app.js?v=36` = 10 处、`app.css?v=63` = 12 处。
+  生产部署后用只读探针实测数据库行为（仅 SELECT，不写库）：文件夹隔离查重「同文件夹命中 / 跨文件夹不命中」、
+  `parent_id <=> NULL` 的 NULL 安全匹配、错误父 id 不误判、嵌套层级按父命中，全部符合预期；
+  并确认 `action=create_tree` 路由可达（未登录时返回鉴权错误而非 500）。
+  **真实交互（目录结构还原、冲突弹窗、拖拽文件夹）需人工在生产用一个测试文件夹实测确认。**
+- 数据库结构影响：无（未新增表/列/索引；`folders`、`uploads.folder_id` 均为既有结构）。
+- 改动明细（行号为改动后当前行号）：
+  - `src/helpers.php` L1002-L1020 — `findActiveUploadByName()` 增加 `int $folderId = 0` 参数与
+    `AND folder_id <=> :folder_id`（NULL 安全等值，根目录用 NULL 匹配），重名按文件夹隔离。
+  - `src/helpers.php` L1022-L1036 — `nextAvailableFilename()` 透传 `$folderId`，编号只在同一文件夹内避让。
+  - `api/upload.php` L158-L178 — `$resolveDuplicate()` 增加 `$folderId` 并入参透传。
+  - `api/upload.php` L422 / L1122 / L1201 — 三处调用点补传目标文件夹；其中 finish 分支把原本在重名裁决**之后**的
+    `$folderId` 解析块（原 L1126-L1132）上移到裁决之前，否则拿不到文件夹。
+  - `api/upload.php` L627-L662 — `mode=check` 改为接受 `items`（`[{name, folder_id}]`）逐项按各自文件夹查重，
+    返回同形状结果；未传 `items` 时回退旧 `names` + 单个 `folder_id` 契约。
+  - `api/folder.php` L51-L152 — 新增 `action=create_tree`：按 `paths`（父先于子排序）逐段解析，
+    已存在且列入 `merges` 则复用、否则新建，返回全量「相对路径 → 文件夹 id」；`inspect=1` 时只返回
+    `conflicts`（探测阶段不写库，并按「合并」继续下探以发现嵌套冲突）。
+  - `dashboard.php` L275-L280 — 上传区新增 `#folderInput`（`webkitdirectory directory multiple`）与
+    「选择文件夹」按钮，两个按钮用 `.drop-zone-actions` 并排。
+  - `assets/app.js` L936-L974 — 新增 `relativeDirOf()`、`readAllEntries()`（`readEntries` 需循环读到空）、
+    `collectDropped()`（递归 `webkitGetAsEntry` 读取拖入目录）。
+  - `assets/app.js` L977-L994 — `findDuplicates()` 改为发送/解析 `items`（按「文件夹 + 文件名」作键）。
+  - `assets/app.js` L996-L1019 — 新增 `askFolderConflict()`：返回 `'merge' | 'new'`，Esc 按「合并」处理。
+  - `assets/app.js` L1028-L1030 / L1093-L1121 — `confirmOverwrite()` 在无编号预览时给出对应文案；
+    新增 `buildEntries()`（统一建队列条目，文件夹条目副标题显示相对目录）。
+  - `assets/app.js` L1131-L1224 — 新增 `collectDirPaths()` / `createFolderTree()` / `addFolderFiles()`：
+    探测冲突 → 逐个让用户选择 → 建树 → 按目录逐文件入队；目录 id 缺失时明确标记该文件失败而非静默落到当前目录。
+  - `assets/app.js` L1205-L1230 — `upload()` 接收 `folderId`/`relPath`，`startFields` 按条目目标文件夹发送
+    （散落文件仍落当前浏览目录）；失败重试保留这两项。
+  - `assets/app.js` L976-L981 / L1302-L1305 — `remaining` 由 `const` 改 `let` 并在上传成功后递减（覆盖不递减），
+    使批量上传能在中途提前报「空间不足」。
+  - `assets/app.js` L1421-L1454 — 绑定「选择文件夹」按钮与 `change`；`drop` 优先用 `dataTransfer.items`
+    递归读取，混拖时目录内文件走建树上传、散落文件仍走原路径，不支持时回退 `dataTransfer.files`。
+  - `assets/app.js` L69 — 封禁拦截入口加入 `#browseFolderButton` / `#folderInput`。
+  - `assets/app.css` L272-L274 / L280-L281 — 新增 `.drop-zone-actions`（按钮并排）与
+    `.queue-meta small.queue-path`（相对目录截断显示）。
+  - 资源版本号：`app.js?v=35 → ?v=36`（10 页）、`app.css?v=62 → ?v=63`（12 页，含仅引 CSS 的 `bans.php`、`install.php`）。
+
 ### [2026-10-04 18:23:11] 修复工单提交卡顿与连点重复建单
 
 - 目的：用户反馈「工单提交时卡顿，如果多按，会多个」。排查出两个独立根因：

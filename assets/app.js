@@ -66,7 +66,7 @@
         // 工单附件不在此列：封禁提示本身引导用户走工单提交申诉，申诉需要上传/查看证据，故整体放行
         // （工单附件的下载直链用 data-ticket-download 标记，与普通文件的下载链接区分开）
         const blockedEntry = [
-            '#dropZone', '#browseButton', '#fileInput',
+            '#dropZone', '#browseButton', '#fileInput', '#browseFolderButton', '#folderInput',
             'a[href^="api/file.php"]:not([data-ticket-download])',
             '[data-action]', '#newFolderButton'
         ].join(', ');
@@ -928,12 +928,55 @@
     const dropZone = document.getElementById('dropZone');
     const input = document.getElementById('fileInput');
     const browse = document.getElementById('browseButton');
+    const folderInput = document.getElementById('folderInput');
+    const browseFolder = document.getElementById('browseFolderButton');
     const queue = document.getElementById('queue');
     if (!dropZone || !input || !browse || !queue) return;
 
+    /** 从 webkitRelativePath 取相对目录（不含文件名）；直接选散落文件时返回空串。 */
+    const relativeDirOf = file => {
+        const path = String(file.webkitRelativePath || '');
+        const index = path.lastIndexOf('/');
+        return index > 0 ? path.slice(0, index) : '';
+    };
+
+    /** readEntries 每次只返回一批，必须反复读到空数组为止。 */
+    const readAllEntries = entry => new Promise(resolve => {
+        const reader = entry.createReader();
+        const all = [];
+        const step = () => reader.readEntries(batch => {
+            if (!batch.length) {
+                resolve(all);
+                return;
+            }
+            all.push(...batch);
+            step();
+        }, () => resolve(all));
+        step();
+    });
+
+    /** 递归读取拖入的 FileSystemEntry：返回 [{ file, relDir }]；relDir 为相对拖入起点的目录，散落文件为空串。 */
+    const collectDropped = async (entries, prefix = '') => {
+        const collected = [];
+        for (const entry of entries) {
+            if (entry.isFile) {
+                const file = await new Promise(resolve => entry.file(resolve, () => resolve(null)));
+                if (file) collected.push({ file, relDir: prefix });
+                continue;
+            }
+            if (entry.isDirectory) {
+                // 与目录选择保持同一口径：顶层目录名也算进相对路径
+                const dir = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+                collected.push(...await collectDropped(await readAllEntries(entry), dir));
+            }
+        }
+        return collected;
+    };
+
     const limit = Number(document.body.dataset.limit || 0);
     const remainingRaw = document.body.dataset.remaining ?? '';
-    const remaining = remainingRaw === '' ? null : Number(remainingRaw);
+    // 剩余空间随上传递减（上传文件夹会一次排很多文件），使后续文件能在入队/上传前就拦下「空间不足」
+    let remaining = remainingRaw === '' ? null : Number(remainingRaw);
     let busy = false;
     let uploaded = 0;
     let overwritten = 0;
@@ -974,21 +1017,49 @@
         return `${stem}(新)${suffix}`;
     };
 
-    /** 上传前向服务器确认这些文件名是否已存在；失败时按「无重名」处理，交由服务端兜底编号。 */
-    const findDuplicates = async names => {
-        if (!names.length) return new Set();
+    /** 上传前向服务器确认这些「文件 + 目标文件夹」是否已存在；失败时按「无重名」处理，交由服务端兜底编号。
+ *  重名按文件夹隔离，故必须逐项带上 folder_id（文件夹上传时同一批文件可能落在不同目录）。 */
+    const findDuplicates = async items => {
+        if (!items.length) return new Set();
         try {
             const response = await fetch('api/upload.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
-                body: new URLSearchParams({ mode: 'check', names: JSON.stringify(names) })
+                body: new URLSearchParams({ mode: 'check', items: JSON.stringify(items) })
             });
             const data = await response.json();
-            return new Set(response.ok && data.ok ? (data.duplicates || []) : []);
+            if (!response.ok || !data.ok) return new Set();
+            // 服务端返回 [{ name, folder_id }]，用「文件夹 + 文件名」作键，避免不同目录的同名文件互相误判
+            return new Set((data.duplicates || []).map(entry => `${Number(entry.folder_id) || 0}|${entry.name}`));
         } catch (_) {
             return new Set();
         }
     };
+
+    /** 文件夹已存在时的选择弹窗：返回 'merge'（合并进已有）或 'new'（新建一个）。
+ *  复用 `.duplicate-dialog` 骨架；Esc/取消按「合并」处理（不新建多余文件夹，是更稳妥的默认）。 */
+    const askFolderConflict = name => new Promise(resolve => {
+        const dialog = document.createElement('dialog');
+        dialog.className = 'duplicate-dialog';
+        dialog.innerHTML = '<h2>文件夹已存在</h2><p>当前目录下已经有同名文件夹，请选择处理方式。</p><div class="duplicate-name">文件夹<strong></strong></div><p class="duplicate-hint"></p><div class="duplicate-actions"><button type="button" class="secondary-button" data-choice="new">新建一个</button><button type="button" class="primary-button compact" data-choice="merge">合并进去</button></div>';
+        dialog.querySelector('.duplicate-name strong').textContent = name;
+        dialog.querySelector('.duplicate-hint').textContent = '「合并进去」会把这次的文件放进已有文件夹；「新建一个」会另建一个同名文件夹，两者并存。';
+        const finish = choice => {
+            dialog.close();
+            resolve(choice === 'new' ? 'new' : 'merge');
+        };
+        dialog.querySelector('[data-choice="new"]').addEventListener('click', () => finish('new'));
+        dialog.querySelector('[data-choice="merge"]').addEventListener('click', () => finish('merge'));
+        // 按 Esc 等同于「合并进去」：避免误建重名文件夹
+        dialog.addEventListener('cancel', event => {
+            event.preventDefault();
+            finish('merge');
+        });
+        dialog.addEventListener('close', () => dialog.remove());
+        document.body.appendChild(dialog);
+        dialog.showModal();
+        dialog.querySelector('[data-choice="merge"]').focus();
+    });
 
     /** 界面内确认弹窗：返回 true 表示覆盖旧文件，false 表示自动编号。 */
     const confirmOverwrite = (name, target) => new Promise(resolve => {
@@ -996,7 +1067,9 @@
         dialog.className = 'duplicate-dialog';
         dialog.innerHTML = '<h2>文件已存在</h2><p>当前空间里已经有同名文件，请选择处理方式。</p><div class="duplicate-name">文件名<strong></strong></div><p class="duplicate-hint"></p><div class="duplicate-actions"><button type="button" class="secondary-button" data-choice="rename">自动编号</button><button type="button" class="primary-button compact" data-choice="overwrite">覆盖并上传</button></div>';
         dialog.querySelector('.duplicate-name strong').textContent = name;
-        dialog.querySelector('.duplicate-hint').textContent = `「覆盖并上传」会删除旧文件并替换为新文件；「自动编号」会保留两者，新文件命名为 ${target}。`;
+        dialog.querySelector('.duplicate-hint').textContent = target
+            ? `「覆盖并上传」会删除旧文件并替换为新文件；「自动编号」会保留两者，新文件命名为 ${target}。`
+            : '「覆盖并上传」会删除旧文件并替换为新文件；「自动编号」会保留两者，新文件由服务器自动编号。';
 
         const finish = choice => {
             dialog.close();
@@ -1017,32 +1090,143 @@
         dialog.querySelector('[data-choice="overwrite"]').focus();
     });
 
-    const addFiles = async files => {
+    /** 建立队列条目（校验 + DOM）。candidates 为 [{ file, folderId, relPath }]；
+     *  文件夹上传时 relPath 非空，条目主标题显示相对路径，便于区分不同子目录里的同名文件。 */
+    const buildEntries = candidates => {
         const entries = [];
-        [...files].forEach(file => {
-            const error = validate(file);
+        candidates.forEach(({ file, folderId = 0, relPath = '', error: presetError = '' }) => {
+            const error = presetError || validate(file);
             const item = document.createElement('article');
             item.className = `queue-item${error ? ' failed' : ''}`;
             item.innerHTML = '<span class="file-kind"></span><div class="queue-meta"><b></b><small></small><progress class="progress-track" max="100" value="0"></progress></div><span class="queue-status"></span>';
             item.querySelector('.file-kind').textContent = (file.name.split('.').pop() || 'FILE').toUpperCase();
             item.querySelector('.queue-meta b').textContent = file.name;
-            item.querySelector('.queue-meta small').textContent = formatBytes(file.size);
+            // 文件夹上传时副标题显示相对目录（比体积更能区分不同子目录的同名文件），悬停可看完整路径
+            const sub = item.querySelector('.queue-meta small');
+            if (relPath) {
+                const dir = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : relPath;
+                sub.textContent = dir;
+                sub.title = relPath;
+                sub.classList.add('queue-path');
+            } else {
+                sub.textContent = formatBytes(file.size);
+            }
             item.querySelector('.queue-status').textContent = error || '等待上传';
             queue.appendChild(item);
-            if (!error) entries.push({ file, item, duplicateAction: '' });
+            if (!error) entries.push({ file, item, duplicateAction: '', folderId, relPath });
         });
+        return entries;
+    };
 
-        const duplicates = await findDuplicates(entries.map(entry => entry.file.name));
+    /** 重名预检（按文件夹隔离）并按需弹窗确认。 */
+    const resolveDuplicates = async entries => {
+        const duplicates = await findDuplicates(entries.map(entry => ({
+            name: entry.file.name,
+            folder_id: entry.folderId || 0
+        })));
         for (const entry of entries) {
-            if (!duplicates.has(entry.file.name)) continue;
-            const target = previewRename(entry.file.name);
+            if (!duplicates.has(`${entry.folderId || 0}|${entry.file.name}`)) continue;
+            // 文件夹上传的目标目录不在本页表格里，无法本地预览编号，交由服务端命名并在响应里回填
+            const target = entry.relPath ? '' : previewRename(entry.file.name);
             const overwrite = await confirmOverwrite(entry.file.name, target);
             entry.duplicateAction = overwrite ? 'overwrite' : 'rename';
             entry.item.querySelector('.queue-status').textContent = overwrite
                 ? '等待上传（覆盖同名旧文件）'
-                : `等待上传（将编号为 ${target}）`;
+                : (target ? `等待上传（将编号为 ${target}）` : '等待上传（同名将自动编号）');
+        }
+    };
+
+    const addFiles = async files => {
+        const rootFolder = Number(document.body.dataset.folder || 0);
+        const entries = buildEntries([...files].map(file => ({ file, folderId: rootFolder })));
+        await resolveDuplicates(entries);
+        pending.push(...entries);
+        runQueue();
+    };
+
+    /** 目录路径集合：把每个文件的 webkitRelativePath 拆成各级目录（含祖先），父先于子排序。 */
+    const collectDirPaths = candidates => {
+        const paths = new Set();
+        candidates.forEach(({ relDir }) => {
+            if (!relDir) return;
+            const segments = relDir.split('/').filter(Boolean);
+            let current = '';
+            segments.forEach(segment => {
+                current = current === '' ? segment : `${current}/${segment}`;
+                paths.add(current);
+            });
+        });
+        return [...paths].sort((a, b) => a.length - b.length || (a < b ? -1 : 1));
+    };
+
+    /** 调 api/folder.php 的 create_tree：inspect 时只探测冲突；否则带 merges 真正建树并返回 路径→id。 */
+    const createFolderTree = async (parentId, paths, { inspect = false, merges = [] } = {}) => {
+        const body = new URLSearchParams({
+            action: 'create_tree',
+            parent_id: String(parentId || 0),
+            paths: JSON.stringify(paths)
+        });
+        if (inspect) body.set('inspect', '1');
+        else body.set('merges', JSON.stringify(merges));
+        const response = await fetch('api/folder.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
+            body
+        });
+        const data = await readJson(response);
+        if (!response.ok || !data.ok) throw new Error(data.message || '创建文件夹失败');
+        return inspect ? (data.conflicts || []) : (data.folders || {});
+    };
+
+    /** 上传文件夹：先按相对路径建好整棵目录树（同名文件夹让用户选合并/新建），再把文件排进各自目录。 */
+    const addFolderFiles = async candidates => {
+        const usable = candidates.filter(({ file }) => file && file.name);
+        if (!usable.length) return;
+
+        const rootFolder = Number(document.body.dataset.folder || 0);
+        const paths = collectDirPaths(usable);
+        if (paths.length && usable.length > 200) {
+            // 串行上传，文件很多时会很久；先确认一次，避免误选整个磁盘
+            const go = await askConfirm(`即将上传 ${usable.length} 个文件、${paths.length} 个文件夹，数量较多会耗时较长。确认继续？`);
+            if (!go) return;
         }
 
+        const merges = [];
+        if (paths.length) {
+            let conflicts;
+            try {
+                conflicts = await createFolderTree(rootFolder, paths, { inspect: true });
+            } catch (error) {
+                notify(error.message || '探测文件夹失败', 'error');
+                return;
+            }
+            for (const path of conflicts) {
+                const choice = await askFolderConflict(path);
+                if (choice === 'merge') merges.push(path);
+            }
+        }
+
+        let folders = {};
+        if (paths.length) {
+            try {
+                folders = await createFolderTree(rootFolder, paths, { merges });
+            } catch (error) {
+                notify(error.message || '创建文件夹失败', 'error');
+                return;
+            }
+        }
+
+        const entries = buildEntries(usable.map(({ file, relDir }) => {
+            // 目录 id 解析不到时明确报错，而不是静默把文件丢到当前目录（会造成文件「放错地方」却看似成功）
+            const resolved = relDir ? Number(folders[relDir] || 0) : 0;
+            return {
+                file,
+                folderId: resolved || rootFolder,
+                relPath: file.webkitRelativePath || (relDir ? `${relDir}/${file.name}` : file.name),
+                error: relDir && !resolved ? '目录创建结果缺失，未上传（请重试）' : ''
+            };
+        }));
+        await resolveDuplicates(entries);
         pending.push(...entries);
         runQueue();
     };
@@ -1073,14 +1257,15 @@
 
     // 分块上传：start → 逐块 chunk → finish；服务端按序接收，409 时用 received 自同步续传
     const CHUNK_ATTEMPTS = 3;
-    const upload = async ({ file, item, duplicateAction }) => {
+    const upload = async ({ file, item, duplicateAction, folderId, relPath }) => {
         const status = item.querySelector('.queue-status');
         const bar = item.querySelector('.progress-track');
         const fail = (detail, retry = true) => {
             status.textContent = detail;
             status.title = detail;
             item.classList.add('failed');
-            if (retry) addRetry({ file, item, duplicateAction });
+            // 重试必须保留目标文件夹与相对路径，否则重试会落到当前目录
+            if (retry) addRetry({ file, item, duplicateAction, folderId, relPath });
             return false;
         };
         const setProgress = percent => {
@@ -1089,10 +1274,11 @@
             status.textContent = `上传中 ${Math.round(value)}%`;
         };
 
-        const startFields = extra => ({ action: 'start', filename: file.name, size: file.size, duplicate_action: duplicateAction || '', folder_id: document.body.dataset.folder || '0', ...extra });
+        // 目标文件夹以条目自带的为准（文件夹上传时每个文件落在各自子目录）；散落文件仍落当前浏览的文件夹
+        const targetFolderId = folderId ?? document.body.dataset.folder ?? '0';
+        const startFields = extra => ({ action: 'start', filename: file.name, size: file.size, duplicate_action: duplicateAction || '', folder_id: String(targetFolderId || '0'), ...extra });
         let started;
         try {
-            // 上传落到当前浏览的文件夹（data-folder 为 0 表示根目录）
             started = await controlRequest(startFields());
         } catch (_) {
             return fail('网络连接失败，未能与服务器通信');
@@ -1127,7 +1313,8 @@
         const chunkSize = Number(started.data.chunk_size) || file.size || 1;
         let total = Number(started.data.total) || 1;
         // 服务端可能因重名把文件自动编号，以服务端返回的名称为准
-        if (started.data.duplicate === 'overwrite') overwritten += 1;
+        const replacedOld = started.data.duplicate === 'overwrite';
+        if (replacedOld) overwritten += 1;
         else if (started.data.duplicate === 'rename') renamed += 1;
         if (started.data.name && started.data.name !== file.name) {
             item.querySelector('.queue-meta b').textContent = started.data.name;
@@ -1168,6 +1355,9 @@
         if (!finished.ok || !finished.data.ok) return fail(failureText(finished.status, finished.data));
 
         uploaded += 1;
+        // 递减剩余空间：文件夹上传会一次排很多文件，这样后续文件能在入队/上传前就报「空间不足」，
+        // 而不是全传完才失败。覆盖旧文件会释放原有占用，故不递减。
+        if (remaining !== null && !replacedOld) remaining = Math.max(0, remaining - file.size);
         // 在线上传：finish 时已直接写入并落库（active），无需再轮询写入进度
         if (finished.data.writing === false) {
             onlineDone += 1;
@@ -1284,10 +1474,37 @@
     }
 
     browse.addEventListener('click', event => { event.stopPropagation(); input.click(); });
+    if (browseFolder) browseFolder.addEventListener('click', event => { event.stopPropagation(); folderInput.click(); });
     dropZone.addEventListener('click', event => { if (!event.target.closest('button')) input.click(); });
     dropZone.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); input.click(); } });
     input.addEventListener('change', () => { addFiles(input.files); input.value = ''; });
+    if (folderInput) folderInput.addEventListener('change', () => {
+        addFolderFiles([...folderInput.files].map(file => ({ file, relDir: relativeDirOf(file) })));
+        folderInput.value = '';
+    });
     ['dragenter', 'dragover'].forEach(type => dropZone.addEventListener(type, event => { event.preventDefault(); dropZone.classList.add('dragging'); }));
     ['dragleave', 'drop'].forEach(type => dropZone.addEventListener(type, event => { event.preventDefault(); dropZone.classList.remove('dragging'); }));
-    dropZone.addEventListener('drop', event => addFiles(event.dataTransfer.files));
+    dropZone.addEventListener('drop', async event => {
+        // 优先用 items 递归读取：拖入文件夹时 dataTransfer.files 拿不到目录内的文件
+        const items = event.dataTransfer ? event.dataTransfer.items : null;
+        if (items && items.length && typeof items[0].webkitGetAsEntry === 'function') {
+            const entries = [];
+            for (const item of items) {
+                const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+                if (entry) entries.push(entry);
+            }
+            const collected = await collectDropped(entries);
+            const fromDirs = collected.filter(item => item.relDir !== '');
+            if (fromDirs.length) {
+                // 混拖时先把目录内的文件按目录建树上传，散落文件仍走原路径
+                addFolderFiles(fromDirs);
+                const loose = collected.filter(item => item.relDir === '').map(item => item.file);
+                if (loose.length) addFiles(loose);
+                return;
+            }
+            addFiles(collected.map(item => item.file));
+            return;
+        }
+        addFiles(event.dataTransfer.files);
+    });
 })();
