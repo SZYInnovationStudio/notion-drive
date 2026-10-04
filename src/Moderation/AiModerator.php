@@ -271,7 +271,8 @@ final class AiModerator implements Moderator
         $body   = curl_exec($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $error  = curl_error($ch);
-        curl_close($ch);
+        // 不调用 curl_close()：该函数自 PHP 8.0 起即为空操作（CurlHandle 是对象，由 GC 回收），
+        // PHP 8.5 起调用会产生弃用警告
 
         if ($body === false) {
             // 网络异常 / 超时：可重试

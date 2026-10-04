@@ -28,6 +28,24 @@
 
 ---
 
+### [2026-10-04 17:09:43] 移除 PHP 8.5 已弃用的 curl_close() / curl_share_close() 调用
+
+- 目的：生产日志被大量 `Deprecated: Function curl_close() is deprecated since 8.5` 与
+  `curl_share_close() is deprecated since 8.5` 淹没（出自 `src/NotionClient.php` L387 / L419），
+  为「加速 Notion 写入」引入 `curl_multi` + `curl_share` 时遗留。这两个函数自 PHP 8.0 起即为**空操作**
+  （CurlHandle / CurlShareHandle 是对象，由 GC 回收），PHP 8.5 起调用才产生弃用警告，PHP 9 会变成错误。
+- 验证：`php -l src/NotionClient.php`、`php -l src/Moderation/AiModerator.php` 均 `No syntax errors detected`。
+  全仓库 grep 已无任何 `curl_close(` / `curl_share_close(` 调用（仅剩说明性注释）。
+  `curl_multi_close()` 保留：生产日志中同段代码的 L418 未出现弃用警告，证明该函数在 PHP 8.5 未被弃用。
+  清理效果需在生产上传一次大文件（走 multi_part 并发分支）后确认日志不再出现弃用行。
+- 数据库结构影响：无。
+- 改动明细（行号为改动后当前行号）：
+  - `src/NotionClient.php` L237-L241 — 下载副本的 finally 中删除 `curl_close($curl);`，改为说明注释。
+  - `src/NotionClient.php` L387 — 并发分片完成分支删除 `curl_close($handle);`（该句柄已由 L384 `unset($active[$key])` 释放引用）。
+  - `src/NotionClient.php` L409-L421 — 收尾 finally 中删除 `curl_close($entry['handle']);` 与 `curl_share_close($share);`，
+    保留 `curl_multi_close($multi)`；`$active` / `$share` 离开作用域后由 GC 回收。
+  - `src/Moderation/AiModerator.php` L274 — AI 审核请求后删除 `curl_close($ch);`，改为说明注释。
+
 ### [2026-10-04 17:03:48] 修复删除文件卡顿约 5 秒：Notion 归档改为响应后后台执行
 
 - 目的：工单 T-Q7PY98（提交人 wuzheyu）反馈「删除时会卡顿 5 秒」。

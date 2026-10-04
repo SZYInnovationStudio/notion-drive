@@ -236,7 +236,8 @@ final class NotionClient
             $error = curl_error($curl);
         } finally {
             fclose($handle);
-            curl_close($curl);
+            // 不调用 curl_close()：该函数自 PHP 8.0 起即为空操作（CurlHandle 是对象，由 GC 回收），
+            // PHP 8.5 起调用会产生弃用警告
         }
 
         if ($effective !== '' && !self::isTrustedDownloadUrl($effective)) {
@@ -384,7 +385,6 @@ final class NotionClient
                     curl_multi_remove_handle($multi, $handle);
 
                     $outcome = $this->partOutcome($handle, $entry['state'], $entry['attempts']);
-                    curl_close($handle);
 
                     if ($outcome['ok']) {
                         @unlink($entry['file']);
@@ -407,16 +407,16 @@ final class NotionClient
                 }
             }
         } finally {
+            // 句柄不再显式关闭（curl_close()/curl_share_close() 自 PHP 8.0 起为空操作、8.5 起弃用）：
+            // $active / $share 离开作用域后由 GC 回收，$multi 仍保留 curl_multi_close()
             foreach ($active as $entry) {
                 curl_multi_remove_handle($multi, $entry['handle']);
-                curl_close($entry['handle']);
                 @unlink($entry['file']);
             }
             foreach ($waiting as $entry) {
                 @unlink($entry['file']);
             }
             curl_multi_close($multi);
-            curl_share_close($share);
             fclose($source);
         }
     }
