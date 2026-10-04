@@ -8,10 +8,10 @@ use NotionDrive\Auth;
 use NotionDrive\Database;
 use NotionDrive\Logger;
 use NotionDrive\Moderation\ModerationService;
-use NotionDrive\Moderation\Verdict;
 use NotionDrive\NotionApiException;
 use NotionDrive\Security;
 use NotionDrive\Tickets\TicketService;
+use NotionDrive\Uploads\NotionWriteQueue;
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     jsonResponse(['ok' => false, 'code' => 'method_not_allowed', 'message' => '请求方法不受支持。'], 405);
@@ -178,7 +178,7 @@ $resolveDuplicate = static function (string $filename, string $duplicateAction) 
  * 统计当前用户尚未落库的分块上传占用（按会话声明大小计）。并发开启多个大文件上传时，
  * 每个会话若都只按「已落库用量」判定配额，合计可远远超出个人容量，须把在途会话一并预留。
  */
-$pendingUploadBytes = static function (?string $excludeToken) use ($chunkDir, $user): int {
+$pendingUploadBytes = static function (?string $excludeToken, bool $includeTicket = false) use ($chunkDir, $user): int {
     $total = 0;
     foreach (glob($chunkDir . '/*.json') ?: [] as $metaFile) {
         if ($excludeToken !== null && basename($metaFile, '.json') === $excludeToken) {
@@ -192,8 +192,8 @@ $pendingUploadBytes = static function (?string $excludeToken) use ($chunkDir, $u
         if (!is_array($meta) || (int) ($meta['user_id'] ?? 0) !== (int) $user['id']) {
             continue;
         }
-        // 工单附件不计入个人配额，不参与预留
-        if ((string) ($meta['scope'] ?? 'drive') === 'ticket') {
+        // 工单附件不计入个人配额，故配额校验不参与预留；但服务器暂存校验必须在内（附件同样占磁盘）
+        if (!$includeTicket && (string) ($meta['scope'] ?? 'drive') === 'ticket') {
             continue;
         }
         $total += max(0, (int) ($meta['size'] ?? 0));
@@ -202,8 +202,29 @@ $pendingUploadBytes = static function (?string $excludeToken) use ($chunkDir, $u
     return $total;
 };
 
+/**
+ * 服务器暂存上限校验：已入库的「待写入存储」（writing / write_failed）文件与在途分块会话
+ * 合计不得超过后台配置的上限，否则并发上传大文件会把服务器磁盘占满。
+ */
+$assertStagingBudget = static function (int $size, ?string $excludeToken) use ($fail, $user, $pendingUploadBytes): void {
+    $limit = NotionWriteQueue::stagedLimitBytes();
+    if ($limit <= 0) {
+        return;
+    }
+
+    $staged = NotionWriteQueue::stagedBytes((int) $user['id']) + $pendingUploadBytes($excludeToken, true);
+    if ($staged + $size > $limit) {
+        $fail('staging_limit_exceeded', sprintf(
+            '服务器待写入暂存已用 %s / 共 %s，本次还需 %s。请等正在写入存储的文件完成后重试，或先删除部分文件。',
+            formatBytes($staged),
+            formatBytes($limit),
+            formatBytes($size)
+        ), ['staged_bytes' => $staged, 'staging_limit' => $limit, 'size' => $size]);
+    }
+};
+
 /** 校验单文件上限与个人容量（覆盖同名文件时，旧文件占用的空间会被释放；在途会话占用一并计入）。 */
-$assertCapacity = static function (string $filename, int $size, int $freedBytes, ?string $excludeToken = null) use ($fail, $user, $pendingUploadBytes): void {
+$assertCapacity = static function (string $filename, int $size, int $freedBytes, ?string $excludeToken = null) use ($fail, $user, $pendingUploadBytes, $assertStagingBudget): void {
     $limit = userSingleFileLimit($user);
     if ($size > $limit) {
         $plan = (string) Database::config('notion_plan', 'free');
@@ -230,6 +251,8 @@ $assertCapacity = static function (string $filename, int $size, int $freedBytes,
             formatBytes($size)
         ), ['used_bytes' => $usedBytes, 'pending_bytes' => $pendingBytes, 'quota_bytes' => $quotaBytes, 'size' => $size, 'freed_bytes' => $freedBytes]);
     }
+
+    $assertStagingBudget($size, $excludeToken);
 };
 
 /** 单张工单可保有的附件数量上限。 */
@@ -239,7 +262,7 @@ $ticketAttachmentLimit = 20;
  * 工单附件容量校验：附件不计入个人配额，但仍限制单文件上限与单张工单的附件数量，
  * 否则可借工单无限上传超大文件或囤积大量文件，绕过个人容量与单文件限制。
  */
-$assertTicketAttachmentCapacity = static function (int $ticketId, string $filename, int $size) use ($fail, $user, $ticketAttachmentLimit): void {
+$assertTicketAttachmentCapacity = static function (int $ticketId, string $filename, int $size, ?string $excludeToken = null) use ($fail, $user, $ticketAttachmentLimit, $assertStagingBudget): void {
     $limit = userSingleFileLimit($user);
     if ($size > $limit) {
         $fail('file_too_large', sprintf(
@@ -251,12 +274,14 @@ $assertTicketAttachmentCapacity = static function (int $ticketId, string $filena
     }
 
     $statement = Database::connection()->prepare(
-        "SELECT COUNT(*) FROM uploads WHERE scope = 'ticket' AND ticket_id = :ticket_id AND status IN ('active', 'quarantined')"
+        'SELECT COUNT(*) FROM uploads WHERE scope = \'ticket\' AND ticket_id = :ticket_id AND status IN (' . UPLOAD_CAPACITY_STATUSES . ')'
     );
     $statement->execute(['ticket_id' => $ticketId]);
     if ((int) $statement->fetchColumn() >= $ticketAttachmentLimit) {
         $fail('ticket_attachment_limit', sprintf('单张工单最多上传 %d 个附件，已达上限。', $ticketAttachmentLimit));
     }
+
+    $assertStagingBudget($size, $excludeToken);
 };
 
 /** 上传可行性前置检查：在 start 阶段就拦下不可能成功的上传，避免传完整个大文件才失败。 */
@@ -604,7 +629,7 @@ try {
         if ($scope === 'ticket') {
             // 工单附件不做重名处理，也不计入个人配额，但仍复核单文件上限与单张工单的附件数量
             $resolved = ['filename' => $filename, 'handled' => '', 'freed_bytes' => 0, 'renamed_to' => '', 'duplicate' => null];
-            $assertTicketAttachmentCapacity($ticketId, $filename, $size);
+            $assertTicketAttachmentCapacity($ticketId, $filename, $size, $token);
         } else {
             $resolved = $resolveDuplicate($filename, (string) ($meta['duplicate_action'] ?? ''));
             $filename = $resolved['filename'];
@@ -663,8 +688,11 @@ try {
             }
         }
 
-        // 同步双写：每个目标账户各存一份，至少一份成功即视为成功（失败会自动告警管理员）
-        $stored = writeNotionReplicas($user, $partPath, $filename, $mime, $size);
+        // 异步写入存储：先把文件收进服务器暂存区，再入库为「正在写入存储」（writing），浏览器立刻拿到成功响应；
+        // 真正写 Notion 与内容审核交给后台队列（NotionWriteQueue），用户不必等它写完
+        $storageName = uniqueStorageName((int) $user['id'], $filename, $partPath);
+        $queue = NotionWriteQueue::create();
+        $uploadId = 0;
 
         $pdo = Database::connection();
         try {
@@ -691,8 +719,8 @@ try {
                 }
 
                 $pdo->prepare(
-                    'INSERT INTO uploads (user_id, scope, folder_id, ticket_id, filename, display_name, storage_name, file_size, mime_type, notion_file_upload_id, notion_block_id)
-                     VALUES (:user_id, :scope, :folder_id, :ticket_id, :filename, :display_name, :storage_name, :file_size, :mime_type, :notion_file_upload_id, :notion_block_id)'
+                    'INSERT INTO uploads (user_id, scope, folder_id, ticket_id, filename, display_name, storage_name, file_size, mime_type, notion_file_upload_id, notion_block_id, status)
+                     VALUES (:user_id, :scope, :folder_id, :ticket_id, :filename, :display_name, :storage_name, :file_size, :mime_type, :notion_file_upload_id, :notion_block_id, :status)'
                 )->execute([
                     'user_id' => $user['id'],
                     'scope' => $scope,
@@ -700,28 +728,19 @@ try {
                     'ticket_id' => $scope === 'ticket' ? $ticketId : null,
                     'filename' => $filename,
                     'display_name' => $filename,
-                    'storage_name' => $stored['storage_name'],
+                    'storage_name' => $storageName,
                     'file_size' => $size,
                     'mime_type' => $mime,
-                    'notion_file_upload_id' => (string) ($stored['replicas'][0]['notion_file_upload_id'] ?? ''),
-                    'notion_block_id' => (string) ($stored['replicas'][0]['notion_block_id'] ?? ''),
+                    // Notion 副本由后台队列写入，此处先留空占位（该列 NOT NULL，用空串而非 NULL）
+                    'notion_file_upload_id' => '',
+                    'notion_block_id' => null,
+                    'status' => NotionWriteQueue::STATUS_WRITING,
                 ]);
                 $uploadId = (int) $pdo->lastInsertId();
 
-                $replicaInsert = $pdo->prepare(
-                    'INSERT INTO upload_replicas (upload_id, role, account_type, official_account_id, notion_file_upload_id, notion_block_id)
-                     VALUES (:upload_id, :role, :account_type, :official_account_id, :notion_file_upload_id, :notion_block_id)'
-                );
-                foreach ($stored['replicas'] as $replica) {
-                    $replicaInsert->execute([
-                        'upload_id' => $uploadId,
-                        'role' => (int) $replica['role'],
-                        'account_type' => (string) $replica['account_type'],
-                        'official_account_id' => $replica['official_account_id'],
-                        'notion_file_upload_id' => (string) $replica['notion_file_upload_id'],
-                        'notion_block_id' => (string) $replica['notion_block_id'],
-                    ]);
-                }
+                // 暂存文件名带 upload id，必须先拿到 id 才能落位；移动失败即抛异常回滚本条记录
+                $queue->stage((int) $user['id'], $uploadId, $partPath);
+
                 $pdo->commit();
             } catch (Throwable $exception) {
                 if ($pdo->inTransaction()) {
@@ -730,8 +749,8 @@ try {
                 throw $exception;
             }
         } catch (Throwable $exception) {
-            // 落库失败：Notion 文件块已写入但本地没有记录，若不清理将永远无法通过应用删除（孤儿副本）
-            archiveWrittenReplicas($user, $stored['replicas']);
+            // 入库或暂存失败：清掉可能已落位的暂存文件，避免孤儿文件占着服务器空间
+            $queue->discard((int) $user['id'], $uploadId);
             throw $exception;
         }
 
@@ -765,122 +784,28 @@ try {
         }
 
         $message = match ($resolved['handled']) {
-            'overwrite' => sprintf('已上传「%s」并覆盖了同名旧文件。', $filename),
-            'rename' => sprintf('同名文件已存在，已自动编号为「%s」并上传。', $filename),
-            default => sprintf('已上传「%s」并附加到 Notion。', $filename),
+            'overwrite' => sprintf('已上传「%s」并覆盖了同名旧文件，正在写入存储。', $filename),
+            'rename' => sprintf('同名文件已存在，已自动编号为「%s」并上传，正在写入存储。', $filename),
+            default => sprintf('已上传「%s」，正在写入存储。', $filename),
         };
 
-        // 上传后内容识别：先按全站内容指纹（SHA-256）比对——命中白名单免重复审核，
-        // 命中黑名单直接拦截；未收录才调用 AI 审核，并把结论登记进指纹库；工单附件不走风控
-        $moderationPayload = null;
-        try {
-            $moderationService = ModerationService::create();
-            if ($scope === 'drive' && $moderationService->enabled() && !$moderationExempt) {
-                // 复用锚定校验已算出的 SHA-256，避免对同一文件重复全量哈希（可达 5 GB）
-                if ($contentHash === '') {
-                    $contentHash = is_file($partPath) ? (string) (hash_file('sha256', $partPath) ?: '') : '';
-                }
-                if ($contentHash !== '') {
-                    $context['file']['sha256'] = $contentHash;
-                }
-
-                $known = $contentHash !== '' ? $moderationService->lookupHash($contentHash) : null;
-                if ($known === Verdict::APPROVED) {
-                    Logger::info('upload', '内容指纹命中白名单，本次免重复审核', [
-                        'upload_id' => $uploadId,
-                        'sha256' => $contentHash,
-                    ] + $context);
-                    // 指纹命中白名单即审核通过：获准重传的用户重新上传成功后自动闭环待处理记录
-                    $moderationService->completeResubmit((int) $user['id'], (string) $meta['filename']);
-                } else {
-                    // 全站已有同内容被判定违规：不再重复调用 AI，直接按违规处理
-                    $verdict = $known === Verdict::FLAGGED
-                        ? Verdict::flagged('该内容此前已被判定违规（SHA-256 命中），无需重复审核。', '', 'hash', 'sha256', $contentHash)
-                        : $moderationService->inspect($filename, $mime, $partPath, $size);
-
-                    if ($verdict->isFlagged()) {
-                        $appealNo = $moderationService->record(
-                            (int) $user['id'],
-                            $uploadId,
-                            $filename,
-                            ModerationService::STAGE_FINISH,
-                            $verdict,
-                            $contentHash
-                        );
-                        // 自动识别只隔离当前文件，不写全站黑名单：AI 存在误判，若立即拉黑全站，
-                        // 同一内容会被永久拦截且易被反向利用；待管理员人工打回（ModerationService::reject）时才登记黑名单
-                        $moderationService->quarantine($uploadId);
-                        Logger::warning('upload', '内容审核命中，文件已暂停使用', [
-                            'appeal_no' => $appealNo,
-                            'upload_id' => $uploadId,
-                            'provider' => $verdict->provider,
-                            'matched' => $verdict->matched,
-                        ] + $context);
-                        raiseAdminAlert('warning', sprintf(
-                            '内容风控拦截：用户 %s 上传《%s》已被暂停使用（申诉号 %s）',
-                            (string) $user['username'],
-                            $filename,
-                            $appealNo
-                        ), [
-                            'appeal_no' => $appealNo,
-                            'upload_id' => $uploadId,
-                            'user_id' => (int) $user['id'],
-                            'filename' => $filename,
-                            'reason' => $verdict->reason,
-                        ]);
-                        $moderationPayload = [
-                            'decision' => $verdict->decision,
-                            'appeal_no' => $appealNo,
-                            'message' => sprintf(
-                                '文件《%s》未通过内容审核，已暂停使用并暂时保留。申诉号：%s，如认为误判，可凭此号联系管理员申诉。',
-                                $filename,
-                                $appealNo
-                            ),
-                        ];
-                    } elseif ($verdict->isPending()) {
-                        // AI 不可用或超时：不阻断、不隔离，仅登记为待人工复核并提醒管理员；
-                        // 结论未定，不登记内容指纹
-                        $moderationService->record(
-                            (int) $user['id'],
-                            $uploadId,
-                            $filename,
-                            ModerationService::STAGE_FINISH,
-                            $verdict,
-                            $contentHash
-                        );
-                        Logger::warning('upload', '内容审核降级为人工复核', ['upload_id' => $uploadId, 'reason' => $verdict->reason] + $context);
-                        raiseAdminAlert('warning', '内容审核降级：AI 接口不可用，已有文件转为人工复核，请检查风控配置。', [
-                            'upload_id' => $uploadId,
-                            'reason' => $verdict->reason,
-                        ]);
-                    } else {
-                        // 审核通过：仅当审核确实执行过才登记内容指纹，全站再次上传同哈希内容时免重复审核。
-                        // 若 AI 未配置 / 审核范围不含任何载荷（skipped），内容实际未被审核，
-                        // 此时写白名单会把未经审核的内容永久登记为「已通过」（指纹投毒）
-                        if (ModerationService::isScanned($verdict)) {
-                            $moderationService->rememberHash($contentHash, Verdict::APPROVED);
-                        }
-                        // 审核通过：获准重传的用户重新上传成功后自动闭环待处理记录
-                        $moderationService->completeResubmit((int) $user['id'], (string) $meta['filename']);
-                    }
-                }
-            }
-        } catch (Throwable $exception) {
-            Logger::error('upload', '内容审核执行失败，文件已按正常流程放行', ['error' => $exception->getMessage(), 'upload_id' => $uploadId] + $context);
-        }
-
-        Logger::info('upload', sprintf('上传成功：%s（%s，%d 份副本）', $filename, formatBytes($size), count($stored['replicas'])), $context + [
+        Logger::info('upload', sprintf('上传已入库，等待后台写入存储：%s（%s）', $filename, formatBytes($size)), $context + [
             'code' => 'uploaded',
             'upload_id' => $uploadId,
-            'replica_count' => count($stored['replicas']),
+            'storage_backend' => 'notion',
         ]);
-        jsonResponse([
+
+        // 浏览器先拿到成功响应，随后在同一进程内立即开始写入 Notion（PHP-FPM 下此刻已与浏览器断开）；
+        // 内容审核与暂存文件清理都在队列里完成，非 FPM 环境退化为「写完才结束请求」
+        jsonResponseThen([
             'ok' => true,
             'message' => $message,
             'name' => $filename,
             'duplicate' => $resolved['handled'],
-            'moderation' => $moderationPayload,
-        ]);
+            'writing' => true,
+        ], static function () use ($queue, $uploadId): void {
+            $queue->process($uploadId);
+        });
     }
 
     $fail('invalid_action', '上传请求缺少有效的 action 参数，请刷新页面后重试。', [], 400);

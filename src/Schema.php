@@ -8,7 +8,7 @@ use PDO;
 
 final class Schema
 {
-    public const CURRENT_VERSION = 21;
+    public const CURRENT_VERSION = 22;
 
     /** 内置权限组：名称、组容量、单文件上限、是否管理员、等级。首个必须保持为管理员组。 */
     public const BUILTIN_GROUPS = [
@@ -246,6 +246,14 @@ final class Schema
             // 并提示「数据已丢失，请重新上传」，避免每次操作都去实时探测 Notion。
             self::addColumn($pdo, 'uploads', 'data_lost', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER status');
             self::addIndex($pdo, 'uploads', 'idx_uploads_data_lost', '`data_lost`');
+        }
+
+        if ($version < 22) {
+            // 异步写入存储：上传完成后先把文件入库为 writing（正在写入存储）并暂存在服务器，
+            // 由后台队列写入 Notion 后转 active；write_attempts 记录已尝试的写入次数，
+            // 达到上限即置为 write_failed（写入失败）并告警管理员，等用户手动重试
+            self::addColumn($pdo, 'uploads', 'write_attempts', 'TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER data_lost');
+            self::addIndex($pdo, 'uploads', 'idx_uploads_status_id', '`status`, `id`');
         }
 
         Database::setConfig('schema_version', (string) self::CURRENT_VERSION);

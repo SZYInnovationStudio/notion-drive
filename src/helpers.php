@@ -13,6 +13,15 @@ use NotionDrive\NotionSpaceRepair;
 use NotionDrive\Schema;
 use NotionDrive\Security;
 
+/**
+ * 「我的文件」与工单附件中可见的上传状态：正在写入存储（writing）与写入失败（write_failed）
+ * 的文件同样要显示出来，并可预览、下载、重命名、移动、删除。
+ */
+const UPLOAD_VISIBLE_STATUSES = "'active', 'writing', 'write_failed'";
+
+/** 计入个人容量与服务器暂存占用的上传状态：隔离文件仍占用空间，故一并计入。 */
+const UPLOAD_CAPACITY_STATUSES = "'active', 'quarantined', 'writing', 'write_failed'";
+
 function e(?string $value): string
 {
     return htmlspecialchars($value ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
@@ -355,6 +364,46 @@ function jsonResponse(array $data, int $status = 200): never
     exit;
 }
 
+/**
+ * 先输出 JSON 响应并与浏览器断开（PHP-FPM 下用 fastcgi_finish_request 立即断连），
+ * 再在后台执行 $after。用于「上传秒回、写入存储异步进行」：用户不必等 Notion 写完。
+ * 非 FPM 环境（mod_php / 内置服务器）没有该函数，退化为「$after 跑完才结束请求」，
+ * 行为与改造前一致，只是不再等待内容审核。
+ */
+function jsonResponseThen(array $data, callable $after, int $status = 200): never
+{
+    http_response_code($status);
+    header('Content-Type: application/json; charset=utf-8');
+    header('Connection: close');
+    echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    finishResponseThen($after);
+    exit;
+}
+
+/**
+ * 把已生成的输出发给浏览器并断开（PHP-FPM 下立即断连），再在后台执行 $after。
+ * 供页面在输出完毕后做懒清扫使用，避免把后台工作算进页面加载时间。
+ * 非 FPM 环境没有 fastcgi_finish_request，退化为「$after 跑完才结束请求」。
+ */
+function finishResponseThen(callable $after): void
+{
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request();
+    } else {
+        @ob_end_flush();
+        flush();
+    }
+
+    // 浏览器已断开也不能中断后台工作（用户可能立刻离开或刷新页面）
+    ignore_user_abort(true);
+    @set_time_limit(0);
+    try {
+        $after();
+    } catch (Throwable $exception) {
+        Logger::error('queue', '请求结束后的后台任务执行失败', ['error' => $exception->getMessage()]);
+    }
+}
+
 function appConfig(): array
 {
     $config = require dirname(__DIR__) . '/config/database.php';
@@ -572,7 +621,7 @@ function userUsedBytes(int $userId): int
     // 隔离（quarantined）文件仍占服务器与 Notion 空间，因此同样计入已用容量；
     // 工单附件（scope = ticket）不计入个人容量配额
     $statement = Database::connection()->prepare(
-        "SELECT COALESCE(SUM(file_size), 0) FROM uploads WHERE user_id = :user_id AND scope = 'drive' AND status IN ('active', 'quarantined')"
+        "SELECT COALESCE(SUM(file_size), 0) FROM uploads WHERE user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_CAPACITY_STATUSES . ')'
     );
     $statement->execute(['user_id' => $userId]);
     return (int) $statement->fetchColumn();
@@ -845,7 +894,7 @@ function findActiveUploadByName(int $userId, string $name): ?array
 {
     $statement = Database::connection()->prepare(
         "SELECT id, filename, display_name, file_size, notion_block_id FROM uploads
-         WHERE user_id = :user_id AND scope = 'drive' AND status = 'active'
+         WHERE user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ")
            AND COALESCE(NULLIF(display_name, ''), filename) = :name
          ORDER BY id DESC LIMIT 1"
     );
@@ -1647,15 +1696,18 @@ function notionWriteWithRepair(callable $operation, array $user, array $target, 
 }
 
 /** 双写：把临时文件写入用户的全部目标账户，至少一份成功即视为成功；全部失败时对外只提示「存储服务暂时不可用」，不透露账户信息。 */
-function writeNotionReplicas(array $user, string $temporaryPath, string $filename, string $mime, int $size): array
+function writeNotionReplicas(array $user, string $temporaryPath, string $filename, string $mime, int $size, ?string $storageName = null): array
 {
     $targets = uploadTargets($user);
     if ($targets === []) {
         throw new RuntimeException('当前账号尚未完成 Notion 账户绑定，请先在「账户管理」中绑定后再上传。');
     }
 
-    // 同一文件在所有账户中共用同一个存储名，便于人工在 Notion 中核对
-    $storageName = uniqueStorageName((int) $user['id'], $filename, $temporaryPath);
+    // 同一文件在所有账户中共用同一个存储名，便于人工在 Notion 中核对。
+    // 异步写入（后台队列）时存储名已在入库时算好并随文件保存，这里复用，避免前后端看到两个名字
+    if ($storageName === null || $storageName === '') {
+        $storageName = uniqueStorageName((int) $user['id'], $filename, $temporaryPath);
+    }
     $replicas = [];
 
     foreach ($targets as $target) {
@@ -1980,7 +2032,7 @@ function folderFileCountMap(int $userId): array
 {
     $statement = Database::connection()->prepare(
         "SELECT folder_id, COUNT(*) AS total FROM uploads
-         WHERE user_id = :user_id AND scope = 'drive' AND status = 'active' AND folder_id IS NOT NULL
+         WHERE user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ") AND folder_id IS NOT NULL
          GROUP BY folder_id"
     );
     $statement->execute(['user_id' => $userId]);

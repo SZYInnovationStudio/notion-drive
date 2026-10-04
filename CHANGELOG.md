@@ -28,6 +28,45 @@
 
 ---
 
+### [2026-10-04 13:50:15] 上传改为「先落服务器暂存、后台异步写入 Notion」，文件秒级可见可用
+
+- 目的：写入 Notion 很慢（大文件要几十秒到数分钟），改造前 `finish` 阶段必须同步写完 Notion 再跑内容审核，用户全程只能盯着进度条。现改为：上传完成后文件先暂存在服务器本地并入库为 `writing`（正在写入存储），浏览器立刻拿到成功响应，文件在「我的文件」中立刻可见，并可**预览、下载、重命名、移动、删除**；Notion 写入与内容审核交给后台队列，写完自动转 `active` 并删除服务器上的暂存文件。同时按用户限制服务器暂存占用（后台可配，默认 1 GB），避免大文件并发上传把磁盘占满。
+- 验证：`php -l` 对仓库全部 48 个 `*.php` 执行，结果 `BAD=0 TOTAL=48`（全部 `No syntax errors detected`）；`node --check assets/app.js` 退出码 0；`php -r "require 'src/helpers.php';"` 确认两个新常量为 `'active', 'writing', 'write_failed'` / `'active', 'quarantined', 'writing', 'write_failed'`（拼进 SQL 后即为合法的 `IN (...)` 列表）；`grep` 复核 `app.css?v=60` 已无残留（12 处均为 `?v=61`）。遵守「本机禁止功能 / HTTP 测试」约定，**未做 HTTP / 上传验证**——异步写入与懒清扫需在真实环境验证，建议部署后先传一个中等文件确认状态能正常从「正在写入存储」转为副本。逻辑自查：`SpacePatrol::reconcileReplicas()` 只取「恰好 1 份有效副本」的文件，暂存中的 0 副本文件不会被误判为数据丢失；`api/file.php` 在无副本时先抛异常、不会走到 `markLost`。
+- 改动明细（行号为改动后当前行号）：
+  - **新增** `src/Uploads/NotionWriteQueue.php` L1-L430 — 后台写入队列：`stage()` 把拼接好的文件移入 `storage/staging/{user_id}/{upload_id}.bin`；`process()` 以暂存文件 `flock` 作互斥锁（同一记录同一时刻只有一个进程在写）；`write()` 调 `writeNotionReplicas()` 写 Notion → `commitReplicas()` 回填副本并转 `active` → `moderate()` 跑内容审核（可能置隔离）→ `discard()` 删暂存文件；失败按 `MAX_ATTEMPTS = 3` 重试，仍失败置 `write_failed` 并告警管理员；记录在写入期间被删除时把刚写入的副本归档（`archiveWrittenReplicas`），落库失败同样归档；`sweep()` 懒清扫接管停在 `writing` 超过 1800 秒的记录并清理孤儿暂存文件；`stagedLimitBytes()` / `stagedBytes()` 提供暂存上限与占用口径。
+  - `src/Schema.php` L11 — `CURRENT_VERSION` 21 → 22；L251-L257 — 新增 v22 迁移：`uploads.write_attempts`（`TINYINT UNSIGNED NOT NULL DEFAULT 0`）与索引 `idx_uploads_status_id(status, id)`。**旧库访问即自动补列，无需手工执行 SQL**。
+  - `install.php` L153、L161 — 全新建库同步补 `write_attempts` 列与 `idx_uploads_status_id` 索引。
+  - `src/helpers.php` L16-L23 — 新增全局常量 `UPLOAD_VISIBLE_STATUSES`（可见/可操作）与 `UPLOAD_CAPACITY_STATUSES`（计入容量），统一各处 SQL 口径。
+  - `src/helpers.php` L373-L405 — 新增 `jsonResponseThen()` 与 `finishResponseThen()`：先输出响应并调用 `fastcgi_finish_request()` 与浏览器断开，再在后台执行任务；非 FPM 环境没有该函数，退化为「任务跑完才结束请求」。
+  - `src/helpers.php` L584（`userUsedBytes`）、L857（`findActiveUploadByName`）、L1992（`folderFileCountMap`）— 状态过滤改用上述常量，使「正在写入存储 / 写入失败」的文件计入容量、参与重名编号、计入文件夹文件数。
+  - `src/helpers.php` L1659-L1670 — `writeNotionReplicas()` 新增第 6 个可选参数 `$storageName`：后台写入时复用入库时算好的存储名（`uniqueStorageName()` 含随机数，不能重算），避免前后端看到两个名字。
+  - `api/upload.php` L15 — 引入 `NotionWriteQueue`；L182-L204 — `$pendingUploadBytes()` 新增 `$includeTicket` 参数（配额校验仍排除工单附件，暂存校验必须含）。
+  - `api/upload.php` L206-L225 — 新增 `$assertStagingBudget()`：暂存占用（已入库的 writing / write_failed + 在途分块会话）加本次大小超过上限即拒绝，错误码 `staging_limit_exceeded`。
+  - `api/upload.php` L228、L256（`$assertCapacity`）与 L266、L278、L285、L633（`$assertTicketAttachmentCapacity`）— 接入暂存校验，并把工单附件计数口径换成 `UPLOAD_CAPACITY_STATUSES`。
+  - `api/upload.php` L692-L756 — finish 重写：不再同步调用 `writeNotionReplicas()`，改为「锁用户行 → 重名/配额 → INSERT uploads(status=writing, notion_* 占位) → `$queue->stage()` 移入暂存 → commit」；失败时 `discard()` 清理已落位的暂存文件。
+  - `api/upload.php` L787-L809 — 移除 finish 内的同步内容审核整段（已迁入队列），返回文案改为「正在写入存储」，并以 `jsonResponseThen()` 在断连后立即 `$queue->process($uploadId)`；`Verdict` 导入随之删除。
+  - `api/file.php` L14、L21-L25 — 引入 `NotionWriteQueue`，文件查询状态由 `status = 'active'` 放宽为 `UPLOAD_VISIBLE_STATUSES`。
+  - `api/file.php` L60-L114 — 新增 `$stagingPending` 判定与 `$streamLocalFile()`：直接流式输出服务器暂存文件（支持 Range，便于音视频预览拖动进度），暂存文件不存在时回退到 Notion 副本分支。
+  - `api/file.php` L156-L182 — 把文件名 / 响应头计算提前，并在副本分支之前插入暂存文件直出，使「正在写入存储」的文件也能下载与预览。
+  - `api/file.php` L358-L370 — 删除文件时若尚未写入存储，一并 `discard()` 掉暂存文件（后台队列因状态不符会放弃写入并把已写副本归档）。
+  - `api/file.php` L372-L381 — 新增 `action=retry_write`：「写入失败」的文件由本人或管理员重新提交，置回 `writing` 后在后台重试。
+  - `api/folder.php` L11、L58-L60 — 移动文件的状态过滤放宽为可见状态；L95-L110 — 文件夹递归删除的状态集合换成 `UPLOAD_CAPACITY_STATUSES`，并为其中的暂存文件 `discard()` 暂存副本。
+  - `dashboard.php` L12、L110-L112、L119-L123 — 引入队列类，列表与计数改用 `UPLOAD_VISIBLE_STATUSES`，并查出 `status` 列。
+  - `dashboard.php` L325-L344 — 状态徽章与说明：`writing` 显示「正在写入存储」角标与「正在写入存储，完成后自动转为 Notion 副本」；`write_failed` 显示红色「写入失败」角标并追加「重试写入」按钮。预览 / 下载 / 重命名 / 移动 / 删除在新状态下均照常可用。
+  - `dashboard.php` L409-L414 — 页面输出完毕后调用 `finishResponseThen()` 触发 `NotionWriteQueue::sweep()` 懒清扫（不占用页面加载时间）。
+  - `assets/app.css` L764-L766、L819-L820 — 新增 `.write-badge` / `.write-badge-failed` 及暗色模式配色。
+  - `assets/app.js` L1086-L1087、L1096-L1101、L1122-L1128 — 队列文案改为「正在写入存储」/「已提交，正在写入存储」，移除已不再返回的 `moderation` 结果分支与 `reviewing` 计数（`held` 仍用于 `start` 阶段关键词拦截）；L459-L462、L473-L477 — 新增 `retry-write` 动作映射与成功后刷新页面（不再移除该行）。
+  - `admin.php` L771-L786 — 「上传与容量」保存新增 `staging_limit_mb` 校验与写入；L1147-L1148 读取该配置；L1601 面板新增「待写入暂存上限（MB）」输入项（默认 1024，0 表示不限）。
+  - `admin.php` L1108、L1132 — 后台用户列表的文件数与用户文件明细改用可见状态，避免与「我的文件」显示不一致。
+  - `src/Tickets/TicketService.php` L9、L661-L665 — 工单附件查询改用 `UPLOAD_CAPACITY_STATUSES` 并查出 `status`；L1078-L1083 — 关闭工单清理附件时同步 `discard()` 尚未写入存储的附件暂存文件。
+  - `.gitignore` L5 — 忽略 `/storage/staging/`（运行时暂存，不入库）。
+  - 资源版本号 `assets/app.css?v=60 → ?v=61`（共 12 处）：`dashboard.php` L135、`account.php` L193、`admin.php` L1266、`admin_orders.php` L264、`bans.php` L137、`forgot.php` L76、`index.php` L62、`install.php` L294、`logs.php` L65、`pay.php` L134、`register.php` L141、`tickets.php` L220。
+- 数据库结构影响：`uploads` 新增 `write_attempts TINYINT UNSIGNED NOT NULL DEFAULT 0` 与索引 `idx_uploads_status_id`；`status` 列本就是 `VARCHAR(20)`，新状态 `writing` / `write_failed` 无需改类型。旧库由 `Schema::migrate()` 自动补列（`schema_version` 21 → 22），**无需手工执行，也不会清库**。
+- 备注：未提交的两项——多账户副本仍串行写、页面访问触发的懒清扫在非 FPM 环境不生效（会退化为「页面加载完才跑」，此时仅上传请求自身的秒回仍有效）。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+---
+
 ### [2026-10-04 13:09:30] Notion 写入加速：分片大小提到 20 MB 并改为并发上传
 
 - 目的：用户反馈写入 Notion 时间长。根因是 `NotionClient::sendParts()` 逐片串行——每个分片一次 HTTPS POST，发完一片才发下一片，且每次新建连接（重复 TCP / TLS 握手）；1 GB 文件 = 100 次串行往返，往返延迟被完全累加。Notion 官方允许分片并发、乱序上传（只要在 complete 之前把 1..N 发完即可），故改为固定并发窗口发送；同时把分片大小由 10 MB 提到官方上限 20 MB，请求数直接减半。

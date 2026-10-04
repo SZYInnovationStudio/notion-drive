@@ -11,6 +11,7 @@ use NotionDrive\NotionApiException;
 use NotionDrive\NotionClient;
 use NotionDrive\Security;
 use NotionDrive\Space\SpacePatrol;
+use NotionDrive\Uploads\NotionWriteQueue;
 
 $user = Auth::requireLogin($_SERVER['REQUEST_METHOD'] !== 'GET');
 $id = (int) ($_GET['id'] ?? $_POST['id'] ?? 0);
@@ -20,7 +21,7 @@ $previewMode = false;
 $statement = Database::connection()->prepare(
     "SELECT up.*, u.username, u.notion_token_encrypted, u.notion_account_source
      FROM uploads up JOIN users u ON u.id = up.user_id
-     WHERE up.id = :id AND up.status = 'active' LIMIT 1"
+     WHERE up.id = :id AND up.status IN (" . UPLOAD_VISIBLE_STATUSES . ') LIMIT 1'
 );
 $statement->execute(['id' => $id]);
 $file = $statement->fetch();
@@ -55,6 +56,62 @@ $owner = [
     'notion_token_encrypted' => $file['notion_token_encrypted'] ?? null,
     'notion_account_source' => $file['notion_account_source'] ?? null,
 ];
+
+/** 是否尚未写入存储（正在写入 / 写入失败）：这类文件没有 Notion 副本，下载与预览直接读服务器上的暂存文件。 */
+$stagingPending = in_array((string) $file['status'], [NotionWriteQueue::STATUS_WRITING, NotionWriteQueue::STATUS_FAILED], true);
+
+/**
+ * 本地暂存文件的流式输出（支持 Range，便于音视频预览拖动进度）。
+ * 暂存文件在后台写入完成后即被删除，因此读不到时由调用方回退到 Notion 副本分支。
+ */
+$streamLocalFile = static function (string $path): never {
+    $size = (int) (filesize($path) ?: 0);
+    $start = 0;
+    $end = max(0, $size - 1);
+
+    $range = trim((string) ($_SERVER['HTTP_RANGE'] ?? ''));
+    if ($range !== '' && preg_match('/^bytes=(\d*)-(\d*)$/i', $range, $match) === 1) {
+        if ($match[1] !== '') {
+            $start = (int) $match[1];
+        }
+        if ($match[2] !== '') {
+            $end = (int) $match[2];
+        }
+        if ($start > $end || $start >= $size) {
+            http_response_code(416);
+            header('Content-Range: bytes */' . $size);
+            exit;
+        }
+        $end = min($end, $size - 1);
+        http_response_code(206);
+        header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
+    }
+
+    header('Content-Length: ' . max(0, $end - $start + 1));
+
+    $handle = fopen($path, 'rb');
+    if ($handle === false) {
+        throw new RuntimeException('无法读取该文件的服务器暂存副本。');
+    }
+    try {
+        if ($start > 0) {
+            fseek($handle, $start);
+        }
+        for ($remaining = $end - $start + 1; $remaining > 0; ) {
+            $chunk = fread($handle, (int) min(262144, $remaining));
+            if ($chunk === false || $chunk === '') {
+                break;
+            }
+            echo $chunk;
+            flush();
+            $remaining -= strlen($chunk);
+        }
+    } finally {
+        fclose($handle);
+    }
+
+    exit;
+};
 
 // 封禁期间禁止下载、修改与重命名；管理员代管他人文件不受影响（此处判断的是当前操作者）
 // 工单附件是申诉通道（封禁提示本身引导用户走工单申诉），工单归属者仍可下载自己工单内的附件
@@ -96,12 +153,6 @@ try {
             $previewMode = true;
         }
 
-        // 按副本顺序逐个尝试：某个账户不可用时自动回退到下一份
-        $targets = uploadReplicaTargets($file, $owner);
-        if ($targets === []) {
-            throw new RuntimeException('该文件当前没有可用的存储副本。');
-        }
-
         $filename = (string) ($file['display_name'] ?: $file['filename']);
         // ASCII 兜底文件名：老浏览器与下载工具不认 filename*=，需剔除非 ASCII 字符并保证保留扩展名
         $asciiName = trim(preg_replace('/[^\x20-\x7E]+/', '', str_replace(['\\', '/', '"'], '', $filename)) ?? '');
@@ -122,6 +173,19 @@ try {
         }
         header('Accept-Ranges: bytes');
         header('X-Accel-Buffering: no');
+
+        // 尚未写入存储：直接读服务器上的暂存文件，用户不必等后台把 Notion 副本写完。
+        // 后台刚好写完并删掉暂存文件时会落空，此时继续走下面的 Notion 副本分支
+        $stagingPath = NotionWriteQueue::stagingPath((int) $file['user_id'], $id);
+        if ($stagingPending && is_file($stagingPath)) {
+            $streamLocalFile($stagingPath);
+        }
+
+        // 按副本顺序逐个尝试：某个账户不可用时自动回退到下一份
+        $targets = uploadReplicaTargets($file, $owner);
+        if ($targets === []) {
+            throw new RuntimeException('该文件当前没有可用的存储副本。');
+        }
 
         $lastError = '';
         $fellBack = false;
@@ -295,9 +359,25 @@ try {
         // 先落库再归档：Notion 归档失败时用户在应用内也已看不到该文件，避免出现「远端已删、本地仍在」的死状态
         $update = Database::connection()->prepare("UPDATE uploads SET status = 'deleted' WHERE id = :id");
         $update->execute(['id' => $id]);
+        // 尚未写入存储的文件没有 Notion 副本，删掉服务器上的暂存文件即可；
+        // 若后台此刻正在写，其回填 UPDATE 会因状态不符影响 0 行，并把刚写入的副本自行归档
+        if ($stagingPending) {
+            NotionWriteQueue::create()->discard((int) $file['user_id'], $id);
+        }
         // 逐个账户归档全部副本；单份失败只记日志并告警，不影响删除结果
         archiveUploadReplicas($file, $owner);
         jsonResponse(['ok' => true, 'message' => '文件已删除。']);
+    }
+
+    if ($action === 'retry_write') {
+        $queue = NotionWriteQueue::create();
+        if (!$queue->retry($id, (int) $file['user_id'])) {
+            throw new RuntimeException('该文件当前不需要重试写入。');
+        }
+        Logger::info('file', '用户手动重试写入存储。', ['file_id' => $id, 'user_id' => (int) $user['id']]);
+        jsonResponseThen(['ok' => true, 'message' => '已重新提交，正在写入存储。'], static function () use ($queue, $id): void {
+            $queue->process($id);
+        });
     }
 
     throw new RuntimeException('未知文件操作。');

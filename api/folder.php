@@ -8,6 +8,7 @@ use NotionDrive\Auth;
 use NotionDrive\Database;
 use NotionDrive\Logger;
 use NotionDrive\Security;
+use NotionDrive\Uploads\NotionWriteQueue;
 
 /** 文件夹名称与文件名同规则：非空、不超过 900 字节、不含控制字符，并剥掉路径分隔符。 */
 function normalizeFolderName(string $raw): string
@@ -55,7 +56,7 @@ try {
             throw new RuntimeException('目标文件夹不存在。');
         }
         $statement = $connection->prepare(
-            "SELECT id, data_lost FROM uploads WHERE id = :id AND user_id = :user_id AND scope = 'drive' AND status = 'active' LIMIT 1"
+            "SELECT id, data_lost FROM uploads WHERE id = :id AND user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ') LIMIT 1'
         );
         $statement->execute(['id' => $fileId, 'user_id' => $userId]);
         $upload = $statement->fetch();
@@ -94,15 +95,19 @@ try {
         $statement = $connection->prepare(
             "SELECT up.*, u.username, u.notion_token_encrypted, u.notion_account_source
              FROM uploads up JOIN users u ON u.id = up.user_id
-             WHERE up.folder_id IN ({$placeholders}) AND up.status IN ('active', 'quarantined')"
+             WHERE up.folder_id IN ({$placeholders}) AND up.status IN (" . UPLOAD_CAPACITY_STATUSES . ')'
         );
         $statement->execute($folderIds);
         $files = $statement->fetchAll();
 
         // 先落库再归档：Notion 归档失败时用户在应用内也已看不到这些文件，避免出现「远端已删、本地仍在」的死状态
-        $connection->prepare("UPDATE uploads SET status = 'deleted' WHERE folder_id IN ({$placeholders}) AND status IN ('active', 'quarantined')")
+        $connection->prepare('UPDATE uploads SET status = \'deleted\' WHERE folder_id IN (' . $placeholders . ') AND status IN (' . UPLOAD_CAPACITY_STATUSES . ')')
             ->execute($folderIds);
         foreach ($files as $file) {
+            // 尚未写入存储的文件没有 Notion 副本，清掉服务器上的暂存文件即可
+            if (in_array((string) $file['status'], [NotionWriteQueue::STATUS_WRITING, NotionWriteQueue::STATUS_FAILED], true)) {
+                NotionWriteQueue::create()->discard((int) $file['user_id'], (int) $file['id']);
+            }
             archiveUploadReplicas($file, [
                 'id' => (int) $file['user_id'],
                 'notion_token_encrypted' => $file['notion_token_encrypted'] ?? null,

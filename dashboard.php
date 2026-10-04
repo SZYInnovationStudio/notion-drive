@@ -9,6 +9,7 @@ use NotionDrive\Database;
 use NotionDrive\Moderation\ModerationService;
 use NotionDrive\Security;
 use NotionDrive\Tickets\TicketService;
+use NotionDrive\Uploads\NotionWriteQueue;
 
 $user = Auth::requireLogin();
 // 到期前 3 天的邮件提醒：无 cron，靠页面访问懒触发，同一到期周期只发一次
@@ -107,7 +108,7 @@ $folderQuery = $currentFolderId > 0 ? '&folder=' . $currentFolderId : '';
 
 $perPage = 50;
 $countStatement = Database::connection()->prepare(
-    "SELECT COUNT(*) FROM uploads WHERE user_id = :user_id AND scope = 'drive' AND status = 'active' AND folder_id <=> :folder_id"
+    "SELECT COUNT(*) FROM uploads WHERE user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ') AND folder_id <=> :folder_id'
 );
 $countStatement->execute(['user_id' => $user['id'], 'folder_id' => $folderParam]);
 $totalFiles = (int) $countStatement->fetchColumn();
@@ -116,9 +117,9 @@ $page = min(max(1, (int) ($_GET['page'] ?? 1)), $totalPages);
 $offset = ($page - 1) * $perPage;
 // LIMIT/OFFSET 用内联整数：原生预处理把占位符当字符串绑定，会触发 SQL 语法错误
 $statement = Database::connection()->prepare(
-    "SELECT id, filename, display_name, file_size, mime_type, data_lost, created_at, updated_at
-     FROM uploads WHERE user_id = :user_id AND scope = 'drive' AND status = 'active' AND folder_id <=> :folder_id
-     ORDER BY id DESC LIMIT $perPage OFFSET $offset"
+    "SELECT id, filename, display_name, file_size, mime_type, status, data_lost, created_at, updated_at
+     FROM uploads WHERE user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ') AND folder_id <=> :folder_id
+     ORDER BY id DESC LIMIT $perPage OFFSET $offset'
 );
 $statement->execute(['user_id' => $user['id'], 'folder_id' => $folderParam]);
 $files = $statement->fetchAll();
@@ -131,7 +132,7 @@ $premiumNotice = premiumNotice($user);
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <?= siteTitleTag('我的文件') ?>
     <?= siteFaviconTag() ?>
-    <link rel="stylesheet" href="assets/app.css?v=60">
+    <link rel="stylesheet" href="assets/app.css?v=61">
 </head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>" data-limit="<?= $singleLimit ?>" data-remaining="<?= $remainingBytes === null ? '' : $remainingBytes ?>" data-folder="<?= $currentFolderId ?>">
     <aside class="drive-sidebar">
@@ -321,17 +322,26 @@ $premiumNotice = premiumNotice($user);
                             }
                         }
                         $storageLabel = $sources === [] ? '已安全存储' : sprintf('%s · %d 份副本', $origin, count($sources));
+                        // 尚未写入存储：副本还没生成，用状态文案替代「已安全存储」，避免误导
+                        $fileStatus = (string) $file['status'];
+                        $isWriting = $fileStatus === NotionWriteQueue::STATUS_WRITING;
+                        $isWriteFailed = $fileStatus === NotionWriteQueue::STATUS_FAILED;
+                        if ($isWriting) {
+                            $storageLabel = '正在写入存储，完成后自动转为 Notion 副本';
+                        } elseif ($isWriteFailed) {
+                            $storageLabel = '写入存储失败，文件仍可下载；可点「重试写入」重新提交';
+                        }
                         $isLost = (int) ($file['data_lost'] ?? 0) === 1;
                         if ($isLost) {
                             $storageLabel = '数据已丢失，请重新上传';
                         }
                     ?>
                         <tr data-file-id="<?= (int) $file['id'] ?>" data-file-name="<?= e(mb_strtolower($name)) ?>"<?= $isLost ? ' class="file-lost"' : '' ?>>
-                            <td><div class="file-name"><span class="file-kind"><?= e(strtoupper(pathinfo($name, PATHINFO_EXTENSION) ?: 'FILE')) ?></span><div><strong class="display-name"><?= e($name) ?></strong><small><?= e($storageLabel) ?></small></div><?php if ($isLost): ?><span class="lost-badge">数据已丢失</span><?php endif; ?></div></td>
+                            <td><div class="file-name"><span class="file-kind"><?= e(strtoupper(pathinfo($name, PATHINFO_EXTENSION) ?: 'FILE')) ?></span><div><strong class="display-name"><?= e($name) ?></strong><small><?= e($storageLabel) ?></small></div><?php if ($isLost): ?><span class="lost-badge">数据已丢失</span><?php elseif ($isWriting): ?><span class="write-badge">正在写入存储</span><?php elseif ($isWriteFailed): ?><span class="write-badge write-badge-failed">写入失败</span><?php endif; ?></div></td>
                             <td data-label="类型"><?= e(explode('/', (string) $file['mime_type'])[0]) ?></td>
                             <td data-label="大小"><?= e(formatBytes((int) $file['file_size'])) ?></td>
                             <td data-label="更新时间"><?= e(date('Y-m-d H:i', strtotime((string) $file['updated_at']))) ?></td>
-                            <td><div class="file-actions"><?php if (!$isLost && filePreviewable($file)): ?><button data-action="preview" data-preview-kind="<?= e(previewKind($file)) ?>" data-preview-mime="<?= e((string) $file['mime_type']) ?>" data-preview-size="<?= (int) $file['file_size'] ?>" data-preview-name="<?= e($name) ?>">预览</button><?php endif; ?><?php if (!$isLost): ?><a href="api/file.php?id=<?= (int) $file['id'] ?>" title="下载">下载</a><button data-action="rename">重命名</button><button data-action="move">移动</button><?php endif; ?><button class="danger" data-action="delete">删除</button></div></td>
+                            <td><div class="file-actions"><?php if (!$isLost && filePreviewable($file)): ?><button data-action="preview" data-preview-kind="<?= e(previewKind($file)) ?>" data-preview-mime="<?= e((string) $file['mime_type']) ?>" data-preview-size="<?= (int) $file['file_size'] ?>" data-preview-name="<?= e($name) ?>">预览</button><?php endif; ?><?php if (!$isLost): ?><a href="api/file.php?id=<?= (int) $file['id'] ?>" title="下载">下载</a><button data-action="rename">重命名</button><button data-action="move">移动</button><?php endif; ?><?php if ($isWriteFailed): ?><button data-action="retry-write">重试写入</button><?php endif; ?><button class="danger" data-action="delete">删除</button></div></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
@@ -396,3 +406,9 @@ $premiumNotice = premiumNotice($user);
     <script src="assets/app.js?v=31" defer></script>
 </body>
 </html>
+<?php
+// 懒清扫：接管进程被中断而停在「正在写入存储」的记录、清理孤儿暂存文件。
+// 必须在页面全部输出之后再执行，避免把后台写入算进用户的页面加载时间
+finishResponseThen(static function (): void {
+    NotionWriteQueue::create()->sweep();
+});

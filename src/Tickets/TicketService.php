@@ -6,6 +6,7 @@ namespace NotionDrive\Tickets;
 
 use NotionDrive\Database;
 use NotionDrive\Logger;
+use NotionDrive\Uploads\NotionWriteQueue;
 use PDOException;
 
 /**
@@ -657,11 +658,11 @@ final class TicketService
     public function attachments(int $ticketId): array
     {
         $statement = Database::connection()->prepare(
-            "SELECT up.id, up.filename, up.display_name, up.file_size, up.mime_type, up.user_id, up.created_at, u.username
+            "SELECT up.id, up.filename, up.display_name, up.file_size, up.mime_type, up.user_id, up.status, up.created_at, u.username
              FROM uploads up
              LEFT JOIN users u ON u.id = up.user_id
-             WHERE up.scope = 'ticket' AND up.ticket_id = :ticket_id AND up.status IN ('active', 'quarantined')
-             ORDER BY up.id ASC"
+             WHERE up.scope = 'ticket' AND up.ticket_id = :ticket_id AND up.status IN (" . UPLOAD_CAPACITY_STATUSES . ')
+             ORDER BY up.id ASC'
         );
         $statement->execute(['ticket_id' => $ticketId]);
 
@@ -1076,6 +1077,10 @@ final class TicketService
 
             try {
                 archiveUploadReplicas($attachment, $owner);
+                // 尚未写入存储的附件没有 Notion 副本，清掉服务器上的暂存文件即可
+                if (in_array((string) ($attachment['status'] ?? ''), [NotionWriteQueue::STATUS_WRITING, NotionWriteQueue::STATUS_FAILED], true)) {
+                    NotionWriteQueue::create()->discard($ownerId, $uploadId);
+                }
             } catch (\Throwable $exception) {
                 Logger::warning('ticket', sprintf(
                     '工单 #%d 关闭时清理附件 #%d 失败：%s',

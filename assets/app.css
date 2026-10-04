@@ -761,6 +761,10 @@ tr.file-lost { opacity: .68; }
 tr.file-lost .display-name { text-decoration: line-through; }
 .lost-badge { margin-left: 8px; padding: 1px 8px; border-radius: 999px; background: var(--danger-soft); color: var(--danger); border: 1px solid #f0caca; font-size: .68rem; font-weight: 650; white-space: nowrap; align-self: center; }
 
+/* 尚未写入存储的文件：写入中用信息色，写入失败用例外的红色 */
+.write-badge { margin-left: 8px; padding: 1px 8px; border-radius: 999px; background: var(--primary-soft); color: var(--primary); border: 1px solid #cfe0fb; font-size: .68rem; font-weight: 650; white-space: nowrap; align-self: center; }
+.write-badge-failed { background: var(--danger-soft); color: var(--danger); border-color: #f0caca; }
+
 @media (max-width: 640px) {
     .preview-overlay { padding: 0; }
     .preview-dialog { width: 100%; max-height: 100vh; height: 100%; border-radius: 0; }
@@ -812,6 +816,8 @@ tr.file-lost .display-name { text-decoration: line-through; }
     .status-badge.pending { color: #e0b463 !important; background: #3a2f16; }
     .save-action { border-color: #2b4363; }
     .delete-action, .danger-panel, .lost-badge { border-color: #4a2a2c; }
+    .write-badge { background: #16283f; color: #7fb0e8; border-color: #26456b; }
+    .write-badge-failed { background: #2a1a1c; color: #f0a0a0; border-color: #4a2a2c; }
     .restore-impact { color: #f0a0a0; border-color: #4a2a2c; }
     .folder-kind { background: #1c2c46; color: #7fb0e8; }
     /* 提示条 / 工单状态 / 邀请卡等浅色 tint */

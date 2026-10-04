@@ -771,14 +771,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($action === 'save_limits') {
             $officialLimitMb = (int) ($_POST['official_single_file_limit_mb'] ?? 0);
             $chunkMb = (int) ($_POST['upload_chunk_size_mb'] ?? 0);
+            $stagingMb = (int) ($_POST['staging_limit_mb'] ?? 0);
             if ($officialLimitMb < 1 || $officialLimitMb > 1048576) {
                 throw new RuntimeException('官方账户单文件上限需为 1 ~ 1048576 MB 之间的整数。');
             }
             if ($chunkMb < 1 || $chunkMb > 1024) {
                 throw new RuntimeException('上传分块大小需为 1 ~ 1024 MB 之间的整数。');
             }
+            if ($stagingMb < 0 || $stagingMb > 1048576) {
+                throw new RuntimeException('待写入暂存上限需为 0 ~ 1048576 MB 之间的整数（0 表示不限）。');
+            }
             Database::setConfig('official_single_file_limit_bytes', (string) ($officialLimitMb * 1024 * 1024));
             Database::setConfig('upload_chunk_size_mb', (string) $chunkMb);
+            Database::setConfig('staging_limit_mb', (string) $stagingMb);
             $effective = uploadChunkSizeBytes();
             flash('success', $effective < $chunkMb * 1024 * 1024
                 ? sprintf('上传与容量设置已保存；受服务器 PHP 上传限制约束，分块实际生效值为 %s。', formatBytes($effective))
@@ -1100,7 +1105,7 @@ $users = Database::connection()->query(
      LEFT JOIN `groups` g ON g.id = u.group_id
      LEFT JOIN (
          SELECT user_id, COUNT(*) AS file_count, SUM(file_size) AS used_bytes
-         FROM uploads WHERE scope = 'drive' AND status = 'active' GROUP BY user_id
+         FROM uploads WHERE scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ") GROUP BY user_id
      ) f ON f.user_id = u.id
      ORDER BY g.level DESC, u.id ASC"
 )->fetchAll();
@@ -1124,7 +1129,7 @@ if ($selectedUserId > 0) {
         if ((int) $item['id'] === $selectedUserId) { $selectedUser = $item; break; }
     }
     if ($selectedUser) {
-        $filesStatement = Database::connection()->prepare("SELECT * FROM uploads WHERE user_id = :id AND scope = 'drive' AND status = 'active' ORDER BY id DESC");
+        $filesStatement = Database::connection()->prepare('SELECT * FROM uploads WHERE user_id = :id AND scope = \'drive\' AND status IN (' . UPLOAD_VISIBLE_STATUSES . ') ORDER BY id DESC');
         $filesStatement->execute(['id' => $selectedUserId]);
         $selectedFiles = $filesStatement->fetchAll();
         foreach (userOfficialAccounts($selectedUserId) as $account) {
@@ -1144,6 +1149,8 @@ $emailRequired = emailRequired();
 $officialLimitMb = (int) round((int) Database::config('official_single_file_limit_bytes', (string) (5 * 1024 * 1024 * 1024)) / 1024 / 1024);
 $chunkSizeMb = (int) Database::config('upload_chunk_size_mb', '10');
 $effectiveChunkBytes = uploadChunkSizeBytes();
+// 待写入暂存上限：上传先落服务器、后台再写 Notion，这里限制每用户同时占用服务器磁盘的额度（0 表示不限）
+$stagingLimitMb = (int) Database::config('staging_limit_mb', '1024');
 // 公告管理：后台列出全部公告（含已停用），编辑态由 ?edit=<id> 预填表单
 $announcements = Database::connection()
     ->query('SELECT id, title, body, is_active, created_at, updated_at FROM announcements ORDER BY updated_at DESC, id DESC')
@@ -1263,7 +1270,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('管理后台') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=60"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('管理后台') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=61"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
@@ -1591,6 +1598,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
                 <label><span>官方账户单文件上限（MB）</span><input name="official_single_file_limit_mb" inputmode="numeric" value="<?= $officialLimitMb ?>" required></label>
                 <label><span>上传分块大小（MB）</span><input name="upload_chunk_size_mb" inputmode="numeric" value="<?= $chunkSizeMb ?>" required></label>
                 <label><span>实际生效单块</span><input value="<?= e(formatBytes($effectiveChunkBytes)) ?>" readonly></label>
+                <label><span>待写入暂存上限（MB）</span><input name="staging_limit_mb" inputmode="numeric" value="<?= $stagingLimitMb ?>" required><small>每个用户在服务器上「已上传、还没写完 Notion」的文件合计上限，默认 1024 MB；0 表示不限。写入未完成期间这些文件暂存在服务器，因此按磁盘余量设置。</small></label>
                 <div class="form-actions"><button class="primary-button compact">保存设置</button></div>
             </form>
         </section>

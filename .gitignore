@@ -2,6 +2,7 @@
 /storage/installed.lock
 /storage/logs/*.log
 /storage/chunks/
+/storage/staging/
 /storage/avatars/*
 /.idea/
 /.vscode/

@@ -456,6 +456,9 @@
             // 已有确认弹窗时直接忽略，避免快速双击叠出两个弹窗
             if (document.querySelector('.confirm-overlay')) return;
             if (!(await askConfirm('确认删除这个文件？删除后将从 Notion 页面归档。'))) return;
+        } else if (action === 'retry-write') {
+            // 写入失败后重新提交：服务端置回「正在写入存储」并在后台重试，因此刷新页面看新状态而不是移除该行
+            body.set('action', 'retry_write');
         }
 
         button.disabled = true;
@@ -467,8 +470,8 @@
             });
             const data = await readJson(response);
             if (!response.ok || !data.ok) throw new Error(data.message || '操作失败');
-            if (action === 'move') {
-                // 目标可能是当前文件夹的子层或其它层级，刷新以同步列表与各文件夹的文件数
+            if (action === 'move' || action === 'retry-write') {
+                // 移动会改变各文件夹的文件数、重试写入会改变状态徽章，都刷新以同步列表
                 window.location.reload();
                 return;
             }
@@ -886,8 +889,6 @@
     let renamed = 0;
     // 内容风控：被暂停使用的文件数（不可重试，文件已被隔离等待管理员复核）
     let held = 0;
-    // 内容风控：AI 审核未能完成、转为人工复核的文件数（文件可正常使用）
-    let reviewing = 0;
     const pending = [];
     const validate = file => {
         const extension = file.name.includes('.') ? file.name.split('.').pop().toLowerCase() : '';
@@ -1083,7 +1084,7 @@
         }
 
         bar.value = 99;
-        status.textContent = '正在写入 Notion';
+        status.textContent = '正在写入存储';
         let finished;
         try {
             finished = await controlRequest({ action: 'finish', upload_token: token });
@@ -1092,18 +1093,9 @@
         }
         if (!finished.ok || !finished.data.ok) return fail(failureText(finished.status, finished.data));
 
-        // 内容风控结果：flagged 表示文件已被暂停使用（隔离），pending 表示转人工复核但仍可用
-        const moderation = finished.data.moderation || null;
-        if (moderation && moderation.decision === 'flagged') {
-            held += 1;
-            return fail(moderation.message || '该文件未通过内容审核，已暂停使用。', false);
-        }
-        if (moderation && moderation.decision === 'pending') {
-            reviewing += 1;
-        }
-
+        // 内容审核已改为后台进行：这里只表示文件已入库、正在写入存储，审核结论稍后可在文件列表 / 账户面板查看
         bar.value = 100;
-        status.textContent = moderation && moderation.decision === 'pending' ? '上传完成，等待人工复核' : '上传完成';
+        status.textContent = '已提交，正在写入存储';
         item.classList.add('complete');
         uploaded += 1;
         return true;
@@ -1132,9 +1124,8 @@
             if (overwritten) extras.push(`覆盖 ${overwritten} 个同名文件`);
             if (renamed) extras.push(`自动编号 ${renamed} 个同名文件`);
             if (held) extras.push(`${held} 个文件未通过内容审核，已暂停使用（首页可查看申诉号）`);
-            if (reviewing) extras.push(`${reviewing} 个文件等待人工复核`);
             const suffix = extras.length ? `（${extras.join('，')}）` : '';
-            window.sessionStorage.setItem('uploadNotice', `上传成功：已上传 ${uploaded} 个文件并附加到 Notion。${suffix}`);
+            window.sessionStorage.setItem('uploadNotice', `上传成功：已提交 ${uploaded} 个文件，正在写入存储，完成后自动转为 Notion 副本。${suffix}`);
             // 新文件按时间倒序排在第一页，若停在后面的页码会看不到刚上传的文件，因此回到第一页
             const url = new URL(window.location.href);
             url.searchParams.delete('page');

@@ -190,7 +190,7 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('账户管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=60"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('账户管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=61"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
