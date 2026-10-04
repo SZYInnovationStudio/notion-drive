@@ -12,6 +12,7 @@ use NotionDrive\NotionClient;
 use NotionDrive\NotionSpaceRepair;
 use NotionDrive\Schema;
 use NotionDrive\Security;
+use NotionDrive\Share\ShareService;
 use NotionDrive\Uploads\NotionWriteQueue;
 
 /**
@@ -348,7 +349,7 @@ function sidebarStorageHtml(array $user): string
 
     if (!isAdmin($user)) {
         $html .= '<div><span>会员套餐</span><strong>' . e(premiumShortStatus($user)) . '</strong></div>'
-            . '<small><a href="pay.php">' . (isPremiumUser($user) ? '续费 / 延长' : '升级高级用户') . '</a></small>';
+            . '<small><a href="pricing.php">' . (isPremiumUser($user) ? '续费 / 延长' : '升级高级用户') . '</a></small>';
     }
 
     return $html . '</div>';
@@ -2407,7 +2408,7 @@ function findUserById(int $userId): ?array
     return is_array($user) ? $user : null;
 }
 
-function createOrder(int $userId, int $months, float $amount, string $payType): array
+function createOrder(int $userId, int $months, float $amount, string $payType, string $productType = 'premium', ?string $productMeta = null): array
 {
     $pdo = Database::connection();
     $orderNo = generateOrderNo();
@@ -2427,14 +2428,16 @@ function createOrder(int $userId, int $months, float $amount, string $payType): 
             ->execute(['user_id' => $userId]);
 
         $pdo->prepare(
-            "INSERT INTO orders (order_no, user_id, months, amount, pay_type, status)
-             VALUES (:order_no, :user_id, :months, :amount, :pay_type, 'pending')"
+            "INSERT INTO orders (order_no, user_id, months, amount, pay_type, status, product_type, product_meta)
+             VALUES (:order_no, :user_id, :months, :amount, :pay_type, 'pending', :product_type, :product_meta)"
         )->execute([
             'order_no' => $orderNo,
             'user_id' => $userId,
             'months' => $months,
             'amount' => number_format($amount, 2, '.', ''),
             'pay_type' => $payType,
+            'product_type' => $productType,
+            'product_meta' => $productMeta,
         ]);
         $pdo->commit();
     } catch (Throwable $exception) {
@@ -2448,6 +2451,19 @@ function createOrder(int $userId, int $months, float $amount, string $payType): 
     }
 
     return $order;
+}
+
+/** 订单商品的可读名称：会员按「N 个月」，直链包按「N 条」；存量订单缺字段时按会员兜底。 */
+function orderProductLabel(array $order): string
+{
+    if ((string) ($order['product_type'] ?? 'premium') === 'share_pack') {
+        $meta = json_decode((string) ($order['product_meta'] ?? ''), true);
+        $links = is_array($meta) ? (int) ($meta['links'] ?? 0) : 0;
+
+        return $links > 0 ? '直链包 ' . $links . ' 条' : '直链包';
+    }
+
+    return '会员 ' . (int) $order['months'] . ' 个月';
 }
 
 /** 高级用户套餐的到期时间；未开通时返回 null（null 也代表永久有效）。 */
@@ -2808,6 +2824,62 @@ function grantManualPremiumOrder(int $userId, int $months, int $operatorId): arr
     return ['order_no' => $orderNo] + $result;
 }
 
+/** 管理员人工发放直链包并生成一条「管理员授权」订单（金额 0 元、trade_no 用 MANUAL- 前缀），作为后台对账凭据。 */
+function grantManualSharePackOrder(int $userId, int $links, int $operatorId): array
+{
+    // 只接受后台配置里的档位条数；不看「是否上架」，方便管理员为已下架档位做补偿发放
+    $allowed = array_column(ShareService::packs(), 'count');
+    if (!in_array($links, $allowed, true)) {
+        throw new RuntimeException('请选择有效的直链包档位。');
+    }
+
+    $pdo = Database::connection();
+    $orderNo = generateOrderNo();
+
+    // 订单落库与额度发放必须同一个事务：任一步失败都不能留下「有订单没到账」或反之的脏数据
+    $ownsTransaction = !$pdo->inTransaction();
+    if ($ownsTransaction) {
+        $pdo->beginTransaction();
+    }
+    try {
+        $lock = $pdo->prepare('SELECT id FROM users WHERE id = :id LIMIT 1 FOR UPDATE');
+        $lock->execute(['id' => $userId]);
+        if ($lock->fetchColumn() === false) {
+            throw new RuntimeException('该用户不存在或已被删除。');
+        }
+
+        $pdo->prepare(
+            "INSERT INTO orders (order_no, user_id, months, amount, pay_type, status, trade_no, paid_at, product_type, product_meta)
+             VALUES (:order_no, :user_id, 0, 0.00, 'manual', 'paid', :trade_no, NOW(), 'share_pack', :product_meta)"
+        )->execute([
+            'order_no' => $orderNo,
+            'user_id' => $userId,
+            'trade_no' => 'MANUAL-' . $operatorId,
+            'product_meta' => (string) json_encode(['links' => $links], JSON_UNESCAPED_UNICODE),
+        ]);
+
+        ShareService::grantPack($userId, $links);
+
+        if ($ownsTransaction) {
+            $pdo->commit();
+        }
+    } catch (Throwable $exception) {
+        if ($ownsTransaction) {
+            $pdo->rollBack();
+        }
+        throw $exception;
+    }
+
+    Logger::info('payment', '管理员手动发放直链包。', [
+        'user_id' => $userId,
+        'links' => $links,
+        'operator' => $operatorId,
+        'order_no' => $orderNo,
+    ]);
+
+    return ['order_no' => $orderNo];
+}
+
 /** 订单当初实际贡献的会员时长（秒）＝下单后到期时间 − max(下单前到期时间, 下单时刻)，与 grantPremium 起算点一致；缺字段时返回 null。 */
 function orderContributedSeconds(array $order): ?int
 {
@@ -2963,7 +3035,19 @@ function settleOrderPayment(array $order, string $tradeNo, array $notify = []): 
             return false;
         }
 
-        $result = grantPremium((int) $locked['user_id'], (int) $locked['months']);
+        // 按商品类型分流：直链包只加条数额度、不动会员到期时间；其余（含存量订单）一律按会员处理
+        if ((string) ($locked['product_type'] ?? 'premium') === 'share_pack') {
+            $meta = json_decode((string) ($locked['product_meta'] ?? ''), true);
+            $links = is_array($meta) ? (int) ($meta['links'] ?? 0) : 0;
+            if ($links <= 0) {
+                throw new RuntimeException('直链包订单缺少条数，无法开通：' . (string) $locked['order_no']);
+            }
+            ShareService::grantPack((int) $locked['user_id'], $links);
+            // 直链包不涉及会员到期时间，用 null 占位以保持订单表字段语义一致
+            $result = ['expires_before' => null, 'expires_after' => null];
+        } else {
+            $result = grantPremium((int) $locked['user_id'], (int) $locked['months']);
+        }
 
         $pdo->prepare(
             "UPDATE orders
@@ -2983,9 +3067,10 @@ function settleOrderPayment(array $order, string $tradeNo, array $notify = []): 
         throw $exception;
     }
 
-    Logger::info('payment', '订单支付成功并已开通高级用户。', [
+    Logger::info('payment', '订单支付成功并已开通：' . orderProductLabel($order) . '。', [
         'order_no' => (string) $order['order_no'],
         'user_id' => (int) $order['user_id'],
+        'product_type' => (string) ($order['product_type'] ?? 'premium'),
         'trade_no' => $tradeNo,
     ]);
 

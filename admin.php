@@ -14,6 +14,7 @@ use NotionDrive\NotionApiException;
 use NotionDrive\NotionClient;
 use NotionDrive\Restore\RestoreService;
 use NotionDrive\Security;
+use NotionDrive\Share\ShareService;
 use NotionDrive\Space\SpacePatrol;
 use NotionDrive\Tickets\TicketBanService;
 use NotionDrive\Tickets\TicketService;
@@ -894,6 +895,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ));
             header('Location: admin.php?tab=' . $activeTab . '&user_id=' . $userId);
             exit;
+        } elseif ($action === 'save_share') {
+            $defaultDays = (int) ($_POST['share_default_days'] ?? 7);
+            if (!in_array($defaultDays, ShareService::ALLOWED_DAYS, true)) {
+                throw new RuntimeException('默认有效期不在允许范围内。');
+            }
+
+            // 逐个档位从表单收集价格与上架状态；档位条数只取自现有配置，防止伪造出新的档位
+            $submitted = [];
+            foreach (ShareService::packs() as $pack) {
+                $count = (int) $pack['count'];
+                $submitted[] = [
+                    'count' => $count,
+                    'price' => trim((string) ($_POST['share_pack_price'][$count] ?? '')),
+                    'enabled' => (int) ($_POST['share_pack_enabled'][$count] ?? 0),
+                ];
+            }
+            ShareService::savePacks($submitted);
+            Database::setConfig('share_enabled', isset($_POST['share_enabled']) ? '1' : '0');
+            Database::setConfig('share_default_days', (string) $defaultDays);
+
+            Logger::info('share', '直链分享设置已更新。', [
+                'operator' => $currentUser['username'],
+                'enabled' => isset($_POST['share_enabled']) ? 1 : 0,
+                'default_days' => $defaultDays,
+            ]);
+            flash('success', '直链分享设置已保存。');
+        } elseif ($action === 'grant_share_pack') {
+            $userId = (int) ($_POST['user_id'] ?? 0);
+            $links = (int) ($_POST['grant_links'] ?? 0);
+            $targetUser = findUserById($userId);
+            if ($targetUser === null) {
+                throw new RuntimeException('该用户不存在或已被删除。');
+            }
+            if (isAdmin($targetUser)) {
+                throw new RuntimeException('管理员账号无需购买直链包（额度不限）。');
+            }
+            $result = grantManualSharePackOrder($userId, $links, (int) $currentUser['id']);
+            flash('success', sprintf(
+                '已为 %s 发放 %d 条直链额度（授权订单 %s）。',
+                (string) $targetUser['username'],
+                $links,
+                $result['order_no']
+            ));
+            header('Location: admin.php?tab=' . $activeTab . '&user_id=' . $userId);
+            exit;
         } elseif ($action === 'read_alerts') {
             $pdo->prepare('UPDATE admin_alerts SET is_read = 1 WHERE is_read = 0')->execute();
             flash('success', '所有告警已标记为已读。');
@@ -1194,6 +1240,10 @@ $payment = [
 $epayConfigured = Epay::configured();
 $enabledPayTypes = epayPayTypes();
 $plans = premiumPlans();
+// 直链分享：全局开关 + 默认有效期 + 直链包档位（价格可留空表示暂不售卖）
+$shareEnabled = ShareService::enabled();
+$shareDefaultDays = ShareService::defaultDays();
+$sharePacks = ShareService::packs();
 // 内容风控：配置项与最近审核记录（读取失败只影响该页签，不阻塞后台）
 $moderationSettings = [
     'enabled'     => (string) Database::config('moderation_enabled', '0') === '1',
@@ -1277,7 +1327,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('管理后台') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=66"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('管理后台') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=67"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
@@ -1345,6 +1395,8 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
                     <div class="user-row-grant" hidden>
                         <label><span>开通时长</span><select name="grant_months"><?php foreach ($plans as $months => $price): ?><option value="<?= (int) $months ?>"><?= (int) $months ?> 个月 · ¥<?= e(number_format((float) $price, 2)) ?></option><?php endforeach; ?></select></label>
                         <button class="primary-button compact" name="action" value="grant_premium" data-confirm="确认为该用户开通高级套餐？将生成一条「管理员授权」订单。">确认开通</button>
+                        <label><span>发放直链包</span><select name="grant_links"><?php foreach ($sharePacks as $pack): ?><option value="<?= (int) $pack['count'] ?>"><?= (int) $pack['count'] ?> 条</option><?php endforeach; ?></select></label>
+                        <button class="primary-button compact" name="action" value="grant_share_pack" data-confirm="确认为该用户发放直链包？将生成一条「管理员授权」订单。">发放直链包</button>
                         <button type="button" class="text-action" data-grant-cancel>取消</button>
                     </div>
                     <?php endif; ?>
@@ -1607,6 +1659,20 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
                 <label><span>实际生效单块</span><input value="<?= e(formatBytes($effectiveChunkBytes)) ?>" readonly></label>
                 <label><span>待写入暂存上限（MB）</span><input name="staging_limit_mb" inputmode="numeric" value="<?= $stagingLimitMb ?>" required><small>每个用户在服务器上「已上传、还没写完 Notion」的文件合计上限，默认 1024 MB；0 表示不限。写入未完成期间这些文件暂存在服务器，因此按磁盘余量设置。</small></label>
                 <label><span>全服防爆盘上限（MB）</span><input name="server_disk_limit_mb" inputmode="numeric" value="<?= $serverDiskLimitMb ?>" required><small>整个服务器（所有用户）的「待写入暂存 + 在途分块」合计上限，默认 10240 MB（10 GB）；0 表示不限。超限时普通上传会被拒绝，并提示用户改为「在线上传 Notion」（不占用服务器暂存）。</small></label>
+                <div class="form-actions"><button class="primary-button compact">保存设置</button></div>
+            </form>
+        </section>
+
+        <section class="admin-panel connection-panel">
+            <div class="panel-title"><div><h2>直链分享</h2><p>直链是免登录的公开下载 / 预览地址，靠有效期与随时撤销控制风险；关闭总开关后所有已生成的直链立即失效。直链包价格留空表示该档位暂不出售。直链仅高级用户与管理员可用，管理员额度不限、无需购买。</p></div><span class="status-badge <?= $shareEnabled ? '' : 'closed' ?>"><?= $shareEnabled ? '已开启' : '已关闭' ?></span></div>
+            <form method="post" class="connection-form stack-form">
+                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_share">
+                <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="share_enabled" value="1" <?= $shareEnabled ? 'checked' : '' ?>>开启直链分享</label></div>
+                <label><span>默认有效期</span><select name="share_default_days"><?php foreach ([1 => '1 天', 7 => '7 天', 30 => '30 天', 0 => '永久'] as $days => $daysLabel): ?><option value="<?= (int) $days ?>" <?= $shareDefaultDays === $days ? 'selected' : '' ?>><?= e($daysLabel) ?></option><?php endforeach; ?></select></label>
+                <?php foreach ($sharePacks as $pack): $packCount = (int) $pack['count']; ?>
+                <label><span><?= $packCount ?> 条直链包价格（元）</span><input name="share_pack_price[<?= $packCount ?>]" inputmode="decimal" value="<?= e((string) $pack['price']) ?>" placeholder="留空表示暂不出售"></label>
+                <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="share_pack_enabled[<?= $packCount ?>]" value="1" <?= $pack['enabled'] ? 'checked' : '' ?>>上架「<?= $packCount ?> 条」档位</label></div>
+                <?php endforeach; ?>
                 <div class="form-actions"><button class="primary-button compact">保存设置</button></div>
             </form>
         </section>
@@ -1898,5 +1964,5 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         <?php endif; ?>
     </main>
     <?= siteCreditHtml() ?>
-    <div id="toast" class="toast"></div><script src="assets/app.js?v=39" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <div id="toast" class="toast"></div><script src="assets/app.js?v=40" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body></html>

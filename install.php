@@ -166,6 +166,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         );
 
         Schema::createFoldersTable($pdo);
+        Schema::createShareLinksTable($pdo);
         Schema::createGroupsTable($pdo);
         Schema::createVerificationTable($pdo);
         Schema::createLoginAttemptsTable($pdo);
@@ -293,7 +294,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>安装 · Notion Drive</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <link rel="stylesheet" href="assets/app.css?v=66">
+    <link rel="stylesheet" href="assets/app.css?v=67">
 </head>
 <body class="install-shell">
     <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>

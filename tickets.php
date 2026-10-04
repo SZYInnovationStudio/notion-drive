@@ -217,7 +217,7 @@ if ($ticketId > 0) {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag($ticket === null ? ($isAdmin ? '工单管理' : '我的工单') : '工单详情') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=66"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag($ticket === null ? ($isAdmin ? '工单管理' : '我的工单') : '工单详情') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=67"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
@@ -226,7 +226,7 @@ if ($ticketId > 0) {
             <a class="active" href="tickets.php"><?= navIcon('tickets') ?><?= $isAdmin ? '工单管理' : '我的工单' ?></a>
             <?php if ($isAdmin): ?><a href="admin.php"><?= navIcon('admin') ?>管理后台</a><a href="admin_orders.php"><?= navIcon('orders') ?>订单管理</a><a href="bans.php"><?= navIcon('bans') ?>封禁管理</a><a href="logs.php"><?= navIcon('logs') ?>运行日志</a><?php endif; ?>
             <a href="account.php"><?= navIcon('account') ?>账户管理</a>
-            <?php if (!$isAdmin): ?><a href="pay.php"><?= navIcon('premium') ?>会员套餐</a><?php endif; ?>
+            <?php if (!$isAdmin): ?><a href="pricing.php"><?= navIcon('premium') ?>会员套餐</a><?php endif; ?>
         </nav>
         <?= sidebarStorageHtml($user) ?>
         <?= sidebarIcpHtml() ?>
@@ -590,6 +590,6 @@ if ($ticketId > 0) {
         <?php endif; ?>
     </main>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=39" defer></script>
+    <script src="assets/app.js?v=40" defer></script>
 </body>
 </html>

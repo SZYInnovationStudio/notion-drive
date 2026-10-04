@@ -415,6 +415,157 @@
         document.addEventListener('keydown', event => { if (event.key === 'Escape') closePreview(); });
     }
 
+    /** api/share.php 的薄封装：统一带 CSRF，失败抛出可直接展示的消息。 */
+    const shareRequest = async payload => {
+        const response = await fetch('api/share.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
+            body: new URLSearchParams(payload)
+        });
+        const data = await readJson(response);
+        if (!response.ok || !data.ok) throw new Error(data.message || '操作失败');
+        return data;
+    };
+
+    /** 复制到剪贴板；非安全上下文或用户拒绝授权时返回 false，由调用方退回「选中让用户自己复制」。 */
+    const copyToClipboard = async text => {
+        if (!text) return false;
+        try {
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+                return true;
+            }
+        } catch (_) {
+            // 落到下面的兜底分支
+        }
+        return false;
+    };
+
+    /** 直链分享弹窗：生成 / 复制 / 撤销某个文件的公开直链（该链接不需要登录即可访问）。 */
+    const openShareDialog = row => {
+        const fileId = String(row.dataset.fileId || '0');
+        const nameEl = row.querySelector('.display-name');
+
+        const dialog = document.createElement('dialog');
+        dialog.className = 'duplicate-dialog share-dialog';
+        dialog.innerHTML = '<h2>直链分享</h2><p class="share-file"></p><div class="share-quota"></div><div class="share-create"><label><span>有效期</span><select class="share-days"><option value="1">1 天</option><option value="7">7 天</option><option value="30">30 天</option><option value="0">长期有效</option></select></label><button type="button" class="primary-button compact" data-share-generate>生成直链</button></div><div class="share-result" hidden><input class="share-url" readonly><button type="button" class="secondary-button compact" data-share-copy>复制</button></div><div class="share-list"></div><div class="duplicate-actions"><button type="button" class="secondary-button" data-share-close>关闭</button></div>';
+        dialog.querySelector('.share-file').textContent = nameEl ? nameEl.textContent.trim() : '';
+
+        const quotaEl = dialog.querySelector('.share-quota');
+        const listEl = dialog.querySelector('.share-list');
+        const daysEl = dialog.querySelector('.share-days');
+        const resultEl = dialog.querySelector('.share-result');
+        const urlEl = dialog.querySelector('.share-url');
+        const generateBtn = dialog.querySelector('[data-share-generate]');
+
+        // 额度与可用性由服务端返回，前端不重复判断会员规则
+        const renderQuota = data => {
+            let text;
+            if (!data.enabled) {
+                text = '直链服务当前未开放。';
+            } else if (!data.premium) {
+                text = '直链仅对高级用户开放，开通后即可生成。';
+            } else if (data.quota === null) {
+                text = `直链额度不限（管理员），已用 ${data.used} 条。`;
+            } else {
+                text = `直链额度：已用 ${data.used} / 共 ${data.quota} 条。`;
+                if (data.remaining === 0) text += '额度已用完，可购买直链包后继续生成。';
+            }
+            quotaEl.textContent = text;
+            generateBtn.disabled = !(data.enabled && data.premium && (data.remaining === null || data.remaining > 0));
+        };
+
+        const renderList = links => {
+            listEl.innerHTML = '';
+            if (!links.length) {
+                const empty = document.createElement('p');
+                empty.className = 'share-empty';
+                empty.textContent = '这个文件还没有直链。';
+                listEl.appendChild(empty);
+                return;
+            }
+            links.forEach(link => {
+                const item = document.createElement('div');
+                item.className = `share-item${link.active ? '' : ' inactive'}`;
+                item.innerHTML = '<div class="share-item-main"><b></b><small></small></div><button type="button" class="text-action" data-share-item-copy>复制</button><button type="button" class="text-action" data-share-item-revoke>撤销</button>';
+                item.querySelector('b').textContent = link.permanent ? '长期有效' : `到期 ${link.expires_at}`;
+                const bits = [`下载 ${link.download_count} 次`];
+                if (link.last_accessed_at) bits.push(`最后访问 ${link.last_accessed_at}`);
+                if (link.revoked) bits.push('已撤销');
+                else if (link.expired) bits.push('已过期');
+                item.querySelector('small').textContent = bits.join(' · ');
+
+                item.querySelector('[data-share-item-copy]').addEventListener('click', async () => {
+                    if (await copyToClipboard(link.url)) notify('已复制到剪贴板');
+                    else notify('浏览器未授权剪贴板，请手动复制该链接', 'error');
+                });
+
+                const revokeBtn = item.querySelector('[data-share-item-revoke]');
+                // 已撤销 / 已过期的链接不再提供撤销
+                if (!link.active) {
+                    revokeBtn.remove();
+                } else {
+                    revokeBtn.addEventListener('click', async () => {
+                        revokeBtn.disabled = true;
+                        try {
+                            const data = await shareRequest({ action: 'revoke', id: String(link.id) });
+                            notify(data.message);
+                            renderQuota(data);
+                            renderList((await shareRequest({ action: 'list', file_id: fileId })).links || []);
+                        } catch (error) {
+                            revokeBtn.disabled = false;
+                            notify(error.message || '撤销失败', 'error');
+                        }
+                    });
+                }
+                listEl.appendChild(item);
+            });
+        };
+
+        const refresh = async () => {
+            const data = await shareRequest({ action: 'list', file_id: fileId });
+            renderQuota(data);
+            renderList(data.links || []);
+            return data;
+        };
+
+        generateBtn.addEventListener('click', async () => {
+            generateBtn.disabled = true;
+            try {
+                const data = await shareRequest({ action: 'create', file_id: fileId, days: daysEl.value });
+                urlEl.value = (data.link && data.link.url) || '';
+                resultEl.hidden = false;
+                // 生成后额度已变化：重新拉一次列表，按钮可用状态交给 renderQuota 决定
+                const fresh = await shareRequest({ action: 'list', file_id: fileId });
+                renderQuota(fresh);
+                renderList(fresh.links || []);
+                if (await copyToClipboard(urlEl.value)) notify(`${data.message}，已复制到剪贴板`);
+                else notify(`${data.message}，请手动复制下方链接`);
+            } catch (error) {
+                generateBtn.disabled = false;
+                notify(error.message || '生成失败', 'error');
+            }
+        });
+
+        dialog.querySelector('[data-share-copy]').addEventListener('click', async () => {
+            if (await copyToClipboard(urlEl.value)) {
+                notify('已复制到剪贴板');
+            } else {
+                urlEl.select();
+                notify('浏览器未授权剪贴板，已选中链接，请按 Ctrl+C 复制', 'error');
+            }
+        });
+        dialog.querySelector('[data-share-close]').addEventListener('click', () => dialog.close());
+        dialog.addEventListener('close', () => dialog.remove());
+
+        document.body.appendChild(dialog);
+        dialog.showModal();
+        // 有效期默认值以服务端配置为准（后台可改），只在本弹窗首次加载时套用，不覆盖用户的选择
+        refresh()
+            .then(data => { daysEl.value = String(data.default_days ?? 7); })
+            .catch(error => notify(error.message || '读取直链失败', 'error'));
+    };
+
     document.addEventListener('click', async event => {
         const button = event.target.closest('[data-action]');
         if (!button) return;
@@ -429,6 +580,11 @@
 
         if (action === 'preview') {
             openPreview(row, button);
+            return;
+        }
+
+        if (action === 'share') {
+            openShareDialog(row);
             return;
         }
 

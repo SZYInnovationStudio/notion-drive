@@ -7,7 +7,6 @@ require __DIR__ . '/src/bootstrap.php';
 use NotionDrive\Auth;
 use NotionDrive\Database;
 use NotionDrive\Epay;
-use NotionDrive\Logger;
 use NotionDrive\Security;
 
 $user = Auth::requireLogin();
@@ -27,36 +26,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         Security::verifyCsrf($_POST['csrf_token'] ?? null);
         $action = (string) ($_POST['action'] ?? '');
-
-        if ($action === 'create_order') {
-            $plan = premiumPlan((int) ($_POST['months'] ?? 0));
-            if ($plan === null) {
-                throw new RuntimeException('请选择有效的套餐。');
-            }
-            $payType = trim((string) ($_POST['pay_type'] ?? ''));
-            if ($payType === '' || !isset(epayPayTypes()[$payType])) {
-                throw new RuntimeException('请选择有效的支付方式。');
-            }
-
-            $epay = Epay::fromConfig();
-            if ($epay === null) {
-                throw new RuntimeException('支付功能尚未配置，请联系管理员。');
-            }
-
-            // 金额只取服务端配置，忽略客户端提交的任何价格
-            $order = createOrder($userId, (int) $plan['months'], (float) $plan['price'], $payType);
-            Logger::info('payment', '用户创建订单，准备跳转支付网关。', [
-                'user_id' => $userId,
-                'order_no' => (string) $order['order_no'],
-                'months' => (int) $plan['months'],
-                'amount' => (string) $order['amount'],
-                'pay_type' => $payType,
-            ]);
-
-            // CSP form-action='self' 会拦截「表单 POST → 跨站重定向」，故改为同源 302 到收银台过渡页，由页面脚本导航前往网关
-            header('Location: pay.php?order=' . rawurlencode((string) $order['order_no']) . '&checkout=1');
-            exit;
-        }
 
         if ($action === 'sync_order') {
             $order = findOrderByNo(trim((string) ($_POST['order_no'] ?? '')));
@@ -87,9 +56,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $flash = pullFlash();
-$plans = premiumPlans();
-$payTypes = epayPayTypes();
-$payConfigured = Epay::configured();
 
 $isPremium = isPremiumUser($user);
 $quotaBytes = userQuotaBytes($user);
@@ -123,7 +89,7 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
             'out_trade_no' => (string) $candidate['order_no'],
             'notify_url' => epayNotifyUrl(),
             'return_url' => epayReturnUrl(),
-            'name' => 'Notion Drive 高级用户' . (int) $candidate['months'] . '个月',
+            'name' => 'Notion Drive ' . orderProductLabel($candidate),
             'money' => (string) $candidate['amount'],
         ]);
     }
@@ -131,7 +97,7 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('会员套餐') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=66"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('订单与支付') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=67"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>"<?= $checkoutUrl !== '' ? ' data-checkout-url="' . e($checkoutUrl) . '"' : '' ?>>
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
@@ -140,7 +106,7 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
             <a href="tickets.php"><?= navIcon('tickets') ?><?= isAdmin($user) ? '工单管理' : '我的工单' ?></a>
             <?php if (isAdmin($user)): ?><a href="admin.php"><?= navIcon('admin') ?>管理后台</a><a href="admin_orders.php"><?= navIcon('orders') ?>订单管理</a><a href="bans.php"><?= navIcon('bans') ?>封禁管理</a><a href="logs.php"><?= navIcon('logs') ?>运行日志</a><?php endif; ?>
             <a href="account.php"><?= navIcon('account') ?>账户管理</a>
-            <a class="active" href="pay.php"><?= navIcon('premium') ?>会员套餐</a>
+            <a href="pricing.php"><?= navIcon('premium') ?>会员套餐</a>
         </nav>
         <?= sidebarStorageHtml($user) ?>
         <?= sidebarIcpHtml() ?>
@@ -155,7 +121,7 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
     <main class="drive-main">
         <?= banNoticeHtml($user) ?>
         <header class="drive-header">
-            <div><p>高级用户</p><h1>会员套餐</h1></div>
+            <div><p>高级用户</p><h1>订单与支付</h1></div>
             <a class="secondary-button" href="dashboard.php">返回我的文件</a>
         </header>
         <?php if ($flash): ?><div class="alert <?= e($flash['type']) ?>"><?= e($flash['message']) ?></div><?php endif; ?>
@@ -164,7 +130,7 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
         <?php if ($checkoutUrl !== ''): ?>
         <section class="admin-panel">
             <div class="panel-title">
-                <div><h2>订单已创建，正在前往收银台</h2><p>订单号 <?= e((string) $checkoutOrder['order_no']) ?> · <?= e(payTypeLabel((string) $checkoutOrder['pay_type'])) ?> · ¥<?= e(number_format((float) $checkoutOrder['amount'], 2)) ?></p></div>
+                <div><h2>订单已创建，正在前往收银台</h2><p>订单号 <?= e((string) $checkoutOrder['order_no']) ?> · <?= e(orderProductLabel($checkoutOrder)) ?> · <?= e(payTypeLabel((string) $checkoutOrder['pay_type'])) ?> · ¥<?= e(number_format((float) $checkoutOrder['amount'], 2)) ?></p></div>
             </div>
             <div class="subscribe-actions">
                 <a class="primary-button" href="<?= e($checkoutUrl) ?>">前往收银台支付</a>
@@ -187,38 +153,11 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
         </section>
 
         <section class="admin-panel">
-            <div class="panel-title"><div><h2>购买 / 续费</h2><p>支付成功后自动升级为高级用户；已是高级用户时，购买时长将在原到期时间基础上顺延。</p></div></div>
-            <?php if (!$payConfigured): ?>
-                <p class="compact-empty">管理员尚未配置易支付接口，暂时无法购买套餐，请联系管理员。</p>
-            <?php elseif ($payTypes === []): ?>
-                <p class="compact-empty">管理员尚未开放任何支付渠道，暂时无法购买套餐，请联系管理员。</p>
-            <?php else: ?>
-            <form method="post" class="subscribe-form">
-                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="create_order">
-                <div class="plan-grid">
-                    <?php foreach ($plans as $months => $price): ?>
-                    <label class="plan-option">
-                        <input type="radio" name="months" value="<?= (int) $months ?>" <?= (int) $months === 1 ? 'checked' : '' ?>>
-                        <span class="plan-name"><?= (int) $months ?> 个月</span>
-                        <span class="plan-price">¥<?= e(number_format((float) $price, 2)) ?></span>
-                        <span class="plan-unit"><?= e(number_format((float) $price / (int) $months, 2)) ?> 元 / 月</span>
-                    </label>
-                    <?php endforeach; ?>
-                </div>
-                <div class="pay-type-row" role="radiogroup" aria-label="支付方式">
-                    <?php foreach ($payTypes as $type => $label): ?>
-                    <label class="pay-type-option">
-                        <input type="radio" name="pay_type" value="<?= e($type) ?>" <?= $type === array_key_first($payTypes) ? 'checked' : '' ?>>
-                        <span><?= e($label) ?></span>
-                    </label>
-                    <?php endforeach; ?>
-                </div>
-                <div class="subscribe-actions">
-                    <button class="primary-button">立即支付</button>
-                    <p class="field-hint">支付完成后会跳回本站并自动开通；若未自动开通，可在下方订单记录中点击「刷新状态」。</p>
-                </div>
-            </form>
-            <?php endif; ?>
+            <div class="panel-title"><div><h2>购买 / 续费</h2><p>会员套餐与直链包均在「会员套餐」页选购，支付完成后会跳回本站并自动开通。</p></div></div>
+            <div class="subscribe-actions">
+                <a class="primary-button" href="pricing.php">前往选购</a>
+                <p class="field-hint">已是高级用户时可在此顺延会员时长；直链包额度长期有效。</p>
+            </div>
         </section>
 
         <section class="admin-panel">
@@ -232,7 +171,7 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
                 <div class="order-row<?= $focusOrderNo !== '' && $focusOrderNo === (string) $order['order_no'] ? ' focused' : '' ?>">
                     <div class="order-main">
                         <span class="order-no"><?= e((string) $order['order_no']) ?></span>
-                        <small><?= e(date('Y-m-d H:i', (int) strtotime((string) $order['created_at']))) ?> · <?= (int) $order['months'] ?> 个月 · <?= e(payTypeLabel((string) $order['pay_type'])) ?></small>
+                        <small><?= e(date('Y-m-d H:i', (int) strtotime((string) $order['created_at']))) ?> · <?= e(orderProductLabel($order)) ?> · <?= e(payTypeLabel((string) $order['pay_type'])) ?></small>
                     </div>
                     <div class="order-amount">¥<?= e(number_format((float) $order['amount'], 2)) ?></div>
                     <span class="status-badge <?= e(orderDisplayClass($order)) ?>"><?= e(orderDisplayLabel($order)) ?></span>
@@ -254,6 +193,6 @@ if ($focusOrderNo !== '' && isset($_GET['checkout'])) {
     </main>
     <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=39" defer></script>
+    <script src="assets/app.js?v=40" defer></script>
 </body>
 </html>

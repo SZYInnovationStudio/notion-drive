@@ -486,6 +486,27 @@ body.drive-shell .site-credit .icp-license, body.drive-shell .site-credit .polic
 .folder-confirm-size { color: var(--muted); font-variant-numeric: tabular-nums; }
 .folder-confirm-more { padding: 8px 10px; color: var(--muted); font-size: .76rem; }
 
+/* 直链分享弹窗：生成 / 复制 / 撤销公开直链 */
+.share-dialog { width: min(520px, calc(100% - 32px)); }
+.share-file { word-break: break-all; }
+/* 额度提示：一行文字，颜色随状态变化由 JS 只改文本，不改结构 */
+.share-quota { margin: 12px 0 0; padding: 9px 11px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: .78rem; }
+.share-create { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 14px; }
+.share-create label { display: flex; flex-direction: column; gap: 5px; font-size: .78rem; color: var(--muted); }
+.share-days { min-height: var(--control-h); padding: 0 10px; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface); color: var(--text); font-size: .8rem; }
+.share-create .primary-button { margin-left: auto; }
+/* 生成结果：只读输入框 + 复制按钮，一行放不下就换行 */
+.share-result { display: flex; gap: 8px; margin-top: 12px; }
+.share-url { flex: 1; min-width: 0; min-height: var(--control-h); padding: 0 10px; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface-soft); color: var(--text); font-size: .76rem; }
+.share-list { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; max-height: 38vh; overflow: auto; }
+.share-item { display: flex; align-items: center; gap: 8px; padding: 9px 11px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 9px; font-size: .76rem; }
+/* 已撤销 / 已过期：整行降透明度，但按钮仍可读可点 */
+.share-item.inactive { opacity: .6; }
+.share-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.share-item-main b { font-weight: 650; }
+.share-item-main small { color: var(--muted); font-size: .72rem; }
+.share-empty { margin: 0; padding: 12px 0; color: var(--muted); font-size: .78rem; text-align: center; }
+
 /* 弹窗打开期间锁住背景滚动：否则在移动端滑动遮罩会把后面的页面一起带着滚 */
 body.has-overlay { overflow: hidden; }
 .confirm-overlay { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 20px; background: rgba(17, 22, 29, .42); }
@@ -540,6 +561,8 @@ body.has-overlay { overflow: hidden; }
 .plan-option { position: relative; display: grid; gap: 4px; padding: 16px 14px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius); cursor: pointer; transition: border-color .15s, background .15s, box-shadow .15s; }
 .plan-option:hover { border-color: var(--primary); }
 .plan-option:has(input:checked) { background: var(--primary-soft); border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.plan-option.disabled { opacity: .55; cursor: not-allowed; }
+.plan-option.disabled:hover { border-color: var(--line-strong); }
 .plan-option input { position: absolute; top: 14px; right: 14px; width: 16px; height: 16px; min-width: 0; margin: 0; padding: 0; pointer-events: none; }
 .plan-name { font-size: .84rem; font-weight: 650; }
 .plan-price { color: var(--primary); font-size: 1.32rem; font-weight: 700; letter-spacing: -.02em; }

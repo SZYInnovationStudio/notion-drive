@@ -190,7 +190,7 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('账户管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=66"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('账户管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=67"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
@@ -199,7 +199,7 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
             <a href="tickets.php"><?= navIcon('tickets') ?><?= isAdmin($user) ? '工单管理' : '我的工单' ?></a>
             <?php if (isAdmin($user)): ?><a href="admin.php"><?= navIcon('admin') ?>管理后台</a><a href="admin_orders.php"><?= navIcon('orders') ?>订单管理</a><a href="bans.php"><?= navIcon('bans') ?>封禁管理</a><a href="logs.php"><?= navIcon('logs') ?>运行日志</a><?php endif; ?>
             <a class="active" href="account.php"><?= navIcon('account') ?>账户管理</a>
-            <?php if (!isAdmin($user)): ?><a href="pay.php"><?= navIcon('premium') ?>会员套餐</a><?php endif; ?>
+            <?php if (!isAdmin($user)): ?><a href="pricing.php"><?= navIcon('premium') ?>会员套餐</a><?php endif; ?>
         </nav>
         <?= sidebarStorageHtml($user) ?>
         <?= sidebarIcpHtml() ?>
@@ -285,7 +285,7 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
                     <div><span>账户来源</span><strong><?= userNotionSource($user) === 'own' ? '自有账户' : '官方账户池' ?></strong></div>
                 </div>
                 <div class="subscribe-actions">
-                    <a class="primary-button compact" href="pay.php"><?= $isPremium ? '续费 / 延长' : '升级高级用户' ?></a>
+                    <a class="primary-button compact" href="pricing.php"><?= $isPremium ? '续费 / 延长' : '升级高级用户' ?></a>
                     <p class="field-hint">前往「会员套餐」页选择时长与支付方式，支付成功后自动开通；已是高级用户时，购买时长在原到期时间基础上顺延。</p>
                 </div>
             </div>
@@ -301,7 +301,7 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
             <?php if ($notionSource === 'own'): ?>
             <div class="alert error">自有账户尚未绑定或不可用，上传会失败。请在下方填写并验证 Notion 集成 Token 与父页面。</div>
             <?php elseif (!$officialAccountsUsable): ?>
-            <div class="alert error">官方账户仅对有效期内的付费用户开放。请先 <a href="pay.php">升级高级用户</a>，或在下方绑定自有账户后切换到自有账户。</div>
+            <div class="alert error">官方账户仅对有效期内的付费用户开放。请先 <a href="pricing.php">升级高级用户</a>，或在下方绑定自有账户后切换到自有账户。</div>
             <?php else: ?>
             <div class="alert error">官方账户池暂时没有可用账户，请联系管理员检查账户池状态。</div>
             <?php endif; ?>
@@ -382,7 +382,7 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
     </main>
     <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=39" defer></script>
+    <script src="assets/app.js?v=40" defer></script>
     <script src="assets/admin.js?v=9" defer></script>
     <?php if ($canBindEmail): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>

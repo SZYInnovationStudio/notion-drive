@@ -28,6 +28,64 @@
 
 ---
 
+### [2026-10-04 21:31:46] 新增文件公开直链（服务器中转代理）与「直链包」商业化
+
+- 目的：直链是免登录即可下载 / 预览的公开地址，用服务器中转代理（非跳转 Notion 签名直链），
+  便于控制有效期、随时撤销与统计访问。直链受全局开关控制，仅高级用户与管理员可用；
+  管理员天然拥有直链权限且额度不限。直链以「直链包」（50 / 100 / 200 条）形式售卖，
+  价格由管理员在后台手动配置、可留空表示暂不售卖；会员与直链包统一下单页售卖，
+  `pay.php` 退化为结算入口。
+- 验证：`php -l` 全部改动文件无语法错误（pricing/pay/admin_orders/admin/helpers/dashboard/account/tickets）；
+  版本号一致性：`app.js?v=40` = 11 处、`app.css?v=67` = 14 处，无残留旧版本号。
+  **迁移与线上实测待部署后执行**：v25 迁移建 `share_links` 表与新增列；无痕窗口验证
+  pricing.php 下单 → pay.php 收银台 → 返回开通；后台「直链分享」设置与人工发放直链包；
+  公开直链 `s.php?t=token` 在未登录状态下可下载 / 预览，撤销后立即失效。
+- 数据库结构影响：`Schema::CURRENT_VERSION` 24 → 25。新增表 `share_links`；
+  `users` 新增列 `share_links_quota INT NOT NULL DEFAULT 0`；
+  `orders` 新增列 `product_type VARCHAR(20) NOT NULL DEFAULT 'premium'`、
+  `product_meta VARCHAR(255) NULL`。旧库由迁移自动补建/补列，无需手工处理；
+  预置 config：`share_enabled=0`、`share_default_days=7`、`share_packs`（3 档，`enabled=1`、price 空）。
+- 改动明细（行号为改动后当前行号）：
+  - `src/Schema.php` L274-L288 — v25 迁移：建 `share_links` 表、给 `users`/`orders` 补列、
+    预置直链相关 config；L570-L588 `createShareLinksTable()` 建表（token 唯一、含 user/file 索引、
+    user 外键级联删除）；L730 全新安装路径同步含 `product_type` 列。
+  - `src/Share/ShareService.php`（新增 353 行）— 直链领域服务：`enabled()`/`defaultDays()`/`packs()`/
+    `packByCount()`（仅返回上架档位）/`savePacks()`（价格须为非负数字或留空）/`quotaOf()`（管理员 null=不限）/
+    `usedCount()`/`remaining()`/`create()`/`revoke()`/`listFor()`/`resolve()`/`touch()`/`grantPack()`；
+    常量 `ALLOWED_DAYS=[1,7,30,0]`、`TOKEN_PATTERN`（64 位 hex）、`HOT_ACCESS_ALERT_AT=500`。
+  - `src/Files/FileStreamer.php`（新增 280 行）— 由 `api/file.php` 原样搬移的流式转发实现
+    （Range 透传、预览白名单、安全 Content-Type、多副本回退、中断告警、`streamLocalFile()`），
+    使站内下载与公开直链共用同一份代码。
+  - `api/file.php` L9/L88-L90 — 改为委托 `FileStreamer::stream()`，删除原先内联的整套流式逻辑。
+  - `s.php`（新增 57 行）— 公开直链入口（**免登录**）：`ShareService::resolve()` 校验 token /
+    开关 / 有效期 / 所属账号封禁，成功则 `touch()` 记账后 `FileStreamer::stream()` 输出；
+    失败返回不泄露文件信息的静态错误页。
+  - `api/share.php`（新增 68 行）— 登录态直链接口：`create` / `revoke` / `list`
+    （封禁用户拒绝、CSRF 校验、`findUserById()` 取最新额度快照）；
+    错误统一以 422 JSON 返回，不回显内部异常原文。
+  - `assets/app.js` L418-L567 — 新增 `shareRequest()` 薄封装与直链弹窗（生成 / 复制 / 撤销 / 列表 /
+    额度显示 / 到期提示），`node --check` 通过。
+  - `assets/app.css` L490-L508 — 直链弹窗样式；L564-L565 — `.plan-option.disabled` 灰显样式。
+  - `admin.php` L898-L923 — 新增 `save_share`：从 `ShareService::packs()` 迭代收集价格与上架状态
+    （不信任表单传入的 count，防止伪造档位）；L924-L935 新增 `grant_share_pack`：管理员人工发放直链包
+    （生成一条管理员授权订单）；L1398-L1399 用户行发放面板追加「发放直链包」（与开通时长合并在同一
+    `.user-row-grant` 面板，因 `assets/admin.js` 只取第一个面板且取消按钮须同面板）；
+    L1667-L1685 新增「直链分享」设置面板（总开关 / 默认有效期 / 3 档价格与上架）。
+  - `pricing.php`（新增 232 行）— 会员 4 档 + 直链包 3 档统一下单页；管理员只读展示并提示无需购买；
+    直链包下单校验 `packByCount()`（存在且上架）与 `price > 0`（避免产生 ¥0 订单）；
+    金额一律取服务端配置。
+  - `src/helpers.php` L2411 起 `createOrder()` 增 `$productType`/`$productMeta` 参数并落库；
+    L2457 新增 `orderProductLabel()`（share_pack 显示「直链包 N 条」、否则「会员 N 个月」）；
+    L2828 新增 `grantManualSharePackOrder()`；L3011 `settleOrderPayment()` 按 `product_type` 分流
+    （share_pack → `ShareService::grantPack()`）。
+  - `pay.php` — 删除 `create_order` 分支与购买表单，改为跳转 `pricing.php` 的入口；标题改「订单与支付」；
+    收银台订单名（L92）与订单记录（L174）改用 `orderProductLabel()`。
+  - `admin_orders.php` L307/L315 — 表头与单元格由「套餐」改为「商品」，用 `orderProductLabel()`。
+  - `install.php` L169 — 全新安装路径同步建 `share_links` 表。
+  - 全站导航「会员套餐」改指 `pricing.php`：`dashboard.php`、`account.php`、`tickets.php`、
+    `src/helpers.php`（`sidebarStorageHtml` 续费链接）。
+  - 12+ 个页面 `app.js?v=39→40`、`app.css?v=66→67` 全站同步。
+
 ### [2026-10-04 19:57:12] 我的文件支持「全页拖拽上传」与「Ctrl+V 粘贴上传」
 
 - 目的：用户希望拖文件不必对准虚线框（全页任意位置都能拖放上传），并要求支持 Ctrl+V 直接粘贴上传。

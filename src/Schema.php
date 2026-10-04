@@ -8,7 +8,7 @@ use PDO;
 
 final class Schema
 {
-    public const CURRENT_VERSION = 24;
+    public const CURRENT_VERSION = 25;
 
     /** 内置权限组：名称、组容量、单文件上限、是否管理员、等级。首个必须保持为管理员组。 */
     public const BUILTIN_GROUPS = [
@@ -267,6 +267,30 @@ final class Schema
             // 写入进度（0-100）：后台写入 Notion 时按已上传分片数回写，供前端展示「正在写入存储」的进度条；
             // 仅用于展示，不影响写入结果，写入完成 / 失败时会清零
             self::addColumn($pdo, 'uploads', 'write_progress', 'TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER overwrite_upload_id');
+        }
+
+        if ($version < 25) {
+            // 直链分享：免登录可下载/预览的公开链接
+            self::createShareLinksTable($pdo);
+            // 直链包额度：用户已购的直链条数（管理员视为不限，不读该值）
+            self::addColumn($pdo, 'users', 'share_links_quota', 'INT NOT NULL DEFAULT 0 AFTER moderation_exempt');
+            // 订单区分商品：此前只有「高级会员」一种，存量订单一律按 premium 处理
+            self::addColumn($pdo, 'orders', 'product_type', "VARCHAR(20) NOT NULL DEFAULT 'premium' AFTER months");
+            self::addColumn($pdo, 'orders', 'product_meta', 'VARCHAR(255) NULL DEFAULT NULL AFTER product_type');
+            // 直链默认配置：总开关先关闭，等管理员配好套餐价格再手动开启
+            if (Database::config('share_enabled', null) === null) {
+                Database::setConfig('share_enabled', '0');
+            }
+            if (Database::config('share_default_days', null) === null) {
+                Database::setConfig('share_default_days', '7');
+            }
+            if (Database::config('share_packs', null) === null) {
+                Database::setConfig('share_packs', json_encode([
+                    ['count' => 50, 'price' => '', 'enabled' => 1],
+                    ['count' => 100, 'price' => '', 'enabled' => 1],
+                    ['count' => 200, 'price' => '', 'enabled' => 1],
+                ], JSON_UNESCAPED_UNICODE));
+            }
         }
 
         Database::setConfig('schema_version', (string) self::CURRENT_VERSION);
@@ -541,6 +565,31 @@ final class Schema
         );
     }
 
+    /** 直链分享链接：token 免登录访问，记录有效期、访问次数与撤销状态。
+     *  file_id 不建外键：uploads 记录组件里只做状态标记、极少物理删除，避免误加级联。 */
+    public static function createShareLinksTable(PDO $pdo): void
+    {
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS share_links (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                token CHAR(64) NOT NULL,
+                user_id BIGINT UNSIGNED NOT NULL,
+                file_id BIGINT UNSIGNED NOT NULL,
+                expires_at DATETIME NULL DEFAULT NULL,
+                download_count INT UNSIGNED NOT NULL DEFAULT 0,
+                last_accessed_at DATETIME NULL DEFAULT NULL,
+                last_ip VARCHAR(45) NULL DEFAULT NULL,
+                revoked_at DATETIME NULL DEFAULT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uniq_share_links_token (token),
+                INDEX idx_share_links_file (file_id),
+                INDEX idx_share_links_user (user_id, revoked_at),
+                CONSTRAINT fk_share_links_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+        );
+    }
+
     public static function createGroupsTable(PDO $pdo): void
     {
         $pdo->exec(
@@ -678,6 +727,8 @@ final class Schema
                 order_no VARCHAR(64) NOT NULL,
                 user_id BIGINT UNSIGNED NOT NULL,
                 months SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+                product_type VARCHAR(20) NOT NULL DEFAULT \'premium\',
+                product_meta VARCHAR(255) NULL DEFAULT NULL,
                 amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
                 pay_type VARCHAR(20) NOT NULL DEFAULT \'alipay\',
                 status VARCHAR(20) NOT NULL DEFAULT \'pending\',

@@ -133,7 +133,7 @@ $premiumNotice = premiumNotice($user);
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <?= siteTitleTag('我的文件') ?>
     <?= siteFaviconTag() ?>
-    <link rel="stylesheet" href="assets/app.css?v=66">
+    <link rel="stylesheet" href="assets/app.css?v=67">
 </head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>" data-limit="<?= $singleLimit ?>" data-remaining="<?= $remainingBytes === null ? '' : $remainingBytes ?>" data-folder="<?= $currentFolderId ?>">
     <aside class="drive-sidebar">
@@ -143,7 +143,7 @@ $premiumNotice = premiumNotice($user);
             <a href="tickets.php"><?= navIcon('tickets') ?><?= isAdmin($user) ? '工单管理' : '我的工单' ?></a>
             <?php if (isAdmin($user)): ?><a href="admin.php"><?= navIcon('admin') ?>管理后台</a><a href="admin_orders.php"><?= navIcon('orders') ?>订单管理</a><a href="bans.php"><?= navIcon('bans') ?>封禁管理</a><a href="logs.php"><?= navIcon('logs') ?>运行日志</a><?php endif; ?>
             <a href="account.php"><?= navIcon('account') ?>账户管理</a>
-            <?php if (!isAdmin($user)): ?><a href="pay.php"><?= navIcon('premium') ?>会员套餐</a><?php endif; ?>
+            <?php if (!isAdmin($user)): ?><a href="pricing.php"><?= navIcon('premium') ?>会员套餐</a><?php endif; ?>
         </nav>
         <?= sidebarStorageHtml($user) ?>
         <?= sidebarIcpHtml() ?>
@@ -166,9 +166,9 @@ $premiumNotice = premiumNotice($user);
         <div class="alert error">管理员已开启「强制绑定邮箱」，请先到 <a href="account.php">账户管理</a> 绑定并验证邮箱后才能上传文件。</div>
         <?php endif; ?>
         <?php if ($uploadBlocked !== ''): ?>
-        <div class="alert error"><?= e($uploadBlocked) ?> <a href="pay.php">立即续费</a> · <a href="account.php">切换账户来源</a></div>
+        <div class="alert error"><?= e($uploadBlocked) ?> <a href="pricing.php">立即续费</a> · <a href="account.php">切换账户来源</a></div>
         <?php elseif ($premiumNotice !== ''): ?>
-        <div class="alert error"><?= e($premiumNotice) ?> <a href="pay.php">立即续费</a></div>
+        <div class="alert error"><?= e($premiumNotice) ?> <a href="pricing.php">立即续费</a></div>
         <?php endif; ?>
         <?php if (!$notionReady && $uploadBlocked === ''): ?>
         <div class="alert error">当前 Notion 账户尚未就绪，暂时无法上传。请到 <a href="account.php">账户管理</a> 完成账户绑定或切换到可用来源。</div>
@@ -343,7 +343,7 @@ $premiumNotice = premiumNotice($user);
                             <td data-label="类型"><?= e(explode('/', (string) $file['mime_type'])[0]) ?></td>
                             <td data-label="大小"><?= e(formatBytes((int) $file['file_size'])) ?></td>
                             <td data-label="更新时间"><?= e(date('Y-m-d H:i', strtotime((string) $file['updated_at']))) ?></td>
-                            <td><div class="file-actions"><?php if (!$isLost && filePreviewable($file)): ?><button data-action="preview" data-preview-kind="<?= e(previewKind($file)) ?>" data-preview-mime="<?= e((string) $file['mime_type']) ?>" data-preview-size="<?= (int) $file['file_size'] ?>" data-preview-name="<?= e($name) ?>">预览</button><?php endif; ?><?php if (!$isLost): ?><a href="api/file.php?id=<?= (int) $file['id'] ?>" title="下载">下载</a><button data-action="rename">重命名</button><button data-action="move">移动</button><?php endif; ?><?php if ($isWriteFailed): ?><button data-action="retry-write">重试写入</button><?php endif; ?><button class="danger" data-action="delete">删除</button></div></td>
+                            <td><div class="file-actions"><?php if (!$isLost && filePreviewable($file)): ?><button data-action="preview" data-preview-kind="<?= e(previewKind($file)) ?>" data-preview-mime="<?= e((string) $file['mime_type']) ?>" data-preview-size="<?= (int) $file['file_size'] ?>" data-preview-name="<?= e($name) ?>">预览</button><?php endif; ?><?php if (!$isLost): ?><a href="api/file.php?id=<?= (int) $file['id'] ?>" title="下载">下载</a><button data-action="share">直链</button><button data-action="rename">重命名</button><button data-action="move">移动</button><?php endif; ?><?php if ($isWriteFailed): ?><button data-action="retry-write">重试写入</button><?php endif; ?><button class="danger" data-action="delete">删除</button></div></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
@@ -412,7 +412,7 @@ $premiumNotice = premiumNotice($user);
         </div>
     </div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=39" defer></script>
+    <script src="assets/app.js?v=40" defer></script>
 </body>
 </html>
 <?php

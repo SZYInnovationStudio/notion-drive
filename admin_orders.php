@@ -261,7 +261,7 @@ $statusLabels = ['' => '全部状态', 'pending' => '待支付', 'paid' => '已�
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('订单管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=66"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('订单管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=67"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
@@ -304,7 +304,7 @@ $statusLabels = ['' => '全部状态', 'pending' => '待支付', 'paid' => '已�
             <?php else: ?>
             <div class="file-table-wrap">
                 <table class="file-table">
-                    <thead><tr><th>订单号</th><th>用户</th><th>套餐</th><th>渠道</th><th>金额</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+                    <thead><tr><th>订单号</th><th>用户</th><th>商品</th><th>渠道</th><th>金额</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
                     <tbody>
                     <?php foreach ($orders as $order): $orderStatus = (string) $order['status']; $canSettle = $orderStatus === 'pending' || $orderStatus === 'closed'; ?>
                     <tr>
@@ -312,7 +312,7 @@ $statusLabels = ['' => '全部状态', 'pending' => '待支付', 'paid' => '已�
                             <div class="file-name"><div><strong class="display-name"><?= e((string) $order['order_no']) ?></strong><small><?= (string) $order['trade_no'] !== '' && $order['trade_no'] !== null ? '交易号 ' . e((string) $order['trade_no']) : '—' ?></small></div></div>
                         </td>
                         <td data-label="用户"><?= e((string) ($order['username'] ?? '已删除用户')) ?></td>
-                        <td data-label="套餐"><?= (int) $order['months'] ?> 个月</td>
+                        <td data-label="商品"><?= e(orderProductLabel($order)) ?></td>
                         <td data-label="渠道"><?= e(payTypeLabel((string) $order['pay_type'])) ?></td>
                         <td data-label="金额">¥<?= e(number_format((float) $order['amount'], 2)) ?></td>
                         <td data-label="状态"><span class="status-badge <?= e(orderDisplayClass($order)) ?>"><?= e(orderDisplayLabel($order)) ?></span></td>
@@ -351,6 +351,6 @@ $statusLabels = ['' => '全部状态', 'pending' => '待支付', 'paid' => '已�
     </main>
     <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=39" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <script src="assets/app.js?v=40" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body>
 </html>
