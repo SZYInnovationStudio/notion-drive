@@ -28,6 +28,21 @@
 
 ---
 
+### [2026-10-04 11:27:52] 修复移动文件报「Unexpected token '<'」及非 JSON 响应的异常提示
+
+- 目的：用户反馈点击文件「移动」后 toast 报 `Unexpected token '<', "<html> <h"... is not valid JSON`。根因是前后端参数契约不一致：`assets/app.js` 的文件操作分支用通用 `body = new URLSearchParams({ id, action })` 提交，`move` 分支只补了 `folder_id`，而 `api/folder.php` 的 `move_file` 分支读的是 `$_POST['file_id']`，导致 `$fileId` 恒为 `0`，恒命中「文件不存在或无权访问」返回 **404 JSON**；部署服务器又把 PHP 的 4xx/5xx 响应体替换成 HTML 错误页（形如 `<html>\r\n<head>...`），前端 `response.json()` 直接抛 `Unexpected token '<'`。①修正前端字段名：`move` 分支删除通用 `id`、改发 `file_id`；②新增 `readJson()` 统一解析响应，服务端返回非 JSON（HTML 错误页 / 网关页）时转成带 HTTP 状态码的可读提示，避免用户再看到无从理解的报错。
+- 验证：`node --check assets/app.js` → 退出码 0（语法通过）；`grep` 确认操作型 `await response.json()` 已全部替换为 `await readJson(response)`（`app.js` L440 / L468 / L507 / L530 / L557），仅 `findDuplicates` 的 L929 保留（其外层已有 try/catch 兜底，返回空集合）；`grep` 确认 `app.js?v=30` 已无残留（10 处均为 `?v=31`）。遵守「本机禁止功能 / HTTP 测试」约定，未做 HTTP 验证。
+- 改动明细（行号为改动后当前行号）：
+  - `assets/app.js` L32-L41 — 新增 `readJson(response)` 帮助函数：`JSON.parse(await response.text())`，解析失败时抛「服务器响应异常（HTTP <状态码>），请稍后重试；若持续出现请联系管理员。」。
+  - `assets/app.js` L446-L456 — `move` 分支：`body.delete('id')`、`body.set('file_id', id)`，使提交字段与 `api/folder.php` 的 `move_file` 契约一致（`file_id` 指文件、`folder_id` 指目标文件夹）。
+  - `assets/app.js` L440、L468、L507、L530、L557 — 文件重命名、文件操作（移动/删除）、文件夹重命名、文件夹删除、新建文件夹五处 `const data = await response.json()` 改为 `const data = await readJson(response)`。
+  - 资源版本号 `assets/app.js?v=30 → ?v=31`（共 10 处）：`account.php` L385、`admin.php` L1885、`admin_orders.php` L354、`dashboard.php` L396、`forgot.php` L113、`index.php` L88、`logs.php` L125、`pay.php` L257、`register.php` L185、`tickets.php` L588。
+- 数据库结构影响：**无**（仅修正请求字段名与响应解析，不改动表/列）。
+- 备注：用户所述「文件夹打不开、点不动」在代码层未发现成因——文件夹入口为普通 `<a href="dashboard.php?folder=...">` 纯链接，无 JS/CSS 阻断（`.folder-link` 无 `pointer-events`/`z-index` 遮挡，所有 `preventDefault` 均不命中该链接）。若仍复现，需用户提供浏览器 Network 面板的实际请求 URL 与状态码以便进一步定位。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+---
+
 ### [2026-10-04 10:40:04] 密码最小长度由 10 位放宽到 6 位
 
 - 目的：将全站密码最小长度限制从 10 个字符下调为 6 个字符，覆盖服务端校验（`mb_strlen() < 10`）、前端 `minlength` 与界面提示文案三处，保证前后端阈值一致。

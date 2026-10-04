@@ -29,6 +29,17 @@
         window.setTimeout(() => toast.classList.remove('visible'), 2600);
     };
 
+    // 接口通常返回 JSON。但部分服务器（如开启 fastcgi_intercept_errors 的 Nginx）会把 PHP 的
+    // 4xx/5xx 响应体替换成自己的 HTML 错误页，直接 response.json() 就会抛出「Unexpected token '<'」。
+    // 统一在这里解析：拿不到 JSON 时给出带状态码的提示，避免用户看到无从理解的报错。
+    const readJson = async response => {
+        try {
+            return JSON.parse(await response.text());
+        } catch (_) {
+            throw new Error(`服务器响应异常（HTTP ${response.status}），请稍后重试；若持续出现请联系管理员。`);
+        }
+    };
+
     // 需要保留可点击链接的提示（目前只有封禁提示的「提交申诉」）走这个版本：
     // 用 innerHTML 渲染并给 toast 加上 clickable 类放开 pointer-events，停留时间也拉长
     // （toast 默认 pointer-events:none 且 2.6 秒即消失，链接根本点不到）
@@ -426,7 +437,7 @@
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
                     body: new URLSearchParams({ id, action: 'rename', name: value })
                 });
-                const data = await response.json();
+                const data = await readJson(response);
                 if (!response.ok || !data.ok) throw new Error(data.message || '操作失败');
                 nameEl.textContent = data.name;
                 notify(data.message);
@@ -436,7 +447,10 @@
             const target = await askFolderPicker();
             if (target === null) return;
             endpoint = 'api/folder.php';
+            // 移动接口用 file_id 指文件、folder_id 指目标文件夹；通用 body 里的 id 是文件夹接口的字段，这里不能沿用
+            body.delete('id');
             body.set('action', 'move_file');
+            body.set('file_id', id);
             body.set('folder_id', target);
         } else if (action === 'delete') {
             // 已有确认弹窗时直接忽略，避免快速双击叠出两个弹窗
@@ -451,7 +465,7 @@
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
                 body
             });
-            const data = await response.json();
+            const data = await readJson(response);
             if (!response.ok || !data.ok) throw new Error(data.message || '操作失败');
             if (action === 'move') {
                 // 目标可能是当前文件夹的子层或其它层级，刷新以同步列表与各文件夹的文件数
@@ -490,7 +504,7 @@
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
                     body: new URLSearchParams({ id: row.dataset.folderId, action: 'rename', name: value })
                 });
-                const data = await response.json();
+                const data = await readJson(response);
                 if (!response.ok || !data.ok) throw new Error(data.message || '操作失败');
                 notify(data.message);
                 window.location.reload();
@@ -513,7 +527,7 @@
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
                 body
             });
-            const data = await response.json();
+            const data = await readJson(response);
             if (!response.ok || !data.ok) throw new Error(data.message || '操作失败');
             notify(data.message);
             window.location.reload();
@@ -540,7 +554,7 @@
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
                     body
                 });
-                const data = await response.json();
+                const data = await readJson(response);
                 if (!response.ok || !data.ok) throw new Error(data.message || '创建失败');
                 notify(data.message);
                 window.location.reload();

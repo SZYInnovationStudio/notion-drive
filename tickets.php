@@ -585,6 +585,6 @@ if ($ticketId > 0) {
         <?php endif; ?>
     </main>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=30" defer></script>
+    <script src="assets/app.js?v=31" defer></script>
 </body>
 </html>
