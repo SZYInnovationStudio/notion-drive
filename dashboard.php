@@ -133,7 +133,7 @@ $premiumNotice = premiumNotice($user);
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <?= siteTitleTag('我的文件') ?>
     <?= siteFaviconTag() ?>
-    <link rel="stylesheet" href="assets/app.css?v=65">
+    <link rel="stylesheet" href="assets/app.css?v=66">
 </head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>" data-limit="<?= $singleLimit ?>" data-remaining="<?= $remainingBytes === null ? '' : $remainingBytes ?>" data-folder="<?= $currentFolderId ?>">
     <aside class="drive-sidebar">
@@ -264,7 +264,7 @@ $premiumNotice = premiumNotice($user);
         <section class="upload-card">
             <div class="upload-copy">
                 <h2>上传文件</h2>
-                <p>把文件拖到虚线区域，或从电脑中选择文件。</p>
+                <p>把文件拖到页面任意位置（或虚线区域）、按 Ctrl+V 粘贴，也可以从电脑中选择。</p>
                 <ul>
                     <li>当前单文件上限：<strong><?= e(formatBytes($singleLimit)) ?></strong></li>
                     <li>个人剩余空间：<strong><?= $quotaBytes === null ? '不限' : e(formatBytes(max(0, $quotaBytes - $usedBytes))) ?></strong></li>
@@ -404,8 +404,15 @@ $premiumNotice = premiumNotice($user);
             <div class="preview-body" id="previewBody"></div>
         </div>
     </div>
+    <div id="dropOverlay" class="drop-overlay" hidden aria-hidden="true">
+        <div class="drop-overlay-card">
+            <span class="upload-icon">↑</span>
+            <strong>松开即可上传</strong>
+            <small>支持文件与文件夹（保留目录结构），也可按 Ctrl+V 粘贴</small>
+        </div>
+    </div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=38" defer></script>
+    <script src="assets/app.js?v=39" defer></script>
 </body>
 </html>
 <?php

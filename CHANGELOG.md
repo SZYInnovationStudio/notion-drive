@@ -28,6 +28,33 @@
 
 ---
 
+### [2026-10-04 19:57:12] 我的文件支持「全页拖拽上传」与「Ctrl+V 粘贴上传」
+
+- 目的：用户希望拖文件不必对准虚线框（全页任意位置都能拖放上传），并要求支持 Ctrl+V 直接粘贴上传。
+  实现沿用既有上传链路（`addFiles` / `addFolderFiles`），不新增后端接口。
+- 验证：`node --check assets/app.js` 退出码 0；`php -l dashboard.php` 无语法错误；
+  版本号一致性：`app.js?v=38` / `app.css?v=65` 残留 **0 处**，新值 `app.js?v=39` = 10 处、`app.css?v=66` = 12 处。
+  部署后在用户 Chrome 中重新加载页面：合成 `dragenter`（含 Files）后遮罩出现、`dragleave`（移出窗口）后消失；
+  合成 `drop` 一个不支持后缀的文件只入队并显示「不支持」提示，未发起任何上传请求；
+  合成 `paste` 事件（clipboardData 内为文件）同样只入队未上传。**真实鼠标拖拽与真实 Ctrl+V 仍建议人工各试一次。**
+- 数据库结构影响：无（纯前端）。
+- 改动明细（行号为改动后当前行号）：
+  - `assets/app.js` L1619-L1643 — 把原来内联在 `dropZone.drop` 里的拖放处理抽成 `handleDropped()`，
+    虚线框与新增的全页拖拽共用同一套「目录还原结构 / 散落文件普通上传」逻辑，避免两处各写一遍走偏。
+  - `assets/app.js` L1645-L1683 — 新增全页拖拽：`dragenter/dragover/dragleave/drop` 挂在 document 上，
+    用 `types.includes('Files')` 只接管文件拖拽（拖动页面文字、链接不受影响）；
+    进入 #dropZone 时隐藏遮罩并让位给虚线框自身逻辑（`hasOwnDrop`），同一次拖放不会被上传两遍；
+    遮罩在移出窗口（`dragleave` 且 `relatedTarget` 为空）或 drop 后隐藏。
+  - `assets/app.js` L1676-L1683 — 封禁用户的全页 drop 走捕获阶段拦下并弹封禁提示，避免绕过封禁上传。
+  - `assets/app.js` L1685-L1703 — 新增 `paste` 监听：只处理 `kind === 'file'` 的剪贴板项，
+    取到文件才 `preventDefault` 并 `addFiles()`；剪贴板是文字时保持浏览器默认粘贴行为；
+    封禁用户粘贴时只提示不放行。
+  - `dashboard.php` L407-L413 — 新增 `#dropOverlay` 遮罩（默认 `hidden`），文案提示可拖拽/可 Ctrl+V；
+    L267 上传区说明同步改为「拖到页面任意位置、按 Ctrl+V 粘贴」。
+  - `assets/app.css` L270-L276 — 新增 `.drop-overlay*` 样式：遮罩 `pointer-events:none` 只作视觉提示、
+    不抢 drop 目标；`.drop-overlay[hidden] { display:none }` 抵消类上的 `display:grid`（否则 hidden 会失效）。
+  - 12 个页面 `app.js?v=38→39`、`app.css?v=65→66` 全站同步。
+
 ### [2026-10-04 19:42:36] 修复「选择文件夹」弹出文件窗（真因：合成点击冒泡）；不支持的后缀提示改用压缩包方案
 
 - 目的：用户反馈在 Chrome 点「选择文件夹」弹出的却是普通选文件窗。在用户机器上实测定位到真因，**与浏览器无关**：

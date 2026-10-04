@@ -1615,7 +1615,9 @@
     });
     ['dragenter', 'dragover'].forEach(type => dropZone.addEventListener(type, event => { event.preventDefault(); dropZone.classList.add('dragging'); }));
     ['dragleave', 'drop'].forEach(type => dropZone.addEventListener(type, event => { event.preventDefault(); dropZone.classList.remove('dragging'); }));
-    dropZone.addEventListener('drop', async event => {
+
+    /** 处理一次拖放：目录按相对路径还原结构上传，散落文件走普通上传。虚线框与全页拖拽共用。 */
+    const handleDropped = async event => {
         // 优先用 items 递归读取：拖入文件夹时 dataTransfer.files 拿不到目录内的文件
         const items = event.dataTransfer ? event.dataTransfer.items : null;
         if (items && items.length && typeof items[0].webkitGetAsEntry === 'function') {
@@ -1637,5 +1639,66 @@
             return;
         }
         addFiles(event.dataTransfer.files);
+    };
+    dropZone.addEventListener('drop', handleDropped);
+
+    // —— 全页拖拽：拖到页面任意位置都能上传，不必对准虚线框 ——
+    const dropOverlay = document.getElementById('dropOverlay');
+    const hideDropOverlay = () => { if (dropOverlay) dropOverlay.hidden = true; };
+    // 只接管文件拖拽：拖动页面内的文字、链接时 types 里没有 Files，不弹遮罩也不上传
+    const isFileDrag = event => {
+        const types = event.dataTransfer ? [...event.dataTransfer.types] : [];
+        return types.includes('Files');
+    };
+    // 虚线框自己已处理拖放，交回给它，避免同一次拖放上传两遍
+    const hasOwnDrop = target => target instanceof Element && Boolean(target.closest('#dropZone'));
+
+    if (banToastHtml === '') {
+        document.addEventListener('dragenter', event => {
+            if (!isFileDrag(event)) return;
+            if (hasOwnDrop(event.target)) { hideDropOverlay(); return; }
+            event.preventDefault();
+            if (dropOverlay) dropOverlay.hidden = false;
+        });
+        document.addEventListener('dragover', event => {
+            if (!isFileDrag(event) || hasOwnDrop(event.target)) return;
+            event.preventDefault();
+            if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+        });
+        // 移出窗口才算离开：在子元素之间移动同样会触发 dragleave，用 relatedTarget 区分
+        document.addEventListener('dragleave', event => { if (!event.relatedTarget) hideDropOverlay(); });
+        document.addEventListener('drop', async event => {
+            hideDropOverlay();
+            if (!isFileDrag(event) || hasOwnDrop(event.target)) return;
+            event.preventDefault();
+            await handleDropped(event);
+        });
+    } else {
+        // 封禁用户：全页拖拽同样拦下（虚线框那侧已由封禁的捕获监听处理）
+        document.addEventListener('drop', event => {
+            if (!isFileDrag(event)) return;
+            event.preventDefault();
+            notifyHtml(banToastHtml, 'error');
+        }, true);
+    }
+
+    // —— Ctrl+V 粘贴上传：截图、从资源管理器复制的文件都能直接贴进来 ——
+    document.addEventListener('paste', event => {
+        const items = event.clipboardData ? event.clipboardData.items : null;
+        if (!items) return;
+        const files = [];
+        for (const item of items) {
+            if (item.kind !== 'file') continue;
+            const file = item.getAsFile();
+            if (file) files.push(file);
+        }
+        // 剪贴板里是文字/表格时保持默认粘贴行为，不拦
+        if (!files.length) return;
+        event.preventDefault();
+        if (banToastHtml !== '') {
+            notifyHtml(banToastHtml, 'error');
+            return;
+        }
+        addFiles(files);
     });
 })();
