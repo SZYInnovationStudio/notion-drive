@@ -368,9 +368,12 @@ try {
             }
             NotionWriteQueue::create()->discard((int) $file['user_id'], $id);
         }
-        // 逐个账户归档全部副本；单份失败只记日志并告警，不影响删除结果
-        archiveUploadReplicas($file, $owner);
-        jsonResponse(['ok' => true, 'message' => '文件已删除。']);
+        // 逐个账户归档全部副本要调用 Notion 接口，往返可达数秒；改为先把响应发给浏览器，
+        // 再在后台归档，避免用户每次删除都干等（用户反馈「删除时会卡顿 5 秒」）。
+        // 「先落库再归档」的语义不变：文件状态已在上方置为 deleted，失败仍只记日志并告警。
+        jsonResponseThen(['ok' => true, 'message' => '文件已删除。'], static function () use ($file, $owner): void {
+            archiveUploadReplicas($file, $owner);
+        });
     }
 
     if ($action === 'retry_write') {

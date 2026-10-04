@@ -28,6 +28,24 @@
 
 ---
 
+### [2026-10-04 17:03:48] 修复删除文件卡顿约 5 秒：Notion 归档改为响应后后台执行
+
+- 目的：工单 T-Q7PY98（提交人 wuzheyu）反馈「删除时会卡顿 5 秒」。
+  根因是 `api/file.php` 的 delete 分支在 `jsonResponse()` 之前**同步**调用 `archiveUploadReplicas()`，
+  该方法要对每个副本调用一次 Notion `archiveBlock` 接口；官方账户池为主备双写（最多 2 个副本），
+  两次外部网络往返叠加即为用户感知到的数秒卡顿。
+- 验证：`php -l api/file.php` → `No syntax errors detected`。
+  改用仓库既有模式 `jsonResponseThen()`（`src/helpers.php` L384，`retry_write` 分支已在用同一模式）：
+  它先声明 `Content-Length` 输出响应体并 `fastcgi_finish_request()` 断开连接，随后在 `ignore_user_abort(true)`
+  下继续跑后台任务，因此浏览器秒回而归档继续进行。前端 `assets/app.js` L455-L479 的 delete 分支只依赖响应体
+  （`readJson` → `row.remove()` → `notify`），不依赖归档完成，无需改动。未改静态资源，故不调整版本号。
+  实际删除体验需在生产点击一次删除验证（本机无 Notion 真实账户，不做真实删除测试）。
+- 数据库结构影响：无。
+- 改动明细（行号为改动后当前行号）：
+  - `api/file.php` L371-L376 — 删除分支的 `archiveUploadReplicas($file, $owner); jsonResponse(...)` 两行，
+    改为 `jsonResponseThen(['ok' => true, 'message' => '文件已删除。'], static function () use ($file, $owner) { archiveUploadReplicas(...); })`。
+    置 `status='deleted'` 的落库仍在该调用之前完成，「先落库再归档」语义与失败告警行为均不变。
+
 ### [2026-10-04 16:58:36] 后台用户列表显示用户 ID，用户搜索支持按 ID 匹配
 
 - 目的：后台「用户管理」列表每行只显示用户名/邮箱/套餐等信息，同一用户名或邮箱归属难以快速定位到具体账号，
