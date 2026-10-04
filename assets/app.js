@@ -933,6 +933,11 @@
     const queue = document.getElementById('queue');
     if (!dropZone || !input || !browse || !queue) return;
 
+    // Safari 等浏览器不认 webkitdirectory，会把「选择文件夹」静默退化成一个只能选文件的窗口；
+    // 这类浏览器改用 showDirectoryPicker() 兜底，才能继续还原目录结构
+    const dirPickerSupported = 'webkitdirectory' in document.createElement('input');
+    const dirPickerFallback = typeof window.showDirectoryPicker === 'function';
+
     /** 从 webkitRelativePath 取相对目录（不含文件名）；直接选散落文件时返回空串。 */
     const relativeDirOf = file => {
         const path = String(file.webkitRelativePath || '');
@@ -970,6 +975,23 @@
                 collected.push(...await collectDropped(await readAllEntries(entry), dir));
             }
         }
+        return collected;
+    };
+
+    /** showDirectoryPicker() 兜底读取：递归列出目录内全部文件，相对路径口径与 webkitdirectory 保持一致（含顶层目录名）。 */
+    const pickDirectoryFiles = async () => {
+        const handle = await window.showDirectoryPicker();
+        const collected = [];
+        const walk = async (directory, prefix) => {
+            for await (const entry of directory.values()) {
+                if (entry.kind === 'file') {
+                    collected.push({ file: await entry.getFile(), relDir: prefix });
+                } else if (entry.kind === 'directory') {
+                    await walk(entry, prefix === '' ? entry.name : `${prefix}/${entry.name}`);
+                }
+            }
+        };
+        await walk(handle, handle.name);
         return collected;
     };
 
@@ -1178,18 +1200,92 @@
         return inspect ? (data.conflicts || []) : (data.folders || {});
     };
 
+    /** 文件夹上传前的确认窗：列出待上传文件并支持勾选剔除，返回选中的 [{ file, relDir }]；取消返回 null。 */
+    const confirmFolderUpload = candidates => new Promise(resolve => {
+        const dirCount = collectDirPaths(candidates).length;
+        const totalBytes = candidates.reduce((sum, item) => sum + item.file.size, 0);
+        const dialog = document.createElement('dialog');
+        dialog.className = 'duplicate-dialog folder-confirm';
+        dialog.innerHTML = '<h2>确认上传文件夹</h2><p class="folder-confirm-summary"></p><div class="folder-confirm-toolbar"><label><input type="checkbox" data-check-all checked> 全选</label><span class="folder-confirm-selected"></span></div><div class="folder-confirm-list"></div><div class="duplicate-actions"><button type="button" class="secondary-button" data-choice="cancel">取消</button><button type="button" class="primary-button compact" data-choice="confirm">确认上传</button></div>';
+        dialog.querySelector('.folder-confirm-summary').textContent =
+            `共 ${candidates.length} 个文件、${dirCount} 个文件夹，合计 ${formatBytes(totalBytes)}。取消勾选可跳过不想上传的文件。`;
+
+        // 选中的下标集合，全选开关对全部文件生效（含未逐条列出的部分）
+        const selected = new Set(candidates.map((_, index) => index));
+        const list = dialog.querySelector('.folder-confirm-list');
+        const checkAll = dialog.querySelector('[data-check-all]');
+        const counter = dialog.querySelector('.folder-confirm-selected');
+        const syncCounter = () => {
+            counter.textContent = `已选 ${selected.size} / ${candidates.length} 个`;
+            checkAll.checked = selected.size === candidates.length;
+            checkAll.indeterminate = selected.size > 0 && selected.size < candidates.length;
+        };
+
+        // 文件极多时只逐条渲染前 300 个，避免插入上万个节点卡死页面；全选开关仍覆盖全部文件
+        const MAX_ROWS = 300;
+        candidates.slice(0, MAX_ROWS).forEach((item, index) => {
+            const row = document.createElement('label');
+            row.className = 'folder-confirm-row';
+            row.innerHTML = '<input type="checkbox" checked><span class="folder-confirm-path"></span><span class="folder-confirm-size"></span>';
+            const path = item.relDir ? `${item.relDir}/${item.file.name}` : item.file.name;
+            const pathNode = row.querySelector('.folder-confirm-path');
+            pathNode.textContent = path;
+            pathNode.title = path;
+            row.querySelector('.folder-confirm-size').textContent = formatBytes(item.file.size);
+            row.querySelector('input').addEventListener('change', event => {
+                if (event.target.checked) selected.add(index);
+                else selected.delete(index);
+                syncCounter();
+            });
+            list.appendChild(row);
+        });
+        if (candidates.length > MAX_ROWS) {
+            const more = document.createElement('p');
+            more.className = 'folder-confirm-more';
+            more.textContent = `其余 ${candidates.length - MAX_ROWS} 个文件未逐条列出，随上方「全选」开关一并处理。`;
+            list.appendChild(more);
+        }
+        checkAll.addEventListener('change', () => {
+            selected.clear();
+            if (checkAll.checked) candidates.forEach((_, index) => selected.add(index));
+            list.querySelectorAll('.folder-confirm-row input').forEach(box => { box.checked = checkAll.checked; });
+            syncCounter();
+        });
+        syncCounter();
+
+        const finish = value => {
+            dialog.close();
+            resolve(value);
+        };
+        dialog.querySelector('[data-choice="confirm"]').addEventListener('click', () => {
+            if (!selected.size) {
+                notify('请至少勾选一个文件再上传。', 'error');
+                return;
+            }
+            finish(candidates.filter((_, index) => selected.has(index)));
+        });
+        dialog.querySelector('[data-choice="cancel"]').addEventListener('click', () => finish(null));
+        dialog.addEventListener('cancel', event => {
+            event.preventDefault();
+            finish(null);
+        });
+        dialog.addEventListener('close', () => dialog.remove());
+        document.body.appendChild(dialog);
+        dialog.showModal();
+        dialog.querySelector('[data-choice="confirm"]').focus();
+    });
+
     /** 上传文件夹：先按相对路径建好整棵目录树（同名文件夹让用户选合并/新建），再把文件排进各自目录。 */
     const addFolderFiles = async candidates => {
         const usable = candidates.filter(({ file }) => file && file.name);
         if (!usable.length) return;
 
+        // 上传前先让用户确认并勾选要传的文件，确认前不建目录、不查重
+        const chosen = await confirmFolderUpload(usable);
+        if (!chosen || !chosen.length) return;
+
         const rootFolder = Number(document.body.dataset.folder || 0);
-        const paths = collectDirPaths(usable);
-        if (paths.length && usable.length > 200) {
-            // 串行上传，文件很多时会很久；先确认一次，避免误选整个磁盘
-            const go = await askConfirm(`即将上传 ${usable.length} 个文件、${paths.length} 个文件夹，数量较多会耗时较长。确认继续？`);
-            if (!go) return;
-        }
+        const paths = collectDirPaths(chosen);
 
         const merges = [];
         if (paths.length) {
@@ -1216,7 +1312,7 @@
             }
         }
 
-        const entries = buildEntries(usable.map(({ file, relDir }) => {
+        const entries = buildEntries(chosen.map(({ file, relDir }) => {
             // 目录 id 解析不到时明确报错，而不是静默把文件丢到当前目录（会造成文件「放错地方」却看似成功）
             const resolved = relDir ? Number(folders[relDir] || 0) : 0;
             return {
@@ -1474,7 +1570,25 @@
     }
 
     browse.addEventListener('click', event => { event.stopPropagation(); input.click(); });
-    if (browseFolder) browseFolder.addEventListener('click', event => { event.stopPropagation(); folderInput.click(); });
+    if (browseFolder) browseFolder.addEventListener('click', async event => {
+        event.stopPropagation();
+        // 支持 webkitdirectory 的浏览器走原生目录选择；否则退回 File System Access API，避免退化成「选文件」
+        if (dirPickerSupported) {
+            folderInput.click();
+            return;
+        }
+        if (!dirPickerFallback) {
+            notify('当前浏览器不支持选择文件夹，请把文件夹直接拖进来，或改用 Chrome / Edge。', 'error');
+            return;
+        }
+        try {
+            const picked = await pickDirectoryFiles();
+            if (picked.length) addFolderFiles(picked);
+        } catch (error) {
+            // 用户自己关掉选择窗口属正常取消，不提示
+            if (!error || error.name !== 'AbortError') notify('无法读取该文件夹，请改用拖拽方式上传。', 'error');
+        }
+    });
     dropZone.addEventListener('click', event => { if (!event.target.closest('button')) input.click(); });
     dropZone.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); input.click(); } });
     input.addEventListener('change', () => { addFiles(input.files); input.value = ''; });

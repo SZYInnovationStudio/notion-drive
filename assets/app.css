@@ -464,6 +464,17 @@ body.drive-shell .site-credit .icp-license, body.drive-shell .site-credit .polic
 .duplicate-name strong { display: block; margin-top: 3px; color: var(--text); word-break: break-all; }
 .duplicate-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 
+/* 上传文件夹前的确认窗：文件多时内部滚动，不撑破弹窗 */
+.folder-confirm { width: min(560px, calc(100% - 32px)); }
+.folder-confirm-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 14px 0 8px; color: var(--muted); font-size: .78rem; }
+.folder-confirm-toolbar label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.folder-confirm-list { max-height: 46vh; overflow: auto; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 10px; }
+.folder-confirm-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: .78rem; border-bottom: 1px solid var(--line); cursor: pointer; }
+.folder-confirm-row:last-child { border-bottom: 0; }
+.folder-confirm-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-confirm-size { color: var(--muted); font-variant-numeric: tabular-nums; }
+.folder-confirm-more { padding: 8px 10px; color: var(--muted); font-size: .76rem; }
+
 /* 弹窗打开期间锁住背景滚动：否则在移动端滑动遮罩会把后面的页面一起带着滚 */
 body.has-overlay { overflow: hidden; }
 .confirm-overlay { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 20px; background: rgba(17, 22, 29, .42); }

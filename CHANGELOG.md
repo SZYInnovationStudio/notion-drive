@@ -28,6 +28,39 @@
 
 ---
 
+### [2026-10-04 19:22:59] 上传文件夹：新增上传前确认/勾选窗口；修复部分浏览器「选择文件夹」退化成选文件
+
+- 目的：用户反馈两点。其一，上传文件夹应**先弹确认窗口**，列出待上传内容并允许用户**勾选要不要传**，
+  而不是选完目录就直接开始建目录、查重、上传（选错一个大目录会立刻产生大量请求，且无法收回）。
+  其二，点「选择文件夹」时弹出的却是**普通选文件窗口**，与「选择文件」没有区别。排查确认本地与生产
+  `dashboard.php` / `app.js` 哈希一致、按钮 `#browseFolderButton` 也确实绑定在 `#folderInput`（`webkitdirectory`）上，
+  属该浏览器不认 `webkitdirectory` 时的**静默降级行为**（Safari 及部分内嵌 WebView），并非绑定错误。
+- 验证：`node --check assets/app.js` 退出码 0；版本号一致性：`app.js?v=36`、`app.css?v=63` 残留 **0 处**，
+  新值 `app.js?v=37` = 10 处、`app.css?v=64` = 12 处；`git diff --stat` 确认 12 个页面仅改版本号（各 2-4 行），
+  无整文件重写。**真实交互（确认窗勾选、降级浏览器下选目录）需人工实测。**
+- 数据库结构影响：无（纯前端改动，未新增表/列）。
+- 改动明细（行号为改动后当前行号）：
+  - `assets/app.js` L936-L939 — 新增 `dirPickerSupported`（探测 `webkitdirectory`）与 `dirPickerFallback`
+    （探测 `showDirectoryPicker`）两个能力标志，供按钮点击与降级分支判断。
+  - `assets/app.js` L981-L996 — 新增 `pickDirectoryFiles()`：用 `showDirectoryPicker()` + `dir.values()`
+    递归读取目录内全部文件，`relDir` 口径与 `webkitdirectory` 一致（含顶层目录名），保证降级后目录结构仍能还原。
+  - `assets/app.js` L1203-L1276 — 新增 `confirmFolderUpload()`：上传前弹确认窗，展示文件数/文件夹数/总大小，
+    逐条列出「相对路径 + 体积」并默认全选，支持单个取消勾选与「全选」总开关、显示「已选 N / M 个」；
+    超过 300 个文件时只逐条渲染前 300 条（避免插入上万个 DOM 节点卡死页面），全选开关仍覆盖全部文件；
+    未勾选任何文件时拦截并提示；「取消」或按 Esc 返回 `null`。
+  - `assets/app.js` L1278-L1288 — `addFolderFiles()` 在收集文件后先 `await confirmFolderUpload()`，
+    以勾选结果为后续建树、查重、上传的唯一输入；原「超过 200 个文件弹一次 `askConfirm`」的兜底提示
+    由新的确认窗取代（原 L1190-L1192 删除）。
+  - `assets/app.js` L1315 — 入队条目改用勾选后的 `chosen`（原 `usable`），确保未勾选的文件不会建目录也不会入队。
+  - `assets/app.js` L1573-L1591 — 「选择文件夹」按钮点击改为异步：支持 `webkitdirectory` 时保持原路径；
+    否则走 `pickDirectoryFiles()` 降级；两者都不支持时明确提示改用拖拽或 Chrome / Edge，
+    不再静默退化成「选文件」（原 L1477 单行绑定改为当前多行实现）。
+  - `assets/app.css` L467-L476 — 新增确认窗样式（`.folder-confirm*`）：加宽弹窗、文件列表限高 `46vh` 内部滚动、
+    长路径省略号显示、体积右对齐等宽数字，避免文件多时撑破弹窗。
+  - 12 个页面（`index.php` / `dashboard.php` / `account.php` / `admin.php` / `admin_orders.php` / `bans.php` /
+    `logs.php` / `pay.php` / `tickets.php` / `register.php` / `forgot.php` / `install.php`）—
+    `app.js?v=36→37`、`app.css?v=63→64` 全站同步，避免浏览器继续用旧缓存。
+
 ### [2026-10-04 18:56:03] 新增「上传文件夹」：选目录/拖目录自动还原目录结构；重名改为按文件夹隔离
 
 - 目的：用户反馈只能逐个选文件，希望像网盘一样**直接上传整个文件夹并保留目录结构**。经确认还需：

@@ -59,7 +59,7 @@ $captchaRequired = $throttle['captcha'];
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <?= siteTitleTag('登录') ?>
     <?= siteFaviconTag() ?>
-    <link rel="stylesheet" href="assets/app.css?v=63">
+    <link rel="stylesheet" href="assets/app.css?v=64">
 </head>
 <body class="login-shell">
     <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
@@ -85,6 +85,6 @@ $captchaRequired = $throttle['captcha'];
         </section>
     </main>
     <?= siteCreditHtml() ?>
-    <script src="assets/app.js?v=36" defer></script>
+    <script src="assets/app.js?v=37" defer></script>
 </body>
 </html>
