@@ -28,6 +28,48 @@
 
 ---
 
+### [2026-10-04 22:38:45] 直链与站内下载改走多连接并行分段拉取，解决跨境限速导致的「速度慢」
+
+- 目的：用户反馈直链下载「速度慢」。实测服务器 → Notion 文件托管
+  `prod-files-secure.s3.us-west-2.amazonaws.com`（AWS S3 us-west-2）**按单条 TCP 连接限速**，
+  每连接恒定约 12–19 KB/s，单连接透传端到端仅约 12 KB/s（25 秒只拿到 311 KB），
+  51.8 MB 的文件需约 70 分钟，完全不可用。
+  跨境链路与服务器本身均无瓶颈（同站 `app.js` 实测 233 KB/s、TTFB 0.26s），
+  唯一有效解法是**服务端多连接并行拉取**：多连接可近线性提速（8 路≈130 KB/s、16 路≈181 KB/s，
+  存在约 180–240 KB/s 的聚合上限）。故新增「滑动窗口并行分段 + 按偏移顺序拼回转发」的传输路径。
+- 验证：`php -l` 通过；服务器只读探针实测 `parallelConnections=8`、`probeTotalSize=51817453 (1.04s)`、
+  签名 URL 通过 `isTrustedDownloadUrl` 校验，并行前置条件全部正常。
+  生产环境（清 OPcache 后）用同一 51.8 MB 文件（`HarmonyOS 5 - 华为官网.mp4`）以
+  `curl.exe --max-time 25` 实测：**改造前 `bytes=311555 / speed=12455 B/s / ttfb=5.33s`；
+  改造后 `bytes=3114239 / speed=124562 B/s / ttfb=4.03s`——25 秒内拿到约 10 倍数据量，
+  吞吐提升约 10 倍**（受单次测试窗口限制，稳态吞吐已接近 8 连接聚合上限）。
+  端到端链路其余场景无回归：`parallelWritten === 0` 时安全回退原单连接透传路径。
+- 改动明细：
+  - `src/Files/FileStreamer.php` L22 — 新增 `use NotionDrive\Database;`（读取并发配置）。
+  - `src/Files/FileStreamer.php` L25-L32 — 新增常量 `PARALLEL_CHUNK = 65536`、
+    `PARALLEL_MIN_SIZE = 1048576`。分块大小直接决定「按序输出」的首块延迟：
+    分块为 64 KiB 时首块约 4 秒即可吐出，8 路并发约 7 倍提速；此前试过 1 MiB 分块，
+    首块需约 68 秒才能凑齐，客户端在前 68 秒只能拿到单连接速率，体感与单连接无异（已废弃）。
+    小于 1 MiB 的文件不并行，省去探测与多连接的额外开销。
+  - `src/Files/FileStreamer.php` L123-L137 — 在 `stream()` 副本循环内、取到签名 `$url` 之后接入
+    并行尝试：`relayRangeParallel(...) > 0` 即已向客户端输出并自行收尾（`exit`）；
+    返回 0 表示一个字节都没写出，继续走下方原单连接透传路径，保证安全回退。
+  - `src/Files/FileStreamer.php` L273-L285 — 新增 `parallelConnections()`：读
+    `Database::config('transfer_connections', '8')`，`<=1` 返回 0 表示关闭，否则钳制在 2–16。
+  - `src/Files/FileStreamer.php` L287-L333 — 新增 `probeTotalSize()`：用 `Range: bytes=0-0` GET
+    探测远端总大小（预签名 URL 不允许 HEAD，改用 GET + 立即中止 body），要求返回 `206`
+    且带 `Content-Range` 且最终 URL 通过 `isTrustedDownloadUrl`，否则返回 null（回退单连接）。
+  - `src/Files/FileStreamer.php` L335-L634 — 新增 `relayRangeParallel()`：解析客户端单段 Range，
+    按 `PARALLEL_CHUNK` 切分并预分配全部分块，用 `curl_multi` 维护一个 `$connections` 大小的滑动窗口
+    并发拉取；各分块先缓存进内存（`WRITEFUNCTION` 只追加不输出），仅当轮到某块的偏移等于
+    `$sendPos` 时才边收边 `echo + flush`，从而在保证字节顺序正确的前提下并行提速；
+    分块需收到 `206` 且长度与请求窗口一致，否则判定失败；失败分两种——未输出任何字节则返回 0
+    交由调用方回退（记 `warning`），已输出则记 `error` + `raiseAdminAlert`（客户端断开时不告警）；
+    响应头延迟到首个数据块真正输出前才发，确保未输出时可干净回退；客户端断开用 `connection_aborted()`
+    检测并及时停止拉取；60 秒无新数据触发超时保护；PHP 8.5 下不调用已弃用的 `curl_close()/curl_multi_close()`。
+- 数据库：无结构改动，新增可选配置键 `transfer_connections`（缺失时默认 8；设为 `<=1` 可关闭并行）。
+  旧库无需手工补列或补键。
+
 ### [2026-10-04 21:55:35] 修复直链地址被错加 /api 前缀（siteUrl 未识别入口脚本目录）
 
 - 目的：用户在「我的文件 → 直链 → 复制」拿到的地址是 `https://…/api/s.php?t=…`，访问 404。

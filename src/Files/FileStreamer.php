@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace NotionDrive\Files;
 
+use NotionDrive\Database;
 use NotionDrive\Logger;
 use NotionDrive\NotionApiException;
 use NotionDrive\NotionClient;
@@ -21,6 +22,15 @@ use NotionDrive\Uploads\NotionWriteQueue;
  */
 final class FileStreamer
 {
+    /**
+     * 并发拉取的分块大小。
+     * 每连接被跨境限速（实测约 15 KB/s），分块必须足够小，否则「按序输出」会一直等首块收完，
+     * 客户端在首块到达前拿不到任何数据，表现为和单连接一样慢。64 KiB 约 4 秒首块、8 路并发约 7 倍提速。
+     */
+    private const PARALLEL_CHUNK = 65536;
+    /** 低于该体积不值得并行（省去探测与多连接的额外开销） */
+    private const PARALLEL_MIN_SIZE = 1048576;
+
     /**
      * @param array $file            uploads 记录（含 display_name/filename/mime_type/status 等）
      * @param array $owner           文件所属用户（下载要用他的 Token 访问 Notion）
@@ -108,6 +118,22 @@ final class FileStreamer
                     'reason' => $lastError,
                 ]);
                 continue;
+            }
+
+            // 跨境直连 S3 单连接会被限速（实测每连接约 12–19 KB/s）。改走多连接并行分段拉取、
+            // 按偏移顺序拼回后转发，可成倍提速。任一步骤在「尚未输出任何字节」时失败都会返回 0，
+            // 交由下面的单连接路径安全回退；一旦已经开始输出则返回已写字节数并由本方法内部收尾。
+            $parallelWritten = self::relayRangeParallel(
+                (string) $url,
+                (string) ($_SERVER['HTTP_RANGE'] ?? ''),
+                $file,
+                $target,
+                $via,
+                $viewerId,
+                $shareId
+            );
+            if ($parallelWritten > 0) {
+                exit;
             }
 
             // 远端响应头先暂存，等第一个数据块到达再发出；中途失败则一个字节都没写出去，可以安全回退
@@ -242,6 +268,369 @@ final class FileStreamer
         }
 
         throw new \RuntimeException('全部副本均不可用：' . $lastError);
+    }
+
+    /**
+     * 读取并发连接数配置，返回 <2 表示关闭并行（回退单连接透传）。
+     * 配置缺失时默认 8 条连接，钳制在 2–16。
+     */
+    private static function parallelConnections(): int
+    {
+        $value = (int) Database::config('transfer_connections', '8');
+        if ($value <= 1) {
+            return 0;
+        }
+
+        return max(2, min(16, $value));
+    }
+
+    /**
+     * 用「Range: bytes=0-0」探测远端文件总大小。
+     * 需返回 206 且带 Content-Range 才算成功（预签名 URL 不允许 HEAD），失败返回 null。
+     */
+    private static function probeTotalSize(string $url): ?int
+    {
+        $status = 0;
+        $total = null;
+        $seenRange = false;
+        $handle = curl_init($url);
+        curl_setopt_array($handle, [
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 3,
+            CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
+            CURLOPT_RETURNTRANSFER => false,
+            CURLOPT_CONNECTTIMEOUT => 20,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+            CURLOPT_HTTPHEADER => ['Range: bytes=0-0'],
+            CURLOPT_HEADERFUNCTION => static function ($curl, string $header) use (&$status, &$total, &$seenRange): int {
+                if (preg_match('/^HTTP\/\S+\s+(\d{3})/', $header, $match)) {
+                    $status = (int) $match[1];
+                    $total = null;
+                    $seenRange = false;
+                } elseif (preg_match('#^Content-Range:\s*bytes\s+\d+-\d+/(\d+)#i', $header, $match)) {
+                    $total = (int) $match[1];
+                    $seenRange = true;
+                }
+
+                return strlen($header);
+            },
+            // 头部已足够，收到第一个数据块立即中止，丢弃 body
+            CURLOPT_WRITEFUNCTION => static function (): int {
+                return 0;
+            },
+        ]);
+        curl_exec($handle);
+
+        if (!$seenRange || $total === null || $total <= 0 || $status !== 206) {
+            return null;
+        }
+        if (!NotionClient::isTrustedDownloadUrl((string) curl_getinfo($handle, CURLINFO_EFFECTIVE_URL))) {
+            return null;
+        }
+
+        return $total;
+    }
+
+    /**
+     * 多连接并行分段拉取远端内容，并按偏移顺序边收边转发给客户端。
+     *
+     * 返回已写给客户端的字节数：0 表示「一个字节都没输出，调用方可安全回退单连接」；
+     * 任何输出前或输出后发生的失败都在本方法内记录并收尾，不向调用方抛出异常。
+     *
+     * @param string     $rangeHeader 客户端原始 Range 头（'' 表示整文件请求）
+     * @param array      $file        uploads 记录（仅用于日志）
+     * @param array      $target      当前副本信息（仅用于日志）
+     * @param int|null   $viewerId    下载者用户 ID（仅用于日志）
+     * @param int|null   $shareId     直链 ID（仅用于日志）
+     */
+    private static function relayRangeParallel(
+        string $url,
+        string $rangeHeader,
+        array $file,
+        array $target,
+        string $via,
+        ?int $viewerId,
+        ?int $shareId
+    ): int {
+        $connections = self::parallelConnections();
+        if ($connections < 2) {
+            return 0;
+        }
+
+        $total = self::probeTotalSize($url);
+        if ($total === null || $total < self::PARALLEL_MIN_SIZE) {
+            return 0;
+        }
+
+        // 解析客户端 Range：仅支持单段；多段/非法时回退单连接原样透传
+        $rangeHeader = trim($rangeHeader);
+        $isPartial = $rangeHeader !== '';
+        $start = 0;
+        $end = $total - 1;
+        if ($isPartial) {
+            if (preg_match('/^bytes=(\d*)-(\d*)$/i', $rangeHeader, $match) !== 1) {
+                return 0;
+            }
+            if ($match[1] === '' && $match[2] === '') {
+                return 0;
+            }
+            if ($match[1] === '') {
+                $suffix = (int) $match[2];
+                if ($suffix <= 0) {
+                    return 0;
+                }
+                $start = max(0, $total - $suffix);
+            } else {
+                $start = (int) $match[1];
+                if ($match[2] !== '') {
+                    $end = (int) $match[2];
+                }
+            }
+            if ($start > $end || $start >= $total) {
+                return 0;
+            }
+            $end = min($end, $total - 1);
+        }
+
+        $length = $end - $start + 1;
+        // 小范围（音视频拖动产生的尾段等）不值得并行
+        if ($length < self::PARALLEL_MIN_SIZE) {
+            return 0;
+        }
+
+        $chunkSize = self::PARALLEL_CHUNK;
+        $chunkCount = intdiv($length + $chunkSize - 1, $chunkSize);
+        $chunks = [];
+        for ($i = 0; $i < $chunkCount; $i++) {
+            $chunkStart = $start + $i * $chunkSize;
+            $chunkEnd = min($chunkStart + $chunkSize - 1, $end);
+            $chunks[$i] = [
+                'start' => $chunkStart,
+                'end' => $chunkEnd,
+                'len' => $chunkEnd - $chunkStart + 1,
+                'buf' => '',
+                'emitted' => 0,
+                'status' => 0,
+                'done' => false,
+                'bad' => false,
+                'handle' => null,
+            ];
+        }
+
+        $multi = curl_multi_init();
+        $active = [];
+        $nextIndex = 0;
+        $sendPos = $start;
+        $writtenTotal = 0;
+        $lastActivity = microtime(true);
+        $failed = false;
+        $failReason = '';
+        $headersSent = false;
+
+        // 发出响应头：延迟到第一个数据块真正输出前，未输出任何字节时可让调用方干净回退
+        $sendHeaders = static function () use (&$headersSent, $isPartial, $start, $end, $total, $length): void {
+            if ($headersSent) {
+                return;
+            }
+            $headersSent = true;
+            if ($isPartial) {
+                http_response_code(206);
+                header('Content-Range: bytes ' . $start . '-' . $end . '/' . $total);
+            } else {
+                http_response_code(200);
+            }
+            header('Content-Length: ' . $length);
+        };
+
+        $launch = static function (int $index) use (&$chunks, &$active, $multi, $url): void {
+            $chunk = &$chunks[$index];
+            $handle = curl_init($url);
+            curl_setopt_array($handle, [
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_MAXREDIRS => 3,
+                CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
+                CURLOPT_RETURNTRANSFER => false,
+                CURLOPT_CONNECTTIMEOUT => 20,
+                // 仅以「长时间无数据」判定断开，避免大分块被误杀
+                CURLOPT_LOW_SPEED_LIMIT => 1,
+                CURLOPT_LOW_SPEED_TIME => 60,
+                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+                CURLOPT_BUFFERSIZE => 262144,
+                CURLOPT_TCP_NODELAY => true,
+                CURLOPT_HTTPHEADER => ['Range: bytes=' . $chunk['start'] . '-' . $chunk['end']],
+                CURLOPT_HEADERFUNCTION => static function ($curl, string $header) use (&$chunks, $index): int {
+                    if (preg_match('/^HTTP\/\S+\s+(\d{3})/', $header, $match)) {
+                        $chunks[$index]['status'] = (int) $match[1];
+                    }
+
+                    return strlen($header);
+                },
+                // 只缓存不输出：必须按偏移顺序拼回，否则大文件会错位
+                CURLOPT_WRITEFUNCTION => static function ($curl, string $data) use (&$chunks, $index): int {
+                    $chunks[$index]['buf'] .= $data;
+
+                    return strlen($data);
+                },
+            ]);
+            $chunk['handle'] = $handle;
+            $active[spl_object_id($handle)] = $index;
+            curl_multi_add_handle($multi, $handle);
+            unset($chunk);
+        };
+
+        while (true) {
+            while ($nextIndex < $chunkCount && count($active) < $connections) {
+                $launch($nextIndex);
+                $nextIndex++;
+                $lastActivity = microtime(true);
+            }
+
+            curl_multi_exec($multi, $running);
+
+            while (($info = curl_multi_info_read($multi)) !== false) {
+                if (($info['msg'] ?? 0) !== CURLMSG_DONE) {
+                    continue;
+                }
+                $handle = $info['handle'];
+                $key = spl_object_id($handle);
+                $index = $active[$key] ?? null;
+                curl_multi_remove_handle($multi, $handle);
+                unset($active[$key]);
+                if ($index === null || !isset($chunks[$index])) {
+                    continue;
+                }
+                $chunk = &$chunks[$index];
+                $chunk['done'] = true;
+                // 分块必须收到 206 且字节数与请求的窗口一致，否则视为失败
+                if ($chunk['status'] !== 206 || $info['result'] !== CURLE_OK || strlen($chunk['buf']) !== $chunk['len']) {
+                    $chunk['bad'] = true;
+                }
+                unset($chunk);
+                $lastActivity = microtime(true);
+            }
+
+            // 按偏移顺序输出：只有排在队首的块能连续吐出，保证不错位
+            while ($sendPos <= $end) {
+                $index = intdiv($sendPos - $start, $chunkSize);
+                if (!isset($chunks[$index])) {
+                    break;
+                }
+                $chunk = &$chunks[$index];
+                if ($chunk['start'] + $chunk['emitted'] !== $sendPos) {
+                    unset($chunk);
+                    break;
+                }
+                $buffered = strlen($chunk['buf']);
+                if ($chunk['emitted'] < $buffered) {
+                    $sendHeaders();
+                    $piece = substr($chunk['buf'], $chunk['emitted']);
+                    echo $piece;
+                    flush();
+                    $chunk['emitted'] += strlen($piece);
+                    $sendPos += strlen($piece);
+                    $writtenTotal += strlen($piece);
+                    $lastActivity = microtime(true);
+                }
+                if ($chunk['emitted'] >= $buffered) {
+                    if ($chunk['bad']) {
+                        $failed = true;
+                        $failReason = sprintf(
+                            '分块 %d-%d 传输失败（HTTP %d，已收 %d/%d 字节）',
+                            $chunk['start'],
+                            $chunk['end'],
+                            $chunk['status'],
+                            $buffered,
+                            $chunk['len']
+                        );
+                        unset($chunk);
+                        break 2;
+                    }
+                    if ($chunk['done'] && $chunk['emitted'] >= $chunk['len']) {
+                        unset($chunks[$index]);
+                        unset($chunk);
+                        continue;
+                    }
+                    unset($chunk);
+                    break;
+                }
+                unset($chunk);
+                break;
+            }
+
+            if ($sendPos > $end) {
+                break;
+            }
+
+            // 客户端已断开：无需继续拉取，也不应告警
+            if (connection_aborted()) {
+                break;
+            }
+
+            if ($nextIndex >= $chunkCount && $active === []) {
+                if (!$failed) {
+                    $failed = true;
+                    $failReason = '全部连接已结束但数据未收全';
+                }
+                break;
+            }
+
+            if ($running > 0) {
+                if (curl_multi_select($multi, 0.05) === -1) {
+                    usleep(50000);
+                }
+            } else {
+                usleep(10000);
+            }
+
+            if (microtime(true) - $lastActivity > 60) {
+                $failed = true;
+                $failReason = '并行分块拉取超过 60 秒无新数据';
+                break;
+            }
+        }
+
+        // 清理未结束的连接（PHP 8.5 起不再调用 curl_close/curl_multi_close，交由 GC 回收）
+        foreach ($active as $index) {
+            if (isset($chunks[$index]) && $chunks[$index]['handle'] instanceof \CurlHandle) {
+                curl_multi_remove_handle($multi, $chunks[$index]['handle']);
+            }
+        }
+        $active = [];
+
+        if ($failed && $writtenTotal > 0) {
+            // 已开始输出、无法回退也无法改写状态码：记录并告警，客户端据 Content-Length 判定失败
+            if (!connection_aborted()) {
+                Logger::error('download', '并行分块下载中途失败，输出可能不完整。', [
+                    'file_id' => (int) ($file['id'] ?? 0),
+                    'user_id' => $viewerId,
+                    'replica_id' => $target['replica_id'] ?? null,
+                    'account_type' => $target['type'] ?? null,
+                    'account_id' => $target['account_id'] ?? null,
+                    'via' => $via,
+                    'share_id' => $shareId,
+                    'written' => $writtenTotal,
+                    'reason' => $failReason,
+                ]);
+                raiseAdminAlert('error', sprintf('账户「%s」并行下载文件 #%d 时中断，该副本可能不可用。', (string) ($target['label'] ?? ''), (int) ($file['id'] ?? 0)), [
+                    'stage' => 'download',
+                    'file_id' => (int) ($file['id'] ?? 0),
+                    'replica_id' => $target['replica_id'] ?? null,
+                    'account_type' => $target['type'] ?? null,
+                    'account_id' => $target['account_id'] ?? null,
+                    'reason' => $failReason,
+                ]);
+            }
+        } elseif ($failed) {
+            Logger::warning('download', '并行分块拉取未输出任何数据，回退单连接。', [
+                'file_id' => (int) ($file['id'] ?? 0),
+                'replica_id' => $target['replica_id'] ?? null,
+                'via' => $via,
+                'reason' => $failReason,
+            ]);
+        }
+
+        return $writtenTotal;
     }
 
     /**
