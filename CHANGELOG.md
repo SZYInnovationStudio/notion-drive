@@ -28,6 +28,25 @@
 
 ---
 
+### [2026-10-04 13:09:30] Notion 写入加速：分片大小提到 20 MB 并改为并发上传
+
+- 目的：用户反馈写入 Notion 时间长。根因是 `NotionClient::sendParts()` 逐片串行——每个分片一次 HTTPS POST，发完一片才发下一片，且每次新建连接（重复 TCP / TLS 握手）；1 GB 文件 = 100 次串行往返，往返延迟被完全累加。Notion 官方允许分片并发、乱序上传（只要在 complete 之前把 1..N 发完即可），故改为固定并发窗口发送；同时把分片大小由 10 MB 提到官方上限 20 MB，请求数直接减半。
+- 验证：`php -l src/NotionClient.php` → `No syntax errors detected`（退出码 0）；`php -r` 核对用到的常量与函数均存在（`CURLM_CALL_MULTI_PERFORM`、`CURL_LOCK_DATA_CONNECT`、`CURLSHOPT_SHARE`、`CURLOPT_SHARE`、`CURLE_PARTIAL_FILE`、`curl_share_init`、`curl_multi_getcontent`、`spl_object_id` 全部 ok）。遵守「本机禁止功能 / HTTP 测试」约定，未做实际上传验证。逻辑自查：源文件流仅在 `spoolPart()` 中按分片号顺序前进，重试复用同一临时文件而不重新切片，避免重试读错字节（初版曾误在重试前删除临时文件，已修正）；临时文件占用上界为并发数 × 分片大小（4 × 20 MB）。
+- 改动明细（行号为改动后当前行号）：
+  - `src/NotionClient.php` L15 — `PART_SIZE` 10 MB → 20 MB（Notion 允许区间 5~20 MB，取上限以最小化请求数）。
+  - `src/NotionClient.php` L17 — 新增 `UPLOAD_CONCURRENCY = 4` 并发窗口（并发过高会触发 429）。
+  - `src/NotionClient.php` L19、L25-L35 — 新增 `MAX_UPLOAD_ATTEMPTS = 3` 与 `transientCurlErrors()`；后者用方法而非类常量，避免未安装 curl 扩展时在类声明阶段就因常量未定义致命报错（保留构造函数的友好提示）。
+  - `src/NotionClient.php` L274-L368 — 重写 `sendParts()` 为 `curl_multi` 并发窗口：`curl_share` 共享连接缓存（省掉每片重复的 TCP / TLS 握手）、固定并发 4、完成一片立即补位；429 / 5xx / 网络瞬时错误按 `Retry-After` 或退避重发，重试复用原临时文件。
+  - `src/NotionClient.php` L370-L393 — 新增 `spoolPart()`：按 `PART_SIZE` 从源流切出分片到独立临时文件（`CURLFile` 磁盘流式发送，不占内存）。
+  - `src/NotionClient.php` L396-L431 — 新增 `initPartHandle()`：分片句柄选项（含 `CURLOPT_SHARE` 与每句柄独立的 `Retry-After` 记录）。
+  - `src/NotionClient.php` L433-L471 — 新增 `partOutcome()`：把分片结果归类为成功 / 可重试（含等待时间）/ 不可重试。
+  - `src/NotionClient.php` L247 — `sendFile()` 移除仅供分片使用的 `?int $part` 参数（单分片路径不再传，`part_number` 字段由 `initPartHandle()` 负责）。
+  - `src/NotionClient.php` 原 L289-L296 删除 `execute()` 内的局部 `$transientErrors` 数组，改用 `transientCurlErrors()`。
+- 数据库结构影响：**无**（仅 Notion 请求策略变更）。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+---
+
 ### [2026-10-04 11:51:40] 新增 .user.ini 提高 PHP 上传限制，缓解大文件上传过慢
 
 - 目的：用户反馈上传文件很慢。查明上传是「浏览器逐块串行提交」（`assets/app.js` L755-L760 的 `while (index < total)` 依次 `await sendChunk`），单块大小由 `uploadChunkSizeBytes()` 取「后台配置的分块大小」与 `upload_max_filesize` / `post_max_size` 的较小值（`src/helpers.php` L553-L568）。服务器沿用 PHP 默认限制（常见 2M / 8M）时单块被压到 2 MB 以下，1 GB 文件要串行发出 500 多个请求，耗时被请求往返放大。故新增 `.user.ini` 提高限制，使后台设置的分块大小不再被 ini 收敛。

@@ -11,7 +11,28 @@ final class NotionClient
 {
     private const API_BASE = 'https://api.notion.com/v1';
     private const API_VERSION = '2026-03-11';
-    private const PART_SIZE = 10 * 1024 * 1024;
+    /** 分片大小：Notion 要求每片 5~20 MB，取上限 20 MB 以减少请求数（末片可小于 5 MB）。 */
+    private const PART_SIZE = 20 * 1024 * 1024;
+    /** 分片并发窗口：Notion 官方允许分片并发、乱序上传，但并发过高会触发 429，取 4 折中。 */
+    private const UPLOAD_CONCURRENCY = 4;
+    /** 单个分片的最大尝试次数（首次 + 2 次重试）。 */
+    private const MAX_UPLOAD_ATTEMPTS = 3;
+
+    /**
+     * 网络层瞬时错误：分片重发只覆盖自身、不会产生多余数据，可安全重试。
+     * 用方法而非类常量，避免未安装 curl 扩展时在类声明阶段就因常量未定义而致命报错。
+     */
+    private static function transientCurlErrors(): array
+    {
+        return [
+            CURLE_PARTIAL_FILE,
+            CURLE_OPERATION_TIMEDOUT,
+            CURLE_SSL_CONNECT_ERROR,
+            CURLE_GOT_NOTHING,
+            CURLE_SEND_ERROR,
+            CURLE_RECV_ERROR,
+        ];
+    }
 
     /** 可信下载域名：Notion 官方域名及其文件托管的 S3 域名。 */
     private const TRUSTED_DOWNLOAD_DOMAINS = ['notion.com', 'notion.so', 'notion-static.com', 'amazonaws.com'];
@@ -223,18 +244,13 @@ final class NotionClient
         return $this->execute($handle, $method === 'GET' || $method === 'DELETE');
     }
 
-    private function sendFile(string $url, string $path, string $filename, string $mime, ?int $part = null): void
+    private function sendFile(string $url, string $path, string $filename, string $mime): void
     {
-        $fields = ['file' => new CURLFile($path, $mime, $filename)];
-        if ($part !== null) {
-            $fields['part_number'] = (string) $part;
-        }
-
         $handle = curl_init($url);
         curl_setopt_array($handle, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $fields,
+            CURLOPT_POSTFIELDS => ['file' => new CURLFile($path, $mime, $filename)],
             CURLOPT_HTTPHEADER => [
                 'Authorization: Bearer ' . $this->token,
                 'Notion-Version: ' . self::API_VERSION,
@@ -249,6 +265,12 @@ final class NotionClient
         $this->execute($handle, true);
     }
 
+    /**
+     * 并发发送全部文件分片：Notion 允许分片并行、乱序上传（只要 complete 之前把 1..N 发完即可），
+     * 逐片串行会把每一次往返延迟累加，大文件因此非常慢。这里用 curl_multi 维持固定并发窗口，
+     * 并让所有分片句柄共享连接缓存，省掉每片重复的 TCP / TLS 握手；
+     * 429 / 5xx / 网络瞬时错误按与 execute() 一致的退避策略重发（重发同一分片只覆盖自身）。
+     */
     private function sendParts(string $url, string $path, string $filename, string $mime, int $parts): void
     {
         $source = fopen($path, 'rb');
@@ -256,44 +278,201 @@ final class NotionClient
             throw new RuntimeException('无法读取上传文件。');
         }
 
+        $multi = curl_multi_init();
+        $share = curl_share_init();
+        curl_share_setopt($share, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
+
+        $active = [];
+        // 已切好、等待并发槽的分片（含失败后待重发的）：优先于新分片发送，
+        // 这样源文件流始终按分片号顺序前进，不会因重试读错字节
+        $waiting = [];
+        $remaining = range(1, $parts);
+
         try {
-            for ($part = 1; $part <= $parts; $part++) {
-                $temporary = tempnam(sys_get_temp_dir(), 'notion-drive-part-');
-                if ($temporary === false) {
-                    throw new RuntimeException('无法创建分片临时文件。');
+            while ($remaining !== [] || $waiting !== [] || $active !== []) {
+                while (count($active) < self::UPLOAD_CONCURRENCY && ($waiting !== [] || $remaining !== [])) {
+                    if ($waiting === []) {
+                        $part = array_shift($remaining);
+                        $temporary = $this->spoolPart($source);
+                        if ($temporary === null) {
+                            throw new RuntimeException('无法创建分片临时文件。');
+                        }
+                        $waiting[] = ['part' => $part, 'file' => $temporary, 'attempts' => 0];
+                    }
+
+                    $entry = array_shift($waiting);
+                    $entry['attempts']++;
+                    $entry['state'] = new \stdClass();
+                    $entry['state']->retryAfter = null;
+                    $entry['handle'] = $this->initPartHandle($url, $entry['file'], $filename, $mime, (int) $entry['part'], $share, $entry['state']);
+                    curl_multi_add_handle($multi, $entry['handle']);
+                    $active[spl_object_id($entry['handle'])] = $entry;
                 }
 
-                $target = fopen($temporary, 'wb');
-                if ($target === false) {
-                    @unlink($temporary);
-                    throw new RuntimeException('无法写入分片临时文件。');
+                do {
+                    $status = curl_multi_exec($multi, $running);
+                } while ($status === CURLM_CALL_MULTI_PERFORM);
+
+                if ($running > 0 && curl_multi_select($multi, 1.0) === -1) {
+                    // 无可等待的描述符（极端情况）：短暂让出 CPU，避免空转
+                    usleep(1000);
                 }
 
-                stream_copy_to_stream($source, $target, self::PART_SIZE);
-                fclose($target);
+                while (($info = curl_multi_info_read($multi)) !== false) {
+                    $handle = $info['handle'];
+                    $key = spl_object_id($handle);
+                    if (!isset($active[$key])) {
+                        continue;
+                    }
 
-                try {
-                    $this->sendFile($url, $temporary, $filename, $mime, $part);
-                } finally {
-                    @unlink($temporary);
+                    $entry = $active[$key];
+                    unset($active[$key]);
+                    curl_multi_remove_handle($multi, $handle);
+
+                    $outcome = $this->partOutcome($handle, $entry['state'], $entry['attempts']);
+                    curl_close($handle);
+
+                    if ($outcome['ok']) {
+                        @unlink($entry['file']);
+                        continue;
+                    }
+
+                    // 重试必须复用同一份分片文件：源文件流已前进，无法再切出同一段字节；
+                    // 仅在放弃该分片时才删除临时文件
+                    if (!$outcome['retryable'] || $entry['attempts'] >= self::MAX_UPLOAD_ATTEMPTS) {
+                        @unlink($entry['file']);
+                        throw new NotionApiException($outcome['message']);
+                    }
+
+                    $waiting[] = $entry;
+                    usleep($outcome['delay']);
                 }
             }
         } finally {
+            foreach ($active as $entry) {
+                curl_multi_remove_handle($multi, $entry['handle']);
+                curl_close($entry['handle']);
+                @unlink($entry['file']);
+            }
+            foreach ($waiting as $entry) {
+                @unlink($entry['file']);
+            }
+            curl_multi_close($multi);
+            curl_share_close($share);
             fclose($source);
         }
+    }
+
+    /**
+     * 把源文件流的下一段切到独立临时文件：CURLFile 从磁盘流式读取，不会把分片读进内存；
+     * 并发窗口内最多同时存在「并发数」份临时文件。
+     */
+    private function spoolPart($source): ?string
+    {
+        $temporary = tempnam(sys_get_temp_dir(), 'notion-drive-part-');
+        if ($temporary === false) {
+            return null;
+        }
+
+        $target = fopen($temporary, 'wb');
+        if ($target === false) {
+            @unlink($temporary);
+
+            return null;
+        }
+
+        $copied = stream_copy_to_stream($source, $target, self::PART_SIZE);
+        fclose($target);
+        if ($copied === false) {
+            @unlink($temporary);
+
+            return null;
+        }
+
+        return $temporary;
+    }
+
+    /** 初始化一个分片上传句柄：鉴权头与超时同 sendFile()，另加共享连接缓存与每句柄独立的 Retry-After 记录。 */
+    private function initPartHandle(string $url, string $temporary, string $filename, string $mime, int $part, $share, object $state)
+    {
+        $handle = curl_init($url);
+        curl_setopt_array($handle, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => [
+                'file' => new CURLFile($temporary, $mime, $filename),
+                'part_number' => (string) $part,
+            ],
+            CURLOPT_HTTPHEADER => [
+                'Authorization: Bearer ' . $this->token,
+                'Notion-Version: ' . self::API_VERSION,
+                'Accept: application/json',
+            ],
+            CURLOPT_CONNECTTIMEOUT => 15,
+            CURLOPT_TIMEOUT => 600,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+            CURLOPT_SHARE => $share,
+            CURLOPT_HEADERFUNCTION => static function ($handle, string $header) use ($state): int {
+                if (stripos($header, 'Retry-After:') === 0) {
+                    $state->retryAfter = trim(substr($header, strlen('Retry-After:')));
+                }
+
+                return strlen($header);
+            },
+        ]);
+
+        return $handle;
+    }
+
+    /**
+     * 汇总一个已完成分片句柄的结果：成功 / 可重试（含等待时间）/ 不可重试。
+     *
+     * @return array{ok: bool, retryable: bool, delay: int, message: string}
+     */
+    private function partOutcome($handle, object $state, int $attempts): array
+    {
+        $body = curl_multi_getcontent($handle);
+        $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+
+        if ($body === false) {
+            return [
+                'ok' => false,
+                'retryable' => in_array(curl_errno($handle), self::transientCurlErrors(), true),
+                'delay' => self::retryDelay(null, $attempts),
+                'message' => '连接 Notion 失败：' . curl_error($handle),
+            ];
+        }
+
+        if ($status === 429 || $status >= 500) {
+            // 429 在执行前就被拒绝、5xx 重发同一分片只覆盖自身，两者重试都安全
+            return [
+                'ok' => false,
+                'retryable' => true,
+                'delay' => self::retryDelay($state->retryAfter, $attempts),
+                'message' => 'Notion 接口返回 HTTP ' . $status,
+            ];
+        }
+
+        if ($status < 200 || $status >= 300) {
+            $decoded = json_decode((string) $body, true);
+
+            return [
+                'ok' => false,
+                'retryable' => false,
+                'delay' => 0,
+                'message' => is_array($decoded) && isset($decoded['message'])
+                    ? (string) $decoded['message']
+                    : 'Notion 接口返回 HTTP ' . $status,
+            ];
+        }
+
+        return ['ok' => true, 'retryable' => false, 'delay' => 0, 'message' => ''];
     }
 
     private function execute($handle, bool $idempotent): array
     {
         $attempt = 0;
-        $transientErrors = [
-            CURLE_PARTIAL_FILE,
-            CURLE_OPERATION_TIMEDOUT,
-            CURLE_SSL_CONNECT_ERROR,
-            CURLE_GOT_NOTHING,
-            CURLE_SEND_ERROR,
-            CURLE_RECV_ERROR,
-        ];
 
         // 记录响应头里的 Retry-After，用于 429/5xx 时按服务端要求退避
         $retryAfter = null;
@@ -314,7 +493,7 @@ final class NotionClient
 
             // 网络层瞬时错误，以及 Notion 限流（429）与服务端错误（5xx）都值得重试
             $retryable = $body === false
-                ? in_array($errorNumber, $transientErrors, true)
+                ? in_array($errorNumber, self::transientCurlErrors(), true)
                 : ($status === 429 || $status >= 500);
             // 429 在执行前就被拒绝，重试安全；5xx 与网络中断无法确定是否已处理，只有幂等请求才可重试，否则会在 Notion 留下重复页面/文件块
             $safeToRetry = $status === 429 || $idempotent;
