@@ -44,7 +44,13 @@ final class NotionClient
         }
     }
 
-    public function uploadAndAttach(string $path, string $filename, string $mime, int $size, string $pageId): array
+    /**
+     * 上传文件并挂到指定页面下。
+     *
+     * $onProgress 可选，签名 (int $completed, int $total)：每成功上传一个分片回调一次，
+     * 供上层换算成整体的「正在写入存储」进度（单分片文件上传完成后回调一次）。
+     */
+    public function uploadAndAttach(string $path, string $filename, string $mime, int $size, string $pageId, ?callable $onProgress = null): array
     {
         $multiPart = $size > 20 * 1024 * 1024;
         $parts = $multiPart ? (int) ceil($size / self::PART_SIZE) : 1;
@@ -66,7 +72,7 @@ final class NotionClient
         }
 
         if ($multiPart) {
-            $this->sendParts($uploadUrl, $path, $filename, $mime, $parts);
+            $this->sendParts($uploadUrl, $path, $filename, $mime, $parts, $onProgress);
             $completeUrl = (string) ($session['complete_url'] ?? self::API_BASE . '/file_uploads/' . $uploadId . '/complete');
             if (!$this->isTrustedUploadUrl($completeUrl)) {
                 throw new NotionApiException('Notion 未返回有效的完成地址。');
@@ -74,6 +80,9 @@ final class NotionClient
             $this->jsonRequest('POST', $completeUrl, null);
         } else {
             $this->sendFile($uploadUrl, $path, $filename, $mime);
+            if ($onProgress !== null) {
+                $onProgress(1, 1);
+            }
         }
 
         $blockType = $this->blockType($mime);
@@ -271,7 +280,7 @@ final class NotionClient
      * 并让所有分片句柄共享连接缓存，省掉每片重复的 TCP / TLS 握手；
      * 429 / 5xx / 网络瞬时错误按与 execute() 一致的退避策略重发（重发同一分片只覆盖自身）。
      */
-    private function sendParts(string $url, string $path, string $filename, string $mime, int $parts): void
+    private function sendParts(string $url, string $path, string $filename, string $mime, int $parts, ?callable $onProgress = null): void
     {
         $source = fopen($path, 'rb');
         if ($source === false) {
@@ -287,6 +296,8 @@ final class NotionClient
         // 这样源文件流始终按分片号顺序前进，不会因重试读错字节
         $waiting = [];
         $remaining = range(1, $parts);
+        // 已成功上传的分片数：用于向上层汇报写入进度（重发同一分片不会重复计数）
+        $completed = 0;
 
         try {
             while ($remaining !== [] || $waiting !== [] || $active !== []) {
@@ -334,6 +345,10 @@ final class NotionClient
 
                     if ($outcome['ok']) {
                         @unlink($entry['file']);
+                        $completed++;
+                        if ($onProgress !== null) {
+                            $onProgress($completed, $parts);
+                        }
                         continue;
                     }
 

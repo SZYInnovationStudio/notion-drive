@@ -12,6 +12,7 @@ use NotionDrive\NotionClient;
 use NotionDrive\NotionSpaceRepair;
 use NotionDrive\Schema;
 use NotionDrive\Security;
+use NotionDrive\Uploads\NotionWriteQueue;
 
 /**
  * 「我的文件」与工单附件中可见的上传状态：正在写入存储（writing）与写入失败（write_failed）
@@ -334,6 +335,16 @@ function sidebarStorageHtml(array $user): string
         . ($quotaBytes !== null
             ? '<progress max="100" value="' . $usagePercent . '"></progress><small>共 ' . e(formatBytes($quotaBytes)) . '</small>'
             : '<small>不限总容量</small>');
+
+    // 服务器待写入暂存：上传已入库、正等后台写入 Notion 的文件（含写入失败待重试的）占用的服务器磁盘，
+    // 与「已用空间」（个人容量）口径不同，单独一行展示，便于用户判断为何暂时无法继续上传
+    $stagedBytes = NotionWriteQueue::stagedBytes((int) $user['id']);
+    $stagedLimit = NotionWriteQueue::stagedLimitBytes();
+    $stagedPercent = $stagedLimit > 0 ? min(100, (int) round($stagedBytes / $stagedLimit * 100)) : 0;
+    $html .= '<div><span>待写入暂存</span><strong>' . e(formatBytes($stagedBytes)) . '</strong></div>'
+        . ($stagedLimit > 0
+            ? '<progress max="100" value="' . $stagedPercent . '"></progress><small>共 ' . e(formatBytes($stagedLimit)) . '</small>'
+            : '<small>不限暂存额度</small>');
 
     if (!isAdmin($user)) {
         $html .= '<div><span>会员套餐</span><strong>' . e(premiumShortStatus($user)) . '</strong></div>'
@@ -1699,8 +1710,12 @@ function notionWriteWithRepair(callable $operation, array $user, array $target, 
     }
 }
 
-/** 双写：把临时文件写入用户的全部目标账户，至少一份成功即视为成功；全部失败时对外只提示「存储服务暂时不可用」，不透露账户信息。 */
-function writeNotionReplicas(array $user, string $temporaryPath, string $filename, string $mime, int $size, ?string $storageName = null): array
+/**
+ * 双写：把临时文件写入用户的全部目标账户，至少一份成功即视为成功；全部失败时对外只提示「存储服务暂时不可用」，不透露账户信息。
+ *
+ * $onProgress 可选，签名 (int $percent)：把各账户的分片上传进度换算成整体 0-100 的「正在写入存储」进度回调给上层。
+ */
+function writeNotionReplicas(array $user, string $temporaryPath, string $filename, string $mime, int $size, ?string $storageName = null, ?callable $onProgress = null): array
 {
     $targets = uploadTargets($user);
     if ($targets === []) {
@@ -1713,15 +1728,23 @@ function writeNotionReplicas(array $user, string $temporaryPath, string $filenam
         $storageName = uniqueStorageName((int) $user['id'], $filename, $temporaryPath);
     }
     $replicas = [];
+    // 整体进度按「目标账户」平分：第一个账户占 0~1/n、第二个占 1/n~2/n …… 全部账户都是同体积上传
+    $targetCount = max(1, count($targets));
+    $slot = 0;
 
     foreach ($targets as $target) {
         $role = count($replicas) + 1;
+        $reportProgress = $onProgress === null ? null : static function (int $completed, int $total) use ($onProgress, $slot, $targetCount): void {
+            $fraction = $total > 0 ? $completed / $total : 1.0;
+            $onProgress((int) round(($slot + $fraction) / $targetCount * 100));
+        };
+        $slot++;
         try {
             $replicas[] = notionWriteWithRepair(
-                static function () use ($user, $target, $temporaryPath, $storageName, $mime, $size, $role): array {
+                static function () use ($user, $target, $temporaryPath, $storageName, $mime, $size, $role, $reportProgress): array {
                     $client = new NotionClient((string) $target['token']);
                     $pageId = ensureUserSpacePage($user, $target, $client);
-                    $result = $client->uploadAndAttach($temporaryPath, $storageName, $mime, $size, $pageId);
+                    $result = $client->uploadAndAttach($temporaryPath, $storageName, $mime, $size, $pageId, $reportProgress);
                     $blockId = (string) ($result['block']['results'][0]['id'] ?? '');
                     if ($blockId === '') {
                         throw new RuntimeException('Notion 未返回文件块。');

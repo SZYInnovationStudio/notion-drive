@@ -152,6 +152,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 data_lost TINYINT(1) NOT NULL DEFAULT 0,
                 write_attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
                 overwrite_upload_id BIGINT UNSIGNED NULL DEFAULT NULL,
+                write_progress TINYINT UNSIGNED NOT NULL DEFAULT 0,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_uploads_user_created (user_id, created_at),
@@ -292,7 +293,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>安装 · Notion Drive</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <link rel="stylesheet" href="assets/app.css?v=61">
+    <link rel="stylesheet" href="assets/app.css?v=62">
 </head>
 <body class="install-shell">
     <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>

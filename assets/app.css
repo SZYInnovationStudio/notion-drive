@@ -286,6 +286,11 @@ body.drive-shell .site-credit .icp-license, body.drive-shell .site-credit .polic
 .progress-track::-webkit-progress-bar { background: var(--line); }
 .progress-track::-webkit-progress-value { background: var(--primary); }
 
+/* 「正在写入存储」的行内进度条：跟随后台写入 Notion 的分片进度，样式与上传队列的进度条一致 */
+.write-track { width: 100%; height: 3px; margin-top: 5px; appearance: none; border: 0; }
+.write-track::-webkit-progress-bar { background: var(--line); border-radius: 9px; }
+.write-track::-webkit-progress-value { background: var(--primary); border-radius: 9px; }
+
 .file-section { margin-top: 28px; }
 .file-section-head, .panel-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
 .file-section-head > div { display: flex; align-items: baseline; gap: 10px; }

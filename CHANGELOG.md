@@ -28,6 +28,25 @@
 
 ---
 
+### [2026-10-04 14:32:08] 新增「写入 Notion」真实进度条（按文件）与侧边栏「待写入暂存」额度展示
+
+- 目的：①异步写入改造后，上传弹窗的进度条只走到「分块上传完成」就跳 100%，最慢的「正在写入存储」一段完全没有反馈；用户要求上传时每个文件一条真实反映写入 Notion 进度的进度条。②上传先落服务器暂存，但用户看不到「本次被占用的服务器暂存额度」，不知道自己为何被暂存上限拦下；要求在用户信息（侧边栏「用量信息」）处展示已用 / 上限。
+- 验证：`php -l` 对本次改动的 18 个 PHP 文件执行，结果 `checked=18 bad=0`；`node --check assets/app.js` 退出码 0；版本号一致性 `grep`：`app.css?v=61` 残留 0 处（12 处均为 `?v=62`）、`app.js?v=31` 残留 0 处（10 处均为 `?v=32`）。遵守「本机禁止功能 / HTTP 测试」约定，未做真实上传 / 写入验证；进度回调的正确性由「`sendParts()` 每成功一片回调一次、重发同一分片不重复计数」的代码路径保证。
+- 改动明细（行号为改动后当前行号）：
+  - `src/Schema.php` L11 — `CURRENT_VERSION` 23 → 24；L266-L270 — 新增 v24 迁移：`uploads.write_progress`（`TINYINT UNSIGNED NOT NULL DEFAULT 0`），存 0-100 的写入进度。旧库访问时由 bootstrap 自动补列，无需手工执行。
+  - `install.php` L155 — 全新建库同步补 `write_progress` 列。
+  - `src/NotionClient.php` L47-L53 — `uploadAndAttach()` 新增可选参数 `?callable $onProgress`（签名 `(int $completed, int $total)`）；L74-L86 — 多分片传入 `sendParts()`、单分片在 `sendFile()` 后回调 `(1, 1)`；L283 — `sendParts()` 同样新增该参数；L299-L300 — 新增 `$completed` 计数；L346-L352 — 每成功上传一片回调一次（重发同一分片不计入，保证进度单调）。
+  - `src/helpers.php` L15 — 新增 `use NotionDrive\Uploads\NotionWriteQueue;`；L1702-L1707 — `writeNotionReplicas()` 新增第 7 个可选参数 `?callable $onProgress`；L1720-L1736 — 按「目标账户」把各账户的分片进度换算为整体 0-100（第 i 个账户占 `i/n ~ (i+1)/n`），并透传给 `uploadAndAttach()`；L339-L347 — `sidebarStorageHtml()` 新增「待写入暂存」一行：已用 `NotionWriteQueue::stagedBytes()` / 上限 `stagedLimitBytes()`（上限为 0 时显示「不限暂存额度」），与「已用空间」（个人容量）口径区分开。
+  - `src/Uploads/NotionWriteQueue.php` L240-L255 — `write()` 内新增 `$reportProgress` 闭包：把进度写回 `uploads.write_progress`（`GREATEST()` 保证跨重试/重跑单调递增；进度列仅用于展示，写失败不中断上传）；L264-L272 — 调用 `writeNotionReplicas()` 时传入该闭包；L183 — `retry()` 重置 `write_progress = 0`；L336 — `commitReplicas()` 置 `write_progress = 100`；L537 — `markFailed()` 重置为 0，避免失败态残留旧进度。
+  - `api/upload.php` L380-L409 — 新增 `action=write_status`：接收逗号分隔的 `ids`（去重、最多 50 个），只查当前用户自己的记录，批量返回 `{id: {status, write_progress}}`，供前端轮询；L831-L832 — finish 成功响应新增 `upload_id`，前端据此发起轮询。
+  - `dashboard.php` L120 — 列表查询补选 `write_progress`；L339-L340 — 「正在写入存储」的行加 `data-write-track` 标记并在文件名下方输出 `<progress class="write-track">`（初值取自 `write_progress`）。
+  - `assets/app.js` L681-L694 — 新增 `fetchWriteStatus()`（批量查询写入状态，请求失败返回 `null` 由调用方继续轮询）；L696-L718 — 文件列表里「正在写入存储」的行每 2.5s 轮询填充行内进度条，状态一变即 `location.reload()`，由服务端重新渲染徽章与存储文案；L931-L934 — 新增 `writeFailed` 与 `pendingWrite` 声明；L1138-L1146 — finish 成功后把该条目并入 `pendingWrite`，进度条重置为 0 并显示「已提交，正在写入存储 0%」；L1148-L1193 — 新增 `waitForWrites()`：每 1.5s 批量轮询，`active` → 100%「已写入存储」、`quarantined` → 已写入但被暂停使用（计入 `held`）、`write_failed` → 提示去列表点「重试写入」（计入 `writeFailed`）、超时 20 分钟则提示稍后刷新；L1202-L1226 — `runQueue()`：有分块级失败条目时不再等待写入（标记为后台写入中并保留重试按钮），全部提交成功则先 `waitForWrites()` 再刷新页面，并把 `writeFailed` 计入提示后缀。
+  - `assets/app.css` L289-L292 — 新增 `.write-track` 行内进度条样式（3px，配色同上传队列进度条）。
+  - 资源版本号全站同步：`assets/app.css?v=61 → ?v=62`（12 处：`account.php`、`admin.php`、`admin_orders.php`、`bans.php`、`dashboard.php`、`forgot.php`、`index.php`、`install.php`、`logs.php`、`pay.php`、`register.php`、`tickets.php`）；`assets/app.js?v=31 → ?v=32`（10 处：上述 12 个中除去只有 CSS 的 `bans.php`、`install.php`）。
+- 数据库结构影响：`uploads` 新增列 `write_progress`（`TINYINT UNSIGNED NOT NULL DEFAULT 0`）。旧库由 `Schema::migrate()` 自动补列（`storage/installed.lock` 存在时每次请求检测），无需手工 ALTER；不涉及清库 / 还原。
+
+---
+
 ### [2026-10-04 14:13:33] 修复异步写入改动的 4 处缺陷（覆盖上传空窗、非 FPM 不秒回、Windows 暂存删不掉、懒清扫被单条记录中断）
 
 - 目的：对上一版「先落服务器暂存、后台异步写入 Notion」自审后修复以下问题。①**严重**：覆盖同名文件时，改造后是「新文件只入库 writing（还没写进 Notion）、旧文件的 Notion 副本却立刻被归档」，出现「新的没进、旧的已删」的空窗——后台写入最终失败时两代内容都不在 Notion。②中：`jsonResponseThen()` 只 `flush()` 未声明 `Content-Length`，非 FPM（mod_php / 内置服务器）环境下浏览器要等连接关闭（即后台写完）才结束请求，「秒回」在非 FPM 环境完全失效。③中：`process()` 全程持有暂存文件的 `flock` 句柄，而 Windows 无法删除仍被本进程打开的文件，导致 `discard()` 静默失败、暂存文件要等下一次懒清扫才被清掉。④轻：`sweep()` 逐条调用 `process()` 未做隔离，单条记录出错（如数据库异常）会中断对其余掉线记录的接管。

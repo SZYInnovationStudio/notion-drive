@@ -180,7 +180,7 @@ final class NotionWriteQueue
     public function retry(int $uploadId, int $userId): bool
     {
         $statement = Database::connection()->prepare(
-            'UPDATE uploads SET status = :writing, write_attempts = 0
+            'UPDATE uploads SET status = :writing, write_attempts = 0, write_progress = 0
              WHERE id = :id AND user_id = :user_id AND status = :failed'
         );
         $statement->execute([
@@ -237,6 +237,22 @@ final class NotionWriteQueue
         $size = (int) $upload['file_size'];
         $attempts = (int) $upload['write_attempts'];
         $lastError = '';
+        // 写入进度仅供前端展示进度条：单调递增、失败不影响真正的写入流程
+        $lastPercent = -1;
+        $reportProgress = static function (int $percent) use ($uploadId, &$lastPercent): void {
+            $percent = max(0, min(100, $percent));
+            if ($percent <= $lastPercent) {
+                return;
+            }
+            $lastPercent = $percent;
+            try {
+                Database::connection()->prepare(
+                    'UPDATE uploads SET write_progress = GREATEST(write_progress, :percent) WHERE id = :id'
+                )->execute(['percent' => $percent, 'id' => $uploadId]);
+            } catch (Throwable) {
+                // 进度列仅用于展示，写失败（如迁移未执行）不应中断上传
+            }
+        };
 
         while (true) {
             $attempts++;
@@ -251,7 +267,8 @@ final class NotionWriteQueue
                     $filename,
                     $mime,
                     $size,
-                    (string) ($upload['storage_name'] ?? '')
+                    (string) ($upload['storage_name'] ?? ''),
+                    $reportProgress
                 );
             } catch (Throwable $exception) {
                 $lastError = $exception->getMessage();
@@ -316,7 +333,7 @@ final class NotionWriteQueue
         try {
             $update = $pdo->prepare(
                 'UPDATE uploads
-                 SET status = :active, write_attempts = 0,
+                 SET status = :active, write_attempts = 0, write_progress = 100,
                      notion_file_upload_id = :file_upload_id, notion_block_id = :block_id
                  WHERE id = :id AND status IN (:writing, :failed)'
             );
@@ -517,7 +534,7 @@ final class NotionWriteQueue
     {
         $uploadId = (int) $upload['id'];
         Database::connection()->prepare(
-            'UPDATE uploads SET status = :failed WHERE id = :id AND status IN (:writing, :failed)'
+            'UPDATE uploads SET status = :failed, write_progress = 0 WHERE id = :id AND status IN (:writing, :failed)'
         )->execute([
             'failed'  => self::STATUS_FAILED,
             'id'      => $uploadId,

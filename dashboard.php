@@ -117,7 +117,7 @@ $page = min(max(1, (int) ($_GET['page'] ?? 1)), $totalPages);
 $offset = ($page - 1) * $perPage;
 // LIMIT/OFFSET 用内联整数：原生预处理把占位符当字符串绑定，会触发 SQL 语法错误
 $statement = Database::connection()->prepare(
-    "SELECT id, filename, display_name, file_size, mime_type, status, data_lost, created_at, updated_at
+    "SELECT id, filename, display_name, file_size, mime_type, status, write_progress, data_lost, created_at, updated_at
      FROM uploads WHERE user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ') AND folder_id <=> :folder_id
      ORDER BY id DESC LIMIT $perPage OFFSET $offset'
 );
@@ -132,7 +132,7 @@ $premiumNotice = premiumNotice($user);
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <?= siteTitleTag('我的文件') ?>
     <?= siteFaviconTag() ?>
-    <link rel="stylesheet" href="assets/app.css?v=61">
+    <link rel="stylesheet" href="assets/app.css?v=62">
 </head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>" data-limit="<?= $singleLimit ?>" data-remaining="<?= $remainingBytes === null ? '' : $remainingBytes ?>" data-folder="<?= $currentFolderId ?>">
     <aside class="drive-sidebar">
@@ -336,8 +336,8 @@ $premiumNotice = premiumNotice($user);
                             $storageLabel = '数据已丢失，请重新上传';
                         }
                     ?>
-                        <tr data-file-id="<?= (int) $file['id'] ?>" data-file-name="<?= e(mb_strtolower($name)) ?>"<?= $isLost ? ' class="file-lost"' : '' ?>>
-                            <td><div class="file-name"><span class="file-kind"><?= e(strtoupper(pathinfo($name, PATHINFO_EXTENSION) ?: 'FILE')) ?></span><div><strong class="display-name"><?= e($name) ?></strong><small><?= e($storageLabel) ?></small></div><?php if ($isLost): ?><span class="lost-badge">数据已丢失</span><?php elseif ($isWriting): ?><span class="write-badge">正在写入存储</span><?php elseif ($isWriteFailed): ?><span class="write-badge write-badge-failed">写入失败</span><?php endif; ?></div></td>
+                        <tr data-file-id="<?= (int) $file['id'] ?>" data-file-name="<?= e(mb_strtolower($name)) ?>"<?= $isWriting ? ' data-write-track' : '' ?><?= $isLost ? ' class="file-lost"' : '' ?>>
+                            <td><div class="file-name"><span class="file-kind"><?= e(strtoupper(pathinfo($name, PATHINFO_EXTENSION) ?: 'FILE')) ?></span><div><strong class="display-name"><?= e($name) ?></strong><small><?= e($storageLabel) ?></small><?php if ($isWriting): ?><progress class="write-track" max="100" value="<?= (int) ($file['write_progress'] ?? 0) ?>"></progress><?php endif; ?></div><?php if ($isLost): ?><span class="lost-badge">数据已丢失</span><?php elseif ($isWriting): ?><span class="write-badge">正在写入存储</span><?php elseif ($isWriteFailed): ?><span class="write-badge write-badge-failed">写入失败</span><?php endif; ?></div></td>
                             <td data-label="类型"><?= e(explode('/', (string) $file['mime_type'])[0]) ?></td>
                             <td data-label="大小"><?= e(formatBytes((int) $file['file_size'])) ?></td>
                             <td data-label="更新时间"><?= e(date('Y-m-d H:i', strtotime((string) $file['updated_at']))) ?></td>
@@ -403,7 +403,7 @@ $premiumNotice = premiumNotice($user);
         </div>
     </div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=31" defer></script>
+    <script src="assets/app.js?v=32" defer></script>
 </body>
 </html>
 <?php

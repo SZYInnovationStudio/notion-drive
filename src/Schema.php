@@ -8,7 +8,7 @@ use PDO;
 
 final class Schema
 {
-    public const CURRENT_VERSION = 23;
+    public const CURRENT_VERSION = 24;
 
     /** 内置权限组：名称、组容量、单文件上限、是否管理员、等级。首个必须保持为管理员组。 */
     public const BUILTIN_GROUPS = [
@@ -261,6 +261,12 @@ final class Schema
             // 其 Notion 副本留到新文件写入成功后再归档——否则「新的还没写进 Notion、旧的已从 Notion 删掉」，
             // 一旦后台写入最终失败，两代内容就都不在 Notion 了。本列记录被覆盖的旧文件 id
             self::addColumn($pdo, 'uploads', 'overwrite_upload_id', 'BIGINT UNSIGNED NULL DEFAULT NULL AFTER write_attempts');
+        }
+
+        if ($version < 24) {
+            // 写入进度（0-100）：后台写入 Notion 时按已上传分片数回写，供前端展示「正在写入存储」的进度条；
+            // 仅用于展示，不影响写入结果，写入完成 / 失败时会清零
+            self::addColumn($pdo, 'uploads', 'write_progress', 'TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER overwrite_upload_id');
         }
 
         Database::setConfig('schema_version', (string) self::CURRENT_VERSION);

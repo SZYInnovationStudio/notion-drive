@@ -678,6 +678,45 @@
         xhr.send(form);
     });
 
+    /**
+     * 批量查询「正在写入存储」的进度：返回 { 上传id: { status, progress } }。
+     * 请求失败返回 null（由调用方决定是否继续轮询），不使用异常中断轮询。
+     */
+    const fetchWriteStatus = async ids => {
+        if (!ids.length) return {};
+        try {
+            const result = await controlRequest({ action: 'write_status', ids: ids.join(',') });
+            if (!result.ok || !result.data || !result.data.ok) return null;
+            return result.data.items || {};
+        } catch (_) {
+            return null;
+        }
+    };
+
+    // 文件列表里「正在写入存储」的行：轮询写入进度填进行内进度条；状态一变就刷新页面，
+    // 由服务端重新渲染徽章与「已安全存储 / 写入失败」文案（避免前端拼文案与服务端口径不一致）
+    const writeRows = [...document.querySelectorAll('#fileTable tr[data-write-track]')];
+    if (writeRows.length) {
+        const writeRowIds = writeRows.map(row => row.dataset.fileId);
+        const pollWriteRows = async () => {
+            const items = await fetchWriteStatus(writeRowIds);
+            if (items) {
+                for (const row of writeRows) {
+                    const info = items[row.dataset.fileId];
+                    if (!info) continue;
+                    if (info.status !== 'writing') {
+                        window.location.reload();
+                        return;
+                    }
+                    const bar = row.querySelector('.write-track');
+                    if (bar) bar.value = Math.max(0, Math.min(100, Number(info.progress) || 0));
+                }
+            }
+            window.setTimeout(pollWriteRows, 2500);
+        };
+        window.setTimeout(pollWriteRows, 1200);
+    }
+
     // ── 工单附件：复用同一套分块协议，附件归属工单（scope=ticket），
     // 不出现在「我的文件」、不计入个人容量，工单关闭时由服务端从 Notion 删除 ──
     const ticketPanel = document.getElementById('ticketAttachments');
@@ -889,6 +928,9 @@
     let renamed = 0;
     // 内容风控：被暂停使用的文件数（不可重试，文件已被隔离等待管理员复核）
     let held = 0;
+    // 文件已提交、等待后台写入 Notion 的条目（每条一个进度条）与最终写入失败数
+    let writeFailed = 0;
+    const pendingWrite = [];
     const pending = [];
     const validate = file => {
         const extension = file.name.includes('.') ? file.name.split('.').pop().toLowerCase() : '';
@@ -1093,12 +1135,65 @@
         }
         if (!finished.ok || !finished.data.ok) return fail(failureText(finished.status, finished.data));
 
-        // 内容审核已改为后台进行：这里只表示文件已入库、正在写入存储，审核结论稍后可在文件列表 / 账户面板查看
-        bar.value = 100;
-        status.textContent = '已提交，正在写入存储';
-        item.classList.add('complete');
+        // 文件已入库：进度条交给「写入存储」阶段继续走（0% → 100%），由 waitForWrites() 轮询刷新；
+        // 内容审核也在这个阶段之后由服务端完成，结论稍后可在文件列表 / 账户面板查看
+        const uploadId = Number(finished.data.upload_id) || 0;
+        bar.value = 0;
+        status.textContent = '已提交，正在写入存储 0%';
         uploaded += 1;
+        if (uploadId > 0) pendingWrite.push({ uploadId, item, bar, status });
         return true;
+    };
+
+    // 提交后继续轮询「写入 Notion」的真实进度：每个文件一条进度条，全部结束（或超时）后交给 runQueue() 刷新页面
+    const WRITE_POLL_INTERVAL = 1500;
+    const WRITE_POLL_TIMEOUT = 20 * 60 * 1000;
+    const waitForWrites = async () => {
+        const deadline = Date.now() + WRITE_POLL_TIMEOUT;
+        while (pendingWrite.length && Date.now() < deadline) {
+            const items = await fetchWriteStatus(pendingWrite.map(entry => entry.uploadId));
+            if (items !== null) {
+                for (const entry of [...pendingWrite]) {
+                    const info = items[String(entry.uploadId)];
+                    if (!info) continue;
+                    if (info.status === 'writing') {
+                        const percent = Math.max(0, Math.min(100, Number(info.progress) || 0));
+                        entry.bar.value = Math.max(entry.bar.value, percent);
+                        entry.status.textContent = `正在写入存储 ${entry.bar.value}%`;
+                        continue;
+                    }
+
+                    pendingWrite.splice(pendingWrite.indexOf(entry), 1);
+                    if (info.status === 'active') {
+                        entry.bar.value = 100;
+                        entry.status.textContent = '已写入存储';
+                        entry.item.classList.add('complete');
+                    } else if (info.status === 'quarantined') {
+                        // 写入完成但内容审核命中：与改造前的语义一致，文件被暂停使用
+                        entry.bar.value = 100;
+                        entry.status.textContent = '已写入存储，但内容审核命中，已暂停使用（可在首页查看申诉号）';
+                        entry.item.classList.add('failed');
+                        held += 1;
+                    } else if (info.status === 'write_failed') {
+                        writeFailed += 1;
+                        entry.status.textContent = '写入存储失败，文件仍可下载；请在列表中点击「重试写入」';
+                        entry.item.classList.add('failed');
+                    } else {
+                        // 其它终态（如在别的页面已把该文件删除）：不再提示写入失败
+                        entry.status.textContent = '该文件已被删除';
+                        entry.item.classList.add('failed');
+                    }
+                }
+            }
+            if (!pendingWrite.length) break;
+            await new Promise(resolve => window.setTimeout(resolve, WRITE_POLL_INTERVAL));
+        }
+
+        // 超时仍未写完：不无限阻塞页面，提示可稍后刷新查看（后台仍在继续写入）
+        for (const entry of pendingWrite) {
+            entry.status.textContent = '仍在写入存储，可稍后刷新页面查看进度';
+        }
+        pendingWrite.length = 0;
     };
 
     async function runQueue() {
@@ -1108,9 +1203,14 @@
         while (pending.length) await upload(pending.shift());
         busy = false;
 
-        // 仍有可重试的失败条目：保留错误文案与「重试」按钮，不刷新页面（刷新会把失败原因冲掉）
+        // 仍有可重试的失败条目：保留错误文案与「重试」按钮，不刷新页面（刷新会把失败原因冲掉）。
+        // 此时不等待写入完成，已提交的条目继续在后台写入，用户稍后刷新即可看到结果
         const failedNow = queue.querySelectorAll('[data-retry]').length;
         if (failedNow > 0) {
+            for (const entry of pendingWrite) {
+                entry.status.textContent = '已提交，正在后台写入存储，可稍后刷新页面查看';
+            }
+            pendingWrite.length = 0;
             const parts = [];
             const okCount = uploaded - uploadedBefore;
             if (okCount > 0) parts.push(`成功 ${okCount} 个`);
@@ -1119,11 +1219,15 @@
             return;
         }
 
+        // 全部提交成功：等写入进度条走完（或超时）再刷新页面，让用户看到真实的写入进度
+        if (pendingWrite.length) await waitForWrites();
+
         if (uploaded > 0) {
             const extras = [];
             if (overwritten) extras.push(`覆盖 ${overwritten} 个同名文件`);
             if (renamed) extras.push(`自动编号 ${renamed} 个同名文件`);
             if (held) extras.push(`${held} 个文件未通过内容审核，已暂停使用（首页可查看申诉号）`);
+            if (writeFailed) extras.push(`${writeFailed} 个文件写入存储失败，可在列表中点击「重试写入」`);
             const suffix = extras.length ? `（${extras.join('，')}）` : '';
             window.sessionStorage.setItem('uploadNotice', `上传成功：已提交 ${uploaded} 个文件，正在写入存储，完成后自动转为 Notion 副本。${suffix}`);
             // 新文件按时间倒序排在第一页，若停在后面的页码会看不到刚上传的文件，因此回到第一页

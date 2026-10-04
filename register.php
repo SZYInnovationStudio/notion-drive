@@ -138,7 +138,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <?= siteTitleTag('注册') ?>
     <?= siteFaviconTag() ?>
-    <link rel="stylesheet" href="assets/app.css?v=61">
+    <link rel="stylesheet" href="assets/app.css?v=62">
 </head>
 <body class="login-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <main class="login-layout">
@@ -182,7 +182,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </section>
     </main>
     <?= siteCreditHtml() ?>
-    <script src="assets/app.js?v=31" defer></script>
+    <script src="assets/app.js?v=32" defer></script>
     <?php if ($emailRequired): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>
 </html>

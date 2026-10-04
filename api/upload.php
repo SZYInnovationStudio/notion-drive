@@ -377,6 +377,37 @@ try {
         }
     };
 
+    // 0) write_status：批量查询「正在写入存储」的进度与状态，供前端在提交后继续刷新进度条。
+    //    只查当前用户自己的记录，仅返回展示所需的 status / write_progress
+    if ($action === 'write_status') {
+        $ids = [];
+        foreach (explode(',', (string) ($_POST['ids'] ?? '')) as $raw) {
+            $value = (int) trim($raw);
+            if ($value > 0) {
+                $ids[$value] = $value;
+            }
+        }
+        $ids = array_slice(array_values($ids), 0, 50);
+        if ($ids === []) {
+            jsonResponse(['ok' => true, 'items' => []]);
+        }
+
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $statement = Database::connection()->prepare(
+            "SELECT id, status, write_progress FROM uploads WHERE user_id = ? AND id IN ($placeholders)"
+        );
+        $statement->execute([(int) $user['id'], ...$ids]);
+        $items = [];
+        foreach ($statement->fetchAll() as $row) {
+            $items[(string) $row['id']] = [
+                'status' => (string) $row['status'],
+                'progress' => (int) $row['write_progress'],
+            ];
+        }
+
+        jsonResponse(['ok' => true, 'items' => $items]);
+    }
+
     // 1) start：校验文件信息并建立分块会话，返回后续分块所需的大小与总数
     if ($action === 'start') {
         $scope = (($_POST['scope'] ?? '') === 'ticket') ? 'ticket' : 'drive';
@@ -797,6 +828,8 @@ try {
             'name' => $filename,
             'duplicate' => $resolved['handled'],
             'writing' => true,
+            // 供前端据此轮询写入进度（write_status）
+            'upload_id' => $uploadId,
         ], static function () use ($queue, $uploadId): void {
             $queue->process($uploadId);
         });
