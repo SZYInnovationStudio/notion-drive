@@ -591,17 +591,18 @@
     });
 
     // 键盘隐式提交（光标停在表单里按 Enter）不经过 click 委托，会被浏览器直接提交而绕过二次确认。
-    // 这里在 submit 阶段兜底：凡含 [data-confirm] 按钮的表单，任何来源的提交都要先过确认弹窗。
+    // 这里在 submit 阶段兜底，但必须用「本次真正触发的按钮」判断：显式点击取 event.submitter，
+    // 隐式提交取浏览器会激活的默认按钮（表单内第一个提交按钮）。否则同一表单里既有「保存」又有
+    // 「删除」时，点保存会被误套上删除按钮的确认，甚至以删除动作提交。
     document.addEventListener('submit', async event => {
         const form = event.target;
         if (form.dataset.confirmPassed === '1') {
             delete form.dataset.confirmPassed;
             return;
         }
-        const trigger = (event.submitter && event.submitter.matches('[data-confirm]'))
-            ? event.submitter
-            : form.querySelector('[data-confirm]');
-        if (!trigger) return;
+        const trigger = event.submitter
+            || form.querySelector('button:not([type="button"]):not([type="reset"]), input[type="submit"]');
+        if (!trigger || !trigger.matches('[data-confirm]')) return;
         event.preventDefault();
         if (document.querySelector('.confirm-overlay')) return;
         if (!(await askConfirm(trigger.dataset.confirm))) return;

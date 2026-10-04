@@ -28,6 +28,33 @@
 
 ---
 
+### [2026-10-04 10:40:04] 密码最小长度由 10 位放宽到 6 位
+
+- 目的：将全站密码最小长度限制从 10 个字符下调为 6 个字符，覆盖服务端校验（`mb_strlen() < 10`）、前端 `minlength` 与界面提示文案三处，保证前后端阈值一致。
+- 验证：`php -l` 对 5 个改动文件（`account.php` / `admin.php` / `forgot.php` / `install.php` / `register.php`）全部 `No syntax errors detected`；`grep` 确认仓库内 `minlength="10"`、`至少 10`、`至少需要 10`、`mb_strlen($password) < 10` 等无残留。遵守「本机禁止功能 / HTTP 测试」约定，未做 HTTP 验证。
+- 改动明细（行号为改动后当前行号）：
+  - `account.php` — L100 服务端校验 `< 10 → < 6`、L101 提示文案；L355 面板说明文案；L359-L360 新密码与确认框 `minlength` 及占位符。
+  - `admin.php` — L254 新增用户密码校验与 L255 文案；L298 编辑用户密码校验与 L299 文案；L1301 「添加用户」初始密码 `minlength`。
+  - `forgot.php` — L38 服务端校验与 L39 文案；L103-L104 新密码与确认框 `minlength` 及占位符。
+  - `install.php` — L56 管理员密码校验与 L57 文案；L345 安装向导密码框 `minlength` 与 `<small>` 提示。
+  - `register.php` — L48 服务端校验与 L49 文案；L155-L156 密码与确认框 `minlength` 及占位符。
+- 数据库结构影响：**无**（仅调整校验阈值，不改变存储与字段）。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+---
+
+### [2026-10-04 10:36:37] 修复点击「保存」却弹出「删除用户」二次确认
+
+- 目的：后台「用户与容量」每位用户是同一个表单，里面既有「保存」（`update_user`，无确认）又有「删除」（`delete_user`，带 `data-confirm="确认删除用户及其全部文件？"`）。`assets/app.js` 的 submit 兜底监听原先用「表单内任意 `[data-confirm]` 按钮」作为确认目标：点「保存」时 `event.submitter` 是保存按钮、不匹配 `data-confirm`，于是回退到 `form.querySelector('[data-confirm]')` 命中「删除」按钮，弹出的是删除确认，且确认后会以删除按钮为 trigger 提交（`action=delete_user`），即「保存用户时显示的是删除用户」，严重时误删用户。改为按「本次真正触发的按钮」判断：显式提交取 `event.submitter`，键盘隐式提交取表单默认按钮（第一个提交按钮），只有该按钮自身带 `data-confirm` 才弹确认。同一问题影响所有「保存 / 删除」共存的表单（如官方账户池），一并修复。
+- 验证：`node --check assets/app.js` → 退出码 0（语法通过）；`php -l` 对 10 个改动页面（`account.php` / `admin.php` / `admin_orders.php` / `dashboard.php` / `forgot.php` / `index.php` / `logs.php` / `pay.php` / `register.php` / `tickets.php`）全部 `No syntax errors detected`；`grep` 确认 `app.js?v=29` 已无残留（10 处均为 `?v=30`）。遵守「本机禁止功能 / HTTP 测试」约定，未做 HTTP 验证。
+- 改动明细（行号为改动后当前行号）：
+  - `assets/app.js` L593-L606 — submit 兜底监听重写：`trigger` 由原来的 `form.querySelector('[data-confirm]')` 回退改为 `event.submitter || form.querySelector('button:not([type="button"]):not([type="reset"]), input[type="submit"]')`，并新增 `!trigger.matches('[data-confirm]')` 即放行；注释同步说明「必须用本次真正触发的按钮判断」的原因。
+  - 资源版本号 `assets/app.js?v=29 → ?v=30`（共 10 处）：`account.php` L385、`admin.php` L1885、`admin_orders.php` L354、`dashboard.php` L396、`forgot.php` L113、`index.php` L88、`logs.php` L125、`pay.php` L257、`register.php` L185、`tickets.php` L588。
+- 数据库结构影响：**无**。
+- 署名：[ShiZhongyan]（Github: ShiZhongyanGH）
+
+---
+
 ### [2026-10-02 21:30:09] 修复重传哈希锚定校验的凭证生命周期与容错问题
 
 - 目的：对上一版「放行重传哈希锚定校验」自审后修复以下问题。①严重：放行凭证用后不消费，`allowResubmit()` 写入的 `status=resubmit` 记录永不改变（`clearRecord()` 仅允许清 `rejected`），使该文件名被永久锁定为原哈希；且 `resubmitAnchorHash()` 用 `ORDER BY id DESC LIMIT 1` 只认最新一条，日后同名新内容（含合法修改）会被误拒 `resubmit_content_mismatch`。②中：新校验块位于 finish 阶段既有 try/catch 之外，异常会冒泡致 500，违反项目「风控不可用不阻断正常上传」的 fail-open 约定；且未按风控开关 / 用户豁免门控。③潜在：最新一条 resubmit 记录 `content_hash` 为空（start 阶段关键词拦截记录）时直接返回 `null`，把更早的有效锚定一并跳过，形成免校验窗口。④性能：同一文件在锚定校验与内容审核处各做一次全量 SHA-256（可达 5 GB）。⑤冗余：每次 drive 上传多一次 `hasResubmitPass` 查询。

@@ -393,6 +393,6 @@ $premiumNotice = premiumNotice($user);
         </div>
     </div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=29" defer></script>
+    <script src="assets/app.js?v=30" defer></script>
 </body>
 </html>

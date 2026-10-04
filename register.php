@@ -45,8 +45,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!preg_match('/^[\p{L}\p{N}_.-]{3,64}$/u', $username)) {
             throw new RuntimeException('用户名需为 3–64 个字符，仅使用文字、数字、点、横线或下划线。');
         }
-        if (mb_strlen($password) < 10) {
-            throw new RuntimeException('密码至少需要 10 个字符。');
+        if (mb_strlen($password) < 6) {
+            throw new RuntimeException('密码至少需要 6 个字符。');
         }
         if ($password !== $passwordConfirm) {
             throw new RuntimeException('两次输入的密码不一致。');
@@ -152,8 +152,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <form method="post" class="login-form">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>">
                 <label><span>用户名</span><input name="username" value="<?= e($username) ?>" autocomplete="username" minlength="3" maxlength="64" autofocus required placeholder="your.name"></label>
-                <label><span>密码</span><input type="password" name="password" autocomplete="new-password" minlength="10" required placeholder="至少 10 个字符"></label>
-                <label><span>确认密码</span><input type="password" name="password_confirm" autocomplete="new-password" minlength="10" required placeholder="再次输入密码"></label>
+                <label><span>密码</span><input type="password" name="password" autocomplete="new-password" minlength="6" required placeholder="至少 6 个字符"></label>
+                <label><span>确认密码</span><input type="password" name="password_confirm" autocomplete="new-password" minlength="6" required placeholder="再次输入密码"></label>
                 <fieldset class="source-fieldset">
                     <legend>Notion 账户来源</legend>
                     <div class="source-choice">
@@ -182,7 +182,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </section>
     </main>
     <?= siteCreditHtml() ?>
-    <script src="assets/app.js?v=29" defer></script>
+    <script src="assets/app.js?v=30" defer></script>
     <?php if ($emailRequired): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>
 </html>

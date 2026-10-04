@@ -53,8 +53,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!preg_match('/^[\p{L}\p{N}_.-]{3,64}$/u', $values['admin_username'])) {
             throw new RuntimeException('管理员用户名需为 3–64 个字符。');
         }
-        if (mb_strlen($adminPassword) < 10) {
-            throw new RuntimeException('管理员密码至少需要 10 个字符。');
+        if (mb_strlen($adminPassword) < 6) {
+            throw new RuntimeException('管理员密码至少需要 6 个字符。');
         }
         if ($token === '') {
             throw new RuntimeException('请填写 Notion 集成 Token。');
@@ -342,7 +342,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <legend>管理员账号</legend>
                     <div class="field-grid two">
                         <label><span>用户名</span><input name="admin_username" value="<?= e($values['admin_username']) ?>" minlength="3" required></label>
-                        <label><span>密码</span><input type="password" name="admin_password" minlength="10" required><small>至少 10 个字符</small></label>
+                        <label><span>密码</span><input type="password" name="admin_password" minlength="6" required><small>至少 6 个字符</small></label>
                     </div>
                 </fieldset>
                 <button class="primary-button" type="submit"><span>完成安装</span><b>→</b></button>

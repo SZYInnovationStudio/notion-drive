@@ -97,8 +97,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!password_verify($current, (string) $hashStatement->fetchColumn())) {
                 throw new RuntimeException('当前密码不正确。');
             }
-            if (mb_strlen($password) < 10) {
-                throw new RuntimeException('新密码至少需要 10 个字符。');
+            if (mb_strlen($password) < 6) {
+                throw new RuntimeException('新密码至少需要 6 个字符。');
             }
             if ($password !== $passwordConfirm) {
                 throw new RuntimeException('两次输入的新密码不一致。');
@@ -352,12 +352,12 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
         </section>
 
         <section class="admin-panel">
-            <div class="panel-title"><div><h2>登录密码</h2><p>修改密码需要先验证当前密码，新密码至少 10 个字符。</p></div></div>
+            <div class="panel-title"><div><h2>登录密码</h2><p>修改密码需要先验证当前密码，新密码至少 6 个字符。</p></div></div>
             <form method="post" class="account-form password">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="update_password">
                 <label><span>当前密码</span><input type="password" name="current_password" autocomplete="current-password" required placeholder="••••••••••"></label>
-                <label><span>新密码</span><input type="password" name="new_password" autocomplete="new-password" minlength="10" required placeholder="至少 10 个字符"></label>
-                <label><span>确认新密码</span><input type="password" name="password_confirm" autocomplete="new-password" minlength="10" required placeholder="再次输入新密码"></label>
+                <label><span>新密码</span><input type="password" name="new_password" autocomplete="new-password" minlength="6" required placeholder="至少 6 个字符"></label>
+                <label><span>确认新密码</span><input type="password" name="password_confirm" autocomplete="new-password" minlength="6" required placeholder="再次输入新密码"></label>
                 <button class="primary-button compact">更新密码</button>
             </form>
         </section>
@@ -382,7 +382,7 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
     </main>
     <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=29" defer></script>
+    <script src="assets/app.js?v=30" defer></script>
     <script src="assets/admin.js?v=9" defer></script>
     <?php if ($canBindEmail): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>

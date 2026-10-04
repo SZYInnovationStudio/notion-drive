@@ -251,8 +251,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!preg_match('/^[\p{L}\p{N}_.-]{3,64}$/u', $username)) {
                 throw new RuntimeException('用户名需为 3–64 个字符，仅使用文字、数字、点、横线或下划线。');
             }
-            if (mb_strlen($password) < 10) {
-                throw new RuntimeException('密码至少需要 10 个字符。');
+            if (mb_strlen($password) < 6) {
+                throw new RuntimeException('密码至少需要 6 个字符。');
             }
             $groupId = (int) ($_POST['group_id'] ?? 0);
             $group = findGroup($groupId > 0 ? $groupId : defaultGroupId());
@@ -295,8 +295,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($id === (int) $currentUser['id'] && (int) $group['is_admin'] !== 1) {
                 throw new RuntimeException('不能取消自己的管理员权限。');
             }
-            if ($password !== '' && mb_strlen($password) < 10) {
-                throw new RuntimeException('新密码至少需要 10 个字符。');
+            if ($password !== '' && mb_strlen($password) < 6) {
+                throw new RuntimeException('新密码至少需要 6 个字符。');
             }
             $sql = 'UPDATE users SET username = :username, group_id = :group_id, quota_bytes = :quota_bytes';
             $params = ['id' => $id, 'username' => $username, 'group_id' => (int) $group['id'], 'quota_bytes' => parseQuota((string) ($_POST['quota_gb'] ?? ''))];
@@ -1298,7 +1298,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
             <div class="panel-title"><div><h2>用户与容量</h2><p>容量由权限组决定；单独填写容量会覆盖组容量，留空或 -1 表示继承组容量。每位用户默认只显示概览，展开「编辑」后才能修改密码、权限组与容量。</p></div><span><?= count($users) ?> 位用户</span></div>
             <form method="post" class="create-user-row">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="create_user">
-                <label><span>用户名</span><input name="username" minlength="3" required></label><label><span>初始密码</span><input type="password" name="password" minlength="10" required></label><label><span>权限组</span><select name="group_id"><?= $groupSelectOptions(defaultGroupId()) ?></select></label><label><span>单独容量（GB）</span><input name="quota_gb" inputmode="decimal" placeholder="-1"></label><label><span>Notion 来源</span><select name="notion_source"><option value="own">自有账户</option><option value="official">官方账户池</option></select></label><button class="primary-button compact">添加用户</button>
+                <label><span>用户名</span><input name="username" minlength="3" required></label><label><span>初始密码</span><input type="password" name="password" minlength="6" required></label><label><span>权限组</span><select name="group_id"><?= $groupSelectOptions(defaultGroupId()) ?></select></label><label><span>单独容量（GB）</span><input name="quota_gb" inputmode="decimal" placeholder="-1"></label><label><span>Notion 来源</span><select name="notion_source"><option value="own">自有账户</option><option value="official">官方账户池</option></select></label><button class="primary-button compact">添加用户</button>
             </form>
             <div class="log-filters user-search"><label><span>搜索用户</span><input id="user-search" type="search" placeholder="输入用户名或邮箱即时筛选"></label></div>
             <div class="admin-user-list">
@@ -1882,5 +1882,5 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         <?php endif; ?>
     </main>
     <?= siteCreditHtml() ?>
-    <div id="toast" class="toast"></div><script src="assets/app.js?v=29" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <div id="toast" class="toast"></div><script src="assets/app.js?v=30" defer></script><script src="assets/admin.js?v=9" defer></script>
 </body></html>

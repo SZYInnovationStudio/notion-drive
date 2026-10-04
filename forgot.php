@@ -35,8 +35,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $mailReady) {
         if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 191) {
             throw new RuntimeException('请输入有效的邮箱地址。');
         }
-        if (mb_strlen($password) < 10) {
-            throw new RuntimeException('密码至少需要 10 个字符。');
+        if (mb_strlen($password) < 6) {
+            throw new RuntimeException('密码至少需要 6 个字符。');
         }
         if ($password !== $passwordConfirm) {
             throw new RuntimeException('两次输入的密码不一致。');
@@ -100,8 +100,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $mailReady) {
                         <div class="code-row"><input name="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required placeholder="6 位数字"><button type="button" class="secondary-button" data-send-code data-purpose="reset">获取验证码</button></div>
                     </label>
                     <p class="code-hint" data-code-hint></p>
-                    <label><span>新密码</span><input type="password" name="password" autocomplete="new-password" minlength="10" required placeholder="至少 10 个字符"></label>
-                    <label><span>确认新密码</span><input type="password" name="password_confirm" autocomplete="new-password" minlength="10" required placeholder="再次输入新密码"></label>
+                    <label><span>新密码</span><input type="password" name="password" autocomplete="new-password" minlength="6" required placeholder="至少 6 个字符"></label>
+                    <label><span>确认新密码</span><input type="password" name="password_confirm" autocomplete="new-password" minlength="6" required placeholder="再次输入新密码"></label>
                     <?= captchaField() ?>
                     <button class="primary-button" type="submit"><span>重置密码</span><b>→</b></button>
                 </form>
@@ -110,7 +110,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $mailReady) {
         </section>
     </main>
     <?= siteCreditHtml() ?>
-    <script src="assets/app.js?v=29" defer></script>
+    <script src="assets/app.js?v=30" defer></script>
     <?php if ($mailReady && !$done): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>
 </html>
