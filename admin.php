@@ -1314,16 +1314,16 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="create_user">
                 <label><span>用户名</span><input name="username" minlength="3" required></label><label><span>初始密码</span><input type="password" name="password" minlength="6" required></label><label><span>权限组</span><select name="group_id"><?= $groupSelectOptions(defaultGroupId()) ?></select></label><label><span>单独容量（GB）</span><input name="quota_gb" inputmode="decimal" placeholder="-1"></label><label><span>Notion 来源</span><select name="notion_source"><option value="own">自有账户</option><option value="official">官方账户池</option></select></label><button class="primary-button compact">添加用户</button>
             </form>
-            <div class="log-filters user-search"><label><span>搜索用户</span><input id="user-search" type="search" placeholder="输入用户名或邮箱即时筛选"></label></div>
+            <div class="log-filters user-search"><label><span>搜索用户</span><input id="user-search" type="search" placeholder="输入用户 ID、用户名或邮箱即时筛选"></label></div>
             <div class="admin-user-list">
                 <?php foreach ($users as $managedUser): $quotaGb = bytesToInputValue($managedUser['quota_bytes'] === null ? null : (int) $managedUser['quota_bytes'], 1073741824); ?>
-                <form method="post" class="admin-user-row user-row-fold" data-user-search="<?= e(mb_strtolower((string) $managedUser['username'] . ' ' . (string) ($managedUser['email'] ?? ''))) ?>">
+                <form method="post" class="admin-user-row user-row-fold" data-user-search="<?= e(mb_strtolower((int) $managedUser['id'] . ' ' . (string) $managedUser['username'] . ' ' . (string) ($managedUser['email'] ?? ''))) ?>">
                     <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="user_id" value="<?= (int) $managedUser['id'] ?>">
                     <details>
                         <summary>
                             <span class="user-row-summary">
                                 <span class="user-identity"><?= avatarHtml($managedUser) ?><strong><?= e((string) $managedUser['username']) ?></strong></span>
-                                <small class="user-meta"><?= (int) $managedUser['file_count'] ?> 个文件 · <?= e(formatBytes((int) $managedUser['used_bytes'])) ?><?= emailBound($managedUser) ? ' · ' . e((string) $managedUser['email']) : ' · 未绑定邮箱' ?> · <?= e($premiumLabel($managedUser)) ?> · Notion <?= userNotionSource($managedUser) === 'own' ? (hasOwnNotionAccount($managedUser) ? '自有账户' : '自有账户（未绑定）') : '官方账户' ?> · 到期时长 <?= e($premiumDuration($managedUser)) ?></small>
+                                <small class="user-meta">ID <?= (int) $managedUser['id'] ?> · <?= (int) $managedUser['file_count'] ?> 个文件 · <?= e(formatBytes((int) $managedUser['used_bytes'])) ?><?= emailBound($managedUser) ? ' · ' . e((string) $managedUser['email']) : ' · 未绑定邮箱' ?> · <?= e($premiumLabel($managedUser)) ?> · Notion <?= userNotionSource($managedUser) === 'own' ? (hasOwnNotionAccount($managedUser) ? '自有账户' : '自有账户（未绑定）') : '官方账户' ?> · 到期时长 <?= e($premiumDuration($managedUser)) ?></small>
                             </span>
                             <span class="user-row-actions">
                                 <?php if (!isAdmin($managedUser)): ?><button type="button" class="text-action" data-grant-toggle><?= isPremiumUser($managedUser) ? '续费订阅' : '开通订阅' ?></button><?php endif; ?>
@@ -1440,10 +1440,10 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         <?php else: ?>
         <section class="admin-panel">
             <div class="panel-title"><div><h2>用户文件</h2><p>选择一位用户，查看并管理其文件（下载 / 重命名 / 删除）。</p></div><span><?= count($users) ?> 位用户</span></div>
-            <div class="log-filters user-search"><label><span>搜索用户</span><input id="user-search" type="search" placeholder="输入用户名或邮箱即时筛选"></label></div>
+            <div class="log-filters user-search"><label><span>搜索用户</span><input id="user-search" type="search" placeholder="输入用户 ID、用户名或邮箱即时筛选"></label></div>
             <ul class="group-member-list file-user-list">
                 <?php foreach ($users as $managedUser): ?>
-                <li data-user-search="<?= e(mb_strtolower((string) $managedUser['username'] . ' ' . (string) ($managedUser['email'] ?? ''))) ?>"><a href="admin.php?tab=files&user_id=<?= (int) $managedUser['id'] ?>#user-files"><?= avatarHtml($managedUser) ?><strong><?= e((string) $managedUser['username']) ?></strong></a><small><?= (int) $managedUser['file_count'] ?> 个文件 · <?= e(formatBytes((int) $managedUser['used_bytes'])) ?></small></li>
+                <li data-user-search="<?= e(mb_strtolower((int) $managedUser['id'] . ' ' . (string) $managedUser['username'] . ' ' . (string) ($managedUser['email'] ?? ''))) ?>"><a href="admin.php?tab=files&user_id=<?= (int) $managedUser['id'] ?>#user-files"><?= avatarHtml($managedUser) ?><strong><?= e((string) $managedUser['username']) ?></strong></a><small>ID <?= (int) $managedUser['id'] ?> · <?= (int) $managedUser['file_count'] ?> 个文件 · <?= e(formatBytes((int) $managedUser['used_bytes'])) ?></small></li>
                 <?php endforeach; ?>
             </ul>
             <p class="compact-empty" id="user-search-empty" hidden>没有匹配的用户。</p>
