@@ -118,8 +118,9 @@ $offset = ($page - 1) * $perPage;
 // LIMIT/OFFSET 用内联整数：原生预处理把占位符当字符串绑定，会触发 SQL 语法错误
 $statement = Database::connection()->prepare(
     "SELECT id, filename, display_name, file_size, mime_type, status, write_progress, data_lost, created_at, updated_at
-     FROM uploads WHERE user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ') AND folder_id <=> :folder_id
-     ORDER BY id DESC LIMIT $perPage OFFSET $offset'
+     FROM uploads WHERE user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ")
+       AND folder_id <=> :folder_id
+     ORDER BY id DESC LIMIT $perPage OFFSET $offset"
 );
 $statement->execute(['user_id' => $user['id'], 'folder_id' => $folderParam]);
 $files = $statement->fetchAll();

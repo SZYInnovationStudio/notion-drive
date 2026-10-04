@@ -28,6 +28,21 @@
 
 ---
 
+### [2026-10-04 15:53:36] 紧急修复：「我的文件」页面 500（列表查询分页参数未插值）
+
+- 目的：生产站点 `dashboard.php` 全线 500，nginx 错误日志显示
+  `PHP Fatal error: Uncaught PDOException: SQLSTATE[42000] ... 1327 Undeclared variable: $perPage in .../dashboard.php:119`。
+  根因是上一提交（`3fc8413` 列表查询补选 `write_progress`）重构该 SQL 时，把结尾一段误写成**单引号**字符串，
+  于是 `LIMIT $perPage OFFSET $offset` 里的变量没有被 PHP 插值，`$perPage` 被原样发给 MySQL，MySQL 把它当成未声明变量直接报错。
+  `$countStatement`（L110-L112）同样用单引号结尾但内部无需插值，因此不受影响。
+- 验证：`php -l dashboard.php` 通过；修正后该 SQL 恢复为双引号插值，`$perPage`/`$offset` 正常内联为 50/0。
+  另全站检索 `(LIMIT|OFFSET) $var` 仅此一处，无同类隐患；生产机上已同步打补丁并确认站点恢复。
+- 数据库结构影响：无。
+- 改动明细（行号为改动后当前行号）：
+  - `dashboard.php` L119-L124 — 列表查询改为：拼接段用双引号收尾（`... IN (" . UPLOAD_VISIBLE_STATUSES . ")`），
+    并把 `AND folder_id <=> :folder_id` 与 `ORDER BY id DESC LIMIT $perPage OFFSET $offset` 一并置于双引号字符串内，
+    使分页变量真正被插值；原 L121-L123 的单引号结尾删除。
+
 ### [2026-10-04 15:21:43] 修复全服防爆盘 / 在线上传直传的 6 处缺陷（配额记账、审核旁路、错误泄露、重试粒度）
 
 - 目的：对上一提交（`373e138` 全服防爆盘额度 + 在线上传直传）做回归排查，修复其中影响正确性与安全性的缺陷：①直传会话被排除在「在途占用」之外，个人配额可被并发直传绕过；②直传 finish 未排除自身会话，临界值下会把本文件重复计入而误判超配额；③只要客户端主动传 `direct=1` 就能走「在线上传」，等于用户可自主跳过自动内容审核；④直传入库失败会把 PDO 等原始异常信息直接透给用户；⑤直传分片转发失败即销毁会话并回 4xx，前端只能整份文件重传；⑥全部为在线上传时仍提示「正在写入存储」，且拒绝转直传后没有重试入口。
