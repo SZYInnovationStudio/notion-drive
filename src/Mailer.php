@@ -73,7 +73,13 @@ final class Mailer
         try {
             $this->authenticate();
             $this->deliver($to, $this->buildMessage($to, $subject, $body, $html));
-            $this->write('QUIT');
+            // 邮件已在 DATA 阶段被服务器接收，此时 QUIT 失败不算发送失败；
+            // 否则调用方（api/verify.php）会误删刚发出的验证码，用户收到码却永远验不过。
+            try {
+                $this->write('QUIT');
+            } catch (Throwable) {
+                // 忽略：仅是关闭连接异常
+            }
         } finally {
             $this->close();
         }
@@ -111,7 +117,10 @@ final class Mailer
         $this->open();
         try {
             $this->authenticate();
-            foreach (array_keys($valid) as $to) {
+            $targets = array_keys($valid);
+            $total = count($targets);
+            for ($index = 0; $index < $total; $index++) {
+                $to = $targets[$index];
                 try {
                     $this->deliver($to, $this->buildMessage($to, $subject, $body, $html));
                 } catch (Throwable $exception) {
@@ -123,6 +132,10 @@ final class Mailer
                         $this->open();
                         $this->authenticate();
                     } catch (Throwable) {
+                        // 重连失败：剩余收件人一个都发不出去，全部记为失败，避免调用方误以为已送达
+                        for ($rest = $index + 1; $rest < $total; $rest++) {
+                            $failed[$targets[$rest]] = true;
+                        }
                         break;
                     }
                 }
