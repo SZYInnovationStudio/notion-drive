@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace NotionDrive;
 
 use RuntimeException;
+use Throwable;
 
 /**
  * 轻量 SMTP 客户端：支持 ssl（465）、tls（587 STARTTLS）与 none（25）三种连接方式，
@@ -56,10 +57,12 @@ final class Mailer
         );
     }
 
-    /** 发送纯文本邮件；失败抛出 RuntimeException。 */
-    public function send(string $to, string $subject, string $body): void
+    /**
+     * 发送邮件（$html 不为 null 时发 multipart/alternative，客户端优先显示 HTML 版）；失败抛出 RuntimeException。
+     */
+    public function send(string $to, string $subject, string $body, ?string $html = null): void
     {
-        if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
+        if (!$this->isValidRecipient($to)) {
             throw new RuntimeException('收件邮箱地址无效。');
         }
         if ($this->fromAddress === '') {
@@ -69,19 +72,90 @@ final class Mailer
         $this->open();
         try {
             $this->authenticate();
-            $this->write('MAIL FROM:<' . $this->fromAddress . '>');
-            $this->expect([250]);
-            $this->write('RCPT TO:<' . $to . '>');
-            $this->expect([250, 251]);
-            $this->write('DATA');
-            $this->expect([354]);
-            $this->write($this->buildMessage($to, $subject, $body), false);
-            $this->write('.');
-            $this->expect([250]);
+            $this->deliver($to, $this->buildMessage($to, $subject, $body, $html));
             $this->write('QUIT');
         } finally {
             $this->close();
         }
+    }
+
+    /**
+     * 批量发送同一封邮件：复用同一条 SMTP 连接（只握手/认证一次），单个收件人失败不影响其余。
+     * 返回发送失败的地址列表；连接或认证整体失败时抛出 RuntimeException。
+     *
+     * @param list<string> $recipients
+     * @return list<string>
+     */
+    public function sendMany(array $recipients, string $subject, string $body, ?string $html = null): array
+    {
+        $valid = [];
+        $failed = [];
+        foreach ($recipients as $to) {
+            $to = trim((string) $to);
+            if ($to === '') {
+                continue;
+            }
+            if ($this->isValidRecipient($to)) {
+                $valid[$to] = true;
+            } else {
+                $failed[$to] = true;
+            }
+        }
+        if ($valid === []) {
+            return array_keys($failed);
+        }
+        if ($this->fromAddress === '') {
+            throw new RuntimeException('尚未配置发件人邮箱地址。');
+        }
+
+        $this->open();
+        try {
+            $this->authenticate();
+            foreach (array_keys($valid) as $to) {
+                try {
+                    $this->deliver($to, $this->buildMessage($to, $subject, $body, $html));
+                } catch (Throwable $exception) {
+                    Logger::warning('mail', '批量发信时单个收件人失败。', ['to' => $to, 'reason' => $exception->getMessage()]);
+                    $failed[$to] = true;
+                    // 该失败可能源于连接被中断，重连后继续发送剩余收件人
+                    try {
+                        $this->close();
+                        $this->open();
+                        $this->authenticate();
+                    } catch (Throwable) {
+                        break;
+                    }
+                }
+            }
+            try {
+                $this->write('QUIT');
+            } catch (Throwable) {
+                // 忽略退出阶段的异常，结果以已投递的收件人为准
+            }
+        } finally {
+            $this->close();
+        }
+
+        return array_keys($failed);
+    }
+
+    private function isValidRecipient(string $to): bool
+    {
+        return (bool) filter_var($to, FILTER_VALIDATE_EMAIL);
+    }
+
+    /** 投递一封已构建好的邮件（MAIL FROM → RCPT TO → DATA）。 */
+    private function deliver(string $to, string $message): void
+    {
+        $this->write('MAIL FROM:<' . $this->fromAddress . '>');
+        $this->expect([250]);
+        $this->write('RCPT TO:<' . $to . '>');
+        $this->expect([250, 251]);
+        $this->write('DATA');
+        $this->expect([354]);
+        $this->write($message, false);
+        $this->write('.');
+        $this->expect([250]);
     }
 
     private function open(): void
@@ -141,22 +215,49 @@ final class Mailer
         $this->expect([235]);
     }
 
-    private function buildMessage(string $to, string $subject, string $body): string
+    private function buildMessage(string $to, string $subject, string $body, ?string $html = null): string
     {
         $senderName = $this->fromName === '' ? $this->fromAddress : $this->fromName;
         $normalized = str_replace(["\r\n", "\r"], "\n", $body);
+        $domain = (string) ($_SERVER['SERVER_NAME'] ?? '');
+
         $headers = [
             'Date: ' . date('r'),
             'From: =?UTF-8?B?' . base64_encode($senderName) . '?= <' . $this->fromAddress . '>',
             'To: <' . $to . '>',
             'Subject: =?UTF-8?B?' . base64_encode($subject) . '?=',
             'MIME-Version: 1.0',
-            'Content-Type: text/plain; charset=UTF-8',
-            'Content-Transfer-Encoding: base64',
+            'Message-ID: <' . bin2hex(random_bytes(12)) . '@' . ($domain === '' ? 'localhost' : $domain) . '>',
         ];
 
-        return implode("\r\n", $headers) . "\r\n\r\n"
-            . chunk_split(base64_encode($normalized), 76, "\r\n");
+        if ($html === null) {
+            $headers[] = 'Content-Type: text/plain; charset=UTF-8';
+            $headers[] = 'Content-Transfer-Encoding: base64';
+
+            return implode("\r\n", $headers) . "\r\n\r\n"
+                . chunk_split(base64_encode($normalized), 76, "\r\n");
+        }
+
+        // 同时携带纯文本与 HTML 两个版本，由客户端选择展示
+        $boundary = 'b1_' . bin2hex(random_bytes(12));
+        $headers[] = 'Content-Type: multipart/alternative; boundary="' . $boundary . '"';
+
+        $parts = [
+            '--' . $boundary,
+            'Content-Type: text/plain; charset=UTF-8',
+            'Content-Transfer-Encoding: base64',
+            '',
+            chunk_split(base64_encode($normalized), 76, "\r\n"),
+            '--' . $boundary,
+            'Content-Type: text/html; charset=UTF-8',
+            'Content-Transfer-Encoding: base64',
+            '',
+            chunk_split(base64_encode($html), 76, "\r\n"),
+            '--' . $boundary . '--',
+            '',
+        ];
+
+        return implode("\r\n", $headers) . "\r\n\r\n" . implode("\r\n", $parts);
     }
 
     private function write(string $command, bool $appendCrlf = true): void

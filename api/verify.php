@@ -7,6 +7,7 @@ require dirname(__DIR__) . '/src/bootstrap.php';
 use NotionDrive\Auth;
 use NotionDrive\Database;
 use NotionDrive\Logger;
+use NotionDrive\Mail\MailTemplate;
 use NotionDrive\Mailer;
 use NotionDrive\Security;
 use NotionDrive\Verification;
@@ -70,11 +71,13 @@ try {
     if ($shouldSend) {
         // 发送频次由 Verification::issue() 在数据库层按「邮箱冷却 + 来源 IP 上限」控制
         $code = Verification::issue($email, $purpose);
+        $site = siteName();
         try {
             Mailer::fromConfig()->send(
                 $email,
-                'Notion Drive 邮箱验证码',
-                "你的验证码是：{$code}\n\n验证码 10 分钟内有效，请勿转发或告知他人。"
+                $site . ' 邮箱验证码',
+                "你的验证码是：{$code}\n\n验证码 10 分钟内有效，请勿转发或告知他人。",
+                MailTemplate::code((string) $code, $site)
             );
         } catch (Throwable $exception) {
             // 邮件没发出去用户就拿不到验证码：必须回滚刚签发的记录，否则 60 秒冷却会把用户挡在门外

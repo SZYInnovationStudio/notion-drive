@@ -6,6 +6,7 @@ use NotionDrive\Bans\BanService;
 use NotionDrive\Database;
 use NotionDrive\Epay;
 use NotionDrive\Logger;
+use NotionDrive\Mail\MailTemplate;
 use NotionDrive\Mailer;
 use NotionDrive\NotionApiException;
 use NotionDrive\NotionClient;
@@ -1646,18 +1647,18 @@ function sendAdminAlertMail(string $level, string $message, array $context = [])
 
     try {
         $mailer = Mailer::fromConfig();
-        $subject = ($level === 'error' ? '[严重] ' : '[提醒] ') . 'Notion Drive 后台告警';
+        $site = siteName();
+        $subject = ($level === 'error' ? '[严重] ' : '[提醒] ') . $site . ' 后台告警';
         $body = "后台产生了一条新的告警：\n\n级别：" . $level . "\n内容：" . $message;
         if ($context !== []) {
             $body .= "\n\n上下文：\n" . (string) json_encode($context, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
         }
         $body .= "\n\n请登录管理后台查看详情。\n\n本邮件由系统自动发送，请勿直接回复。";
-        foreach ($recipients as $recipient) {
-            try {
-                $mailer->send($recipient, $subject, $body);
-            } catch (Throwable $exception) {
-                Logger::warning('alert', '发送管理员告警邮件失败。', ['to' => $recipient, 'reason' => $exception->getMessage()]);
-            }
+
+        // 复用同一条 SMTP 连接群发（只握手/认证一次），并附带 HTML 版本
+        $failed = $mailer->sendMany($recipients, $subject, $body, MailTemplate::alert($level, $message, $context, $site));
+        foreach ($failed as $recipient) {
+            Logger::warning('alert', '发送管理员告警邮件失败。', ['to' => $recipient]);
         }
     } catch (Throwable $exception) {
         Logger::warning('alert', '初始化管理员告警邮件失败。', ['reason' => $exception->getMessage()]);
