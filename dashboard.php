@@ -309,7 +309,7 @@ $premiumNotice = premiumNotice($user);
                             <td data-label="类型">文件夹</td>
                             <td data-label="大小">—</td>
                             <td data-label="更新时间"><?= e(date('Y-m-d H:i', strtotime((string) $folder['updated_at']))) ?></td>
-                            <td><div class="file-actions"><button data-action="folder-rename">重命名</button><button class="danger" data-action="folder-delete">删除</button></div></td>
+                            <td><div class="file-actions"><button data-action="folder-rename">重命名</button><button data-action="folder-move">移动</button><button class="danger" data-action="folder-delete">删除</button></div></td>
                         </tr>
                     <?php endforeach; ?>
                     <?php foreach ($files as $file): $name = (string) ($file['display_name'] ?: $file['filename']); ?>

@@ -180,6 +180,21 @@ try {
         jsonResponse(['ok' => false, 'message' => '文件夹不存在或无权访问。'], 404);
     }
 
+    if ($action === 'move') {
+        // 0 表示移到根目录
+        $targetId = max(0, (int) ($_POST['folder_id'] ?? 0));
+        if ($targetId > 0 && folderRow($userId, $targetId) === null) {
+            throw new RuntimeException('目标文件夹不存在。');
+        }
+        // 目标不能是自己或自己的子孙，否则文件夹树会成环（folderDescendantIds 含自身）
+        if ($targetId > 0 && in_array($targetId, folderDescendantIds($userId, $folderId), true)) {
+            throw new RuntimeException('不能把文件夹移动到它自己或它的子文件夹里。');
+        }
+        $connection->prepare('UPDATE folders SET parent_id = :parent_id WHERE id = :id AND user_id = :user_id')
+            ->execute(['parent_id' => $targetId > 0 ? $targetId : null, 'id' => $folderId, 'user_id' => $userId]);
+        jsonResponse(['ok' => true, 'message' => $targetId > 0 ? '文件夹已移动到目标文件夹。' : '文件夹已移到根目录。']);
+    }
+
     if ($action === 'rename') {
         $name = normalizeFolderName((string) ($_POST['name'] ?? ''));
         $connection->prepare('UPDATE folders SET name = :name WHERE id = :id AND user_id = :user_id')

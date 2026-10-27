@@ -236,9 +236,9 @@
     }
 
     // 「移动到文件夹」选择器：复用弹窗骨架，选项来自页面里的 template#folderOptions
-    const askFolderPicker = () => openDialog({
+    const askFolderPicker = (message = '选择目标文件夹；选择「根目录」即把文件移出当前文件夹。') => openDialog({
         title: '移动到文件夹',
-        message: '选择目标文件夹；选择「根目录」即把文件移出当前文件夹。',
+        message,
         confirmLabel: '移动',
         extraHtml: '<select class="folder-picker"></select>',
         prepare: overlay => {
@@ -652,7 +652,30 @@
         const row = button.closest('[data-folder-id]');
         if (!row) return;
         const action = button.dataset.action;
-        if (action !== 'folder-rename' && action !== 'folder-delete') return;
+        if (action !== 'folder-rename' && action !== 'folder-move' && action !== 'folder-delete') return;
+
+        if (action === 'folder-move') {
+            const target = await askFolderPicker('选择目标文件夹；选择「根目录」即把文件夹移到根目录。');
+            if (target === null) return;
+            button.disabled = true;
+            try {
+                const response = await fetch('api/folder.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
+                    body: new URLSearchParams({ id: row.dataset.folderId, action: 'move', folder_id: target })
+                });
+                const data = await readJson(response);
+                if (!response.ok || !data.ok) throw new Error(data.message || '操作失败');
+                notify(data.message);
+                // 移动会改变各文件夹的文件数，刷新以同步列表
+                window.location.reload();
+            } catch (error) {
+                notify(error.message || '操作失败', 'error');
+            } finally {
+                button.disabled = false;
+            }
+            return;
+        }
 
         const current = row.querySelector('.display-name')?.textContent.trim() || '';
         // 重命名已在下方行内提交并 return，这里只剩删除请求
