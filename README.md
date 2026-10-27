@@ -1,6 +1,6 @@
 # Notion Drive
 
-Notion Drive 是一个使用 PHP 与 MySQL / MariaDB 构建、以 Notion 作为存储后端的网盘。用户通过现代化 Web 界面注册登录并上传文件，服务端使用 Notion 集成 Token 将文件上传并附加到对应的 Notion 页面；既支持每位用户绑定自己的 Notion 账号，也支持由管理员统一分配账号池。
+Notion Drive 是一个使用 PHP 与 MySQL / MariaDB 构建、以 Notion 作为存储后端的网盘。用户通过现代化 Web 界面注册登录并上传文件，服务端使用 Notion 集成 Token 将文件上传并附加到对应的 Notion 页面；既支持每位用户绑定自己的 Notion 账号，也支持由管理员统一分配账号池。注：商业版暂未公开，我们仍在优化，与有疑问请联系我们 Mail:zhangzhaorui@szystudio.cn/support@szystudio.cn
 
 ## 功能
 
