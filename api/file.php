@@ -35,15 +35,7 @@ if (!$file) {
     jsonResponse(['ok' => false, 'message' => '文件不存在或无权访问。'], 404);
 }
 
-// 工单附件：上传者本人、工单归属者与管理员都可下载；改名/删除仍限上传者本人与管理员
-$allowedTicketDownload = false;
-if ((string) ($file['scope'] ?? 'drive') === 'ticket' && $_SERVER['REQUEST_METHOD'] === 'GET' && (int) ($file['ticket_id'] ?? 0) > 0) {
-    $ownerStatement = Database::connection()->prepare('SELECT user_id FROM tickets WHERE id = :id LIMIT 1');
-    $ownerStatement->execute(['id' => (int) $file['ticket_id']]);
-    $allowedTicketDownload = (int) $ownerStatement->fetchColumn() === (int) $user['id'];
-}
-
-if ((int) $file['user_id'] !== (int) $user['id'] && !isAdmin($user) && !$allowedTicketDownload) {
+if ((int) $file['user_id'] !== (int) $user['id'] && !isAdmin($user)) {
     if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         http_response_code(404);
         exit('文件不存在。');
@@ -61,17 +53,6 @@ $owner = [
 /** 是否尚未写入存储（正在写入 / 写入失败）：这类文件没有 Notion 副本，下载与预览直接读服务器上的暂存文件。 */
 $stagingPending = in_array((string) $file['status'], [NotionWriteQueue::STATUS_WRITING, NotionWriteQueue::STATUS_FAILED], true);
 
-// 封禁期间禁止下载、修改与重命名；管理员代管他人文件不受影响（此处判断的是当前操作者）
-// 工单附件是申诉通道（封禁提示本身引导用户走工单申诉），工单归属者仍可下载自己工单内的附件
-// 下载是浏览器直接跳转的链接，无法弹前端的提示，因此这里回后台配置的封禁模板文案
-if (userActiveBan($user) !== null && !$allowedTicketDownload) {
-    if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-        http_response_code(403);
-        exit(banNoticeText($user));
-    }
-    jsonResponse(['ok' => false, 'message' => banNoticeText($user), 'code' => 'account_banned'], 403);
-}
-
 // R13 数据丢失：全部 Notion 副本都失效的文件只允许删除，下载 / 预览 / 重命名一律拦截
 $postAction = (string) ($_POST['action'] ?? '');
 if ((int) ($file['data_lost'] ?? 0) === 1 && $postAction !== 'delete') {
@@ -85,8 +66,7 @@ if ((int) ($file['data_lost'] ?? 0) === 1 && $postAction !== 'delete') {
 
 try {
     if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-        // 下载与预览统一交给 FileStreamer：与公开直链（s.php）共用同一实现，
-        // 保证 Range 透传、预览白名单、多副本回退等行为在两条链路上完全一致
+        // 下载与预览统一交给 FileStreamer，保证 Range 透传、预览白名单、多副本回退等行为一致
         FileStreamer::stream($file, $owner, $inlineRequested, [
             'viewer_id' => (int) $user['id'],
             'via' => 'file',

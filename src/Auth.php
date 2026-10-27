@@ -13,24 +13,15 @@ final class Auth
         }
 
         $statement = Database::connection()->prepare(
-            'SELECT u.id, u.username, u.quota_bytes, u.notion_page_id, u.group_id,
-                    u.notion_token_encrypted, u.notion_parent_page_id, u.notion_account_source,
-                    u.premium_expires_at, u.premium_reminder_sent_at,
-                    u.email, u.email_verified_at, u.avatar_path, u.moderation_exempt,
-                    g.name AS group_name, g.quota_bytes AS group_quota_bytes,
-                    g.single_file_limit_bytes AS group_single_file_limit_bytes, g.is_admin AS group_is_admin
-             FROM users u LEFT JOIN `groups` g ON g.id = u.group_id
-             WHERE u.id = :id LIMIT 1'
+            'SELECT id, is_admin, username, quota_bytes, notion_page_id,
+                    notion_token_encrypted, notion_parent_page_id, notion_account_source,
+                    email, email_verified_at, avatar_path
+             FROM users WHERE id = :id LIMIT 1'
         );
         $statement->execute(['id' => (int) $_SESSION['user_id']]);
         $user = $statement->fetch();
 
-        if (!$user) {
-            return null;
-        }
-
-        // 套餐到期的懒检查：访问任意页面时把已到期的付费用户降级回普通用户组
-        return \downgradeExpiredPremium($user);
+        return is_array($user) ? $user : null;
     }
 
     public static function attempt(string $username, string $password): bool

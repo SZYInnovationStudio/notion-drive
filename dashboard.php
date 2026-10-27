@@ -6,91 +6,18 @@ require __DIR__ . '/src/bootstrap.php';
 
 use NotionDrive\Auth;
 use NotionDrive\Database;
-use NotionDrive\Moderation\ModerationService;
 use NotionDrive\Security;
-use NotionDrive\Tickets\TicketService;
 use NotionDrive\Uploads\NotionWriteQueue;
 
 $user = Auth::requireLogin();
-// 到期前 3 天的邮件提醒：无 cron，靠页面访问懒触发，同一到期周期只发一次
-maybeSendPremiumReminder($user);
 $singleLimit = userSingleFileLimit($user);
 $usedBytes = userUsedBytes((int) $user['id']);
 $quotaBytes = userQuotaBytes($user);
 // 剩余容量：null 表示不限总容量。前端据此把「单文件超限」与「剩余空间不足」分开提示
 $remainingBytes = $quotaBytes === null ? null : max(0, $quotaBytes - $usedBytes);
 $needsEmail = !mayUpload($user);
-$uploadBlocked = uploadBlockedReason($user);
 $notionReady = notionSourceUsable($user);
 $userId = (int) $user['id'];
-
-// 工单到期清扫：客服回复后用户长期未回应、或关闭超过重开窗口的工单自动置为「已过期」
-try {
-    TicketService::create()->expireDueTickets();
-} catch (Throwable $exception) {
-    // 清扫属后台维护动作，失败不阻断文件页
-}
-
-// 内容风控提示：被判定违规而暂停使用的文件（含管理员已放行重传的），风控未启用或查询失败时静默跳过
-try {
-    $moderationNotices = ModerationService::create()->userNotices($userId);
-} catch (Throwable $exception) {
-    $moderationNotices = [];
-}
-
-// 申诉工单线程：在文件页直接展示用户与管理员的往来对话
-$moderationThreads = [];
-if ($moderationNotices !== []) {
-    try {
-        $moderationThreads = TicketService::create()->appealThreadsByRecords(array_column($moderationNotices, 'id'));
-    } catch (Throwable $exception) {
-        $moderationThreads = [];
-    }
-}
-
-// 申诉提交：快捷提一张申诉工单并落一条留言，管理员在后台工单里回复
-$appealError = '';
-$appealSubmitted = (string) ($_GET['appeal'] ?? '') === 'ok';
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string) ($_POST['action'] ?? '') === 'submit_appeal') {
-    try {
-        Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''));
-        ModerationService::create()->submitAppeal(
-            (int) ($_POST['record_id'] ?? 0),
-            $userId,
-            (string) ($_POST['appeal_text'] ?? '')
-        );
-        header('Location: dashboard.php?appeal=ok');
-        exit;
-    } catch (Throwable $exception) {
-        $appealError = $exception->getMessage() !== '' ? $exception->getMessage() : '提交失败，请稍后再试。';
-    }
-}
-
-// 清除记录：用户把某条未通过审核的提示从本页隐藏（仅隐藏提示，不影响文件状态与申诉记录）
-$noticeError = '';
-$noticeCleared = (string) ($_GET['cleared'] ?? '');
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string) ($_POST['action'] ?? '') === 'dismiss_notice') {
-    try {
-        Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''));
-        ModerationService::create()->dismissNotice((int) ($_POST['record_id'] ?? 0), $userId);
-        header('Location: dashboard.php?cleared=ok');
-        exit;
-    } catch (Throwable $exception) {
-        $noticeError = $exception->getMessage() !== '' ? $exception->getMessage() : '清除失败，请稍后再试。';
-    }
-}
-
-// 一键删除：把本页全部未通过审核提示一次性隐藏（同单条清除口径，仅用户自己不可见，不动风控与违规计数）
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string) ($_POST['action'] ?? '') === 'dismiss_all_notices') {
-    try {
-        Security::verifyCsrf((string) ($_POST['csrf_token'] ?? ''));
-        $clearedCount = ModerationService::create()->dismissAllNotices($userId);
-        header('Location: dashboard.php?cleared=all&count=' . $clearedCount);
-        exit;
-    } catch (Throwable $exception) {
-        $noticeError = $exception->getMessage() !== '' ? $exception->getMessage() : '清除失败，请稍后再试。';
-    }
-}
 
 // 当前所在文件夹：?folder= 来自用户输入，必须校验归属，否则退回根目录
 $currentFolderId = max(0, (int) ($_GET['folder'] ?? 0));
@@ -108,7 +35,7 @@ $folderQuery = $currentFolderId > 0 ? '&folder=' . $currentFolderId : '';
 
 $perPage = 50;
 $countStatement = Database::connection()->prepare(
-    "SELECT COUNT(*) FROM uploads WHERE user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ') AND folder_id <=> :folder_id'
+    "SELECT COUNT(*) FROM uploads WHERE user_id = :user_id AND status IN (" . UPLOAD_VISIBLE_STATUSES . ') AND folder_id <=> :folder_id'
 );
 $countStatement->execute(['user_id' => $user['id'], 'folder_id' => $folderParam]);
 $totalFiles = (int) $countStatement->fetchColumn();
@@ -118,14 +45,13 @@ $offset = ($page - 1) * $perPage;
 // LIMIT/OFFSET 用内联整数：原生预处理把占位符当字符串绑定，会触发 SQL 语法错误
 $statement = Database::connection()->prepare(
     "SELECT id, filename, display_name, file_size, mime_type, status, write_progress, data_lost, created_at, updated_at
-     FROM uploads WHERE user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ")
+     FROM uploads WHERE user_id = :user_id AND status IN (" . UPLOAD_VISIBLE_STATUSES . ")
        AND folder_id <=> :folder_id
      ORDER BY id DESC LIMIT $perPage OFFSET $offset"
 );
 $statement->execute(['user_id' => $user['id'], 'folder_id' => $folderParam]);
 $files = $statement->fetchAll();
 $replicaSources = uploadReplicaSources(array_column($files, 'id'));
-$premiumNotice = premiumNotice($user);
 ?>
 <!doctype html>
 <html lang="zh-CN">
@@ -133,30 +59,27 @@ $premiumNotice = premiumNotice($user);
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <?= siteTitleTag('我的文件') ?>
     <?= siteFaviconTag() ?>
-    <link rel="stylesheet" href="assets/app.css?v=67">
+    <link rel="stylesheet" href="assets/app.css?v=68">
 </head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>" data-limit="<?= $singleLimit ?>" data-remaining="<?= $remainingBytes === null ? '' : $remainingBytes ?>" data-folder="<?= $currentFolderId ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
         <nav class="drive-nav" aria-label="主导航">
             <a class="active" href="dashboard.php"><?= navIcon('files') ?>我的文件</a>
-            <a href="tickets.php"><?= navIcon('tickets') ?><?= isAdmin($user) ? '工单管理' : '我的工单' ?></a>
-            <?php if (isAdmin($user)): ?><a href="admin.php"><?= navIcon('admin') ?>管理后台</a><a href="admin_orders.php"><?= navIcon('orders') ?>订单管理</a><a href="bans.php"><?= navIcon('bans') ?>封禁管理</a><a href="logs.php"><?= navIcon('logs') ?>运行日志</a><?php endif; ?>
+            <?php if (isAdmin($user)): ?><a href="admin.php"><?= navIcon('admin') ?>管理后台</a><a href="logs.php"><?= navIcon('logs') ?>运行日志</a><?php endif; ?>
             <a href="account.php"><?= navIcon('account') ?>账户管理</a>
-            <?php if (!isAdmin($user)): ?><a href="pricing.php"><?= navIcon('premium') ?>会员套餐</a><?php endif; ?>
         </nav>
         <?= sidebarStorageHtml($user) ?>
         <?= sidebarIcpHtml() ?>
         <?= sidebarPoliceHtml() ?>
         <div class="account-menu">
             <?= avatarHtml($user) ?>
-            <div><strong><?= e($user['username']) ?></strong><small><?= isAdmin($user) ? '管理员' : e((string) ($user['group_name'] ?? '用户')) ?></small></div>
+            <div><strong><?= e($user['username']) ?></strong><small><?= isAdmin($user) ? '管理员' : '普通用户' ?></small></div>
             <form method="post" action="logout.php"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><button title="退出登录">退出</button></form>
         </div>
     </aside>
 
     <main class="drive-main">
-        <?= banNoticeHtml($user) ?>
         <header class="drive-header">
             <div><p>个人文件空间</p><h1>我的文件</h1></div>
             <label class="search-box"><span>⌕</span><input id="fileSearch" type="search" placeholder="搜索文件" aria-label="搜索文件"></label>
@@ -165,100 +88,8 @@ $premiumNotice = premiumNotice($user);
         <?php if ($needsEmail): ?>
         <div class="alert error">管理员已开启「强制绑定邮箱」，请先到 <a href="account.php">账户管理</a> 绑定并验证邮箱后才能上传文件。</div>
         <?php endif; ?>
-        <?php if ($uploadBlocked !== ''): ?>
-        <div class="alert error"><?= e($uploadBlocked) ?> <a href="pricing.php">立即续费</a> · <a href="account.php">切换账户来源</a></div>
-        <?php elseif ($premiumNotice !== ''): ?>
-        <div class="alert error"><?= e($premiumNotice) ?> <a href="pricing.php">立即续费</a></div>
-        <?php endif; ?>
-        <?php if (!$notionReady && $uploadBlocked === ''): ?>
+        <?php if (!$notionReady): ?>
         <div class="alert error">当前 Notion 账户尚未就绪，暂时无法上传。请到 <a href="account.php">账户管理</a> 完成账户绑定或切换到可用来源。</div>
-        <?php endif; ?>
-
-        <?php if ($appealSubmitted): ?>
-        <div class="alert success">申诉已提交，已自动生成工单，管理员会尽快处理并回复。</div>
-        <?php elseif ($appealError !== ''): ?>
-        <div class="alert error"><?= e($appealError) ?></div>
-        <?php endif; ?>
-
-        <?php if ($noticeCleared === 'all'): ?>
-        <div class="alert success">已清除全部 <?= max(0, (int) ($_GET['count'] ?? 0)) ?> 条审核提示。文件仍保持不可用；管理员重新处理这些记录时，提示会再次出现。</div>
-        <?php elseif ($noticeCleared === 'ok'): ?>
-        <div class="alert success">已清除该条审核提示。文件仍保持不可用；管理员重新处理该记录时，提示会再次出现。</div>
-        <?php elseif ($noticeError !== ''): ?>
-        <div class="alert error"><?= e($noticeError) ?></div>
-        <?php endif; ?>
-
-        <?php if ($moderationNotices !== []): ?>
-        <div class="alert warning">
-            <div class="alert-head">
-                <strong>有 <?= count($moderationNotices) ?> 个文件未通过内容审核</strong>
-                <span>如认为误判，可直接提交申诉（自动生成工单），管理员会在工单里与你对话。</span>
-            </div>
-            <form method="post" class="notice-bulk">
-                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>">
-                <input type="hidden" name="action" value="dismiss_all_notices">
-                <label class="notice-check-all"><input type="checkbox" data-check-all="notice-check"> 全选</label>
-                <button type="submit" class="text-action" data-confirm="确认删除全部 <?= count($moderationNotices) ?> 条审核提示？删除后本页不再显示这些提示（文件仍不可用），且无法再对其提交申诉。">一键删除</button>
-            </form>
-            <details class="alert-fold">
-                <summary>点此展开 / 收起文件清单（<?= count($moderationNotices) ?> 个）</summary>
-            <ul class="alert-list">
-                <?php foreach ($moderationNotices as $notice): ?>
-                <?php
-                    $recordId = (int) $notice['id'];
-                    $thread = $moderationThreads[$recordId] ?? null;
-                    $threadMessages = $thread['messages'] ?? [];
-                ?>
-                <li>
-                    <label class="notice-check"><input type="checkbox" name="notice-check" value="<?= $recordId ?>"></label>
-                    <span>
-                        <?= e((string) $notice['filename']) ?>
-                        <?php if ((string) $notice['reason'] !== ''): ?><small><?= e((string) $notice['reason']) ?></small><?php endif; ?>
-                    </span>
-                    <span>
-                        申诉号 <strong><?= e((string) $notice['appeal_no']) ?></strong>
-                        <small>
-                            <?= (string) $notice['status'] === ModerationService::STATUS_RESUBMIT
-                                ? '管理员已放行重传，请重新上传后等待复核'
-                                : ((string) $notice['stage'] === ModerationService::STAGE_START ? '上传被拒绝' : '已暂停使用') . ' · 等待管理员复核' ?>
-                            · <?= e((string) $notice['created_at']) ?>
-                        </small>
-                        <?php if ($threadMessages !== []): ?>
-                        <div class="ticket-thread">
-                            <?php foreach ($threadMessages as $message): ?>
-                            <?php $fromAdmin = (string) $message['author_role'] === TicketService::ROLE_ADMIN; ?>
-                            <div class="ticket-msg <?= $fromAdmin ? 'from-admin' : 'from-user' ?>">
-                                <div class="ticket-msg-meta"><?= $fromAdmin ? '管理员' : '我' ?> · <?= e((string) $message['created_at']) ?></div>
-                                <div class="ticket-msg-body"><?= nl2br(e((string) $message['body'])) ?></div>
-                            </div>
-                            <?php endforeach; ?>
-                        </div>
-                        <?php endif; ?>
-                        <details class="appeal-box">
-                            <summary><?= $threadMessages !== [] ? '继续申诉 / 补充说明' : '填写申诉理由' ?></summary>
-                            <form method="post" class="appeal-form">
-                                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>">
-                                <input type="hidden" name="action" value="submit_appeal">
-                                <input type="hidden" name="record_id" value="<?= $recordId ?>">
-                                <textarea name="appeal_text" rows="3" maxlength="1000" required placeholder="说明情况，例如文件用途、误判理由等（最多 1000 字）"></textarea>
-                                <button type="submit" class="save-action">提交申诉</button>
-                            </form>
-                        </details>
-                        <?php if ($thread !== null): ?>
-                        <a class="ticket-more" href="tickets.php?id=<?= (int) $thread['ticket']['id'] ?>">查看完整对话 →</a>
-                        <?php endif; ?>
-                        <form method="post" class="notice-dismiss">
-                            <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>">
-                            <input type="hidden" name="action" value="dismiss_notice">
-                            <input type="hidden" name="record_id" value="<?= $recordId ?>">
-                            <button type="submit" class="text-action" data-confirm="确认清除这条记录？清除后本页不再显示该提示（文件仍不可用），且无法再对其提交申诉。">清除记录</button>
-                        </form>
-                    </span>
-                </li>
-                <?php endforeach; ?>
-            </ul>
-            </details>
-        </div>
         <?php endif; ?>
 
         <section class="upload-card">
@@ -343,7 +174,7 @@ $premiumNotice = premiumNotice($user);
                             <td data-label="类型"><?= e(explode('/', (string) $file['mime_type'])[0]) ?></td>
                             <td data-label="大小"><?= e(formatBytes((int) $file['file_size'])) ?></td>
                             <td data-label="更新时间"><?= e(date('Y-m-d H:i', strtotime((string) $file['updated_at']))) ?></td>
-                            <td><div class="file-actions"><?php if (!$isLost && filePreviewable($file)): ?><button data-action="preview" data-preview-kind="<?= e(previewKind($file)) ?>" data-preview-mime="<?= e((string) $file['mime_type']) ?>" data-preview-size="<?= (int) $file['file_size'] ?>" data-preview-name="<?= e($name) ?>">预览</button><?php endif; ?><?php if (!$isLost): ?><a href="api/file.php?id=<?= (int) $file['id'] ?>" title="下载">下载</a><button data-action="share">直链</button><button data-action="rename">重命名</button><button data-action="move">移动</button><?php endif; ?><?php if ($isWriteFailed): ?><button data-action="retry-write">重试写入</button><?php endif; ?><button class="danger" data-action="delete">删除</button></div></td>
+                            <td><div class="file-actions"><?php if (!$isLost && filePreviewable($file)): ?><button data-action="preview" data-preview-kind="<?= e(previewKind($file)) ?>" data-preview-mime="<?= e((string) $file['mime_type']) ?>" data-preview-size="<?= (int) $file['file_size'] ?>" data-preview-name="<?= e($name) ?>">预览</button><?php endif; ?><?php if (!$isLost): ?><a href="api/file.php?id=<?= (int) $file['id'] ?>" title="下载">下载</a><button data-action="rename">重命名</button><button data-action="move">移动</button><?php endif; ?><?php if ($isWriteFailed): ?><button data-action="retry-write">重试写入</button><?php endif; ?><button class="danger" data-action="delete">删除</button></div></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
@@ -412,7 +243,7 @@ $premiumNotice = premiumNotice($user);
         </div>
     </div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=40" defer></script>
+    <script src="assets/app.js?v=41" defer></script>
 </body>
 </html>
 <?php

@@ -28,7 +28,6 @@ $values = [
     'db_user' => '',
     'admin_username' => 'admin',
     'page_id' => '',
-    'plan' => 'free',
 ];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -62,9 +61,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pageId = preg_replace('/[^a-fA-F0-9-]/', '', $values['page_id']);
         if (!in_array(strlen((string) $pageId), [32, 36], true)) {
             throw new RuntimeException('请填写有效的 Notion 页面 ID。');
-        }
-        if (!in_array($values['plan'], ['free', 'paid'], true)) {
-            throw new RuntimeException('Notion 套餐选项无效。');
         }
 
         $dsn = sprintf('mysql:host=%s;port=%d;charset=utf8mb4', $values['db_host'], (int) $values['db_port']);
@@ -105,6 +101,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->exec(
             'CREATE TABLE IF NOT EXISTS users (
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                is_admin TINYINT(1) NOT NULL DEFAULT 0,
                 username VARCHAR(64) NOT NULL UNIQUE,
                 password_hash VARCHAR(255) NOT NULL,
                 quota_bytes BIGINT NULL DEFAULT NULL,
@@ -112,19 +109,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 notion_token_encrypted VARCHAR(512) NULL DEFAULT NULL,
                 notion_parent_page_id VARCHAR(64) NULL DEFAULT NULL,
                 notion_account_source VARCHAR(20) NOT NULL DEFAULT \'own\',
-                premium_expires_at DATETIME NULL DEFAULT NULL,
-                premium_reminder_sent_at DATETIME NULL DEFAULT NULL,
-                group_id BIGINT UNSIGNED NULL DEFAULT NULL,
-                violation_points TINYINT UNSIGNED NOT NULL DEFAULT 0,
-                violation_cycle_start DATETIME NULL DEFAULT NULL,
-                violation_ban_until DATETIME NULL DEFAULT NULL,
                 email VARCHAR(191) NULL DEFAULT NULL,
                 email_verified_at TIMESTAMP NULL DEFAULT NULL,
                 avatar_path VARCHAR(191) NULL DEFAULT NULL,
-                moderation_exempt TINYINT(1) NOT NULL DEFAULT 0,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE KEY uniq_users_email (email),
-                INDEX idx_premium_expires (premium_expires_at)
+                UNIQUE KEY uniq_users_email (email)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
         );
         $pdo->exec(
@@ -139,8 +128,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 user_id BIGINT UNSIGNED NOT NULL,
                 folder_id BIGINT UNSIGNED NULL DEFAULT NULL,
-                scope VARCHAR(20) NOT NULL DEFAULT \'drive\',
-                ticket_id BIGINT UNSIGNED NULL DEFAULT NULL,
                 filename VARCHAR(900) NOT NULL,
                 display_name VARCHAR(900) NULL,
                 storage_name VARCHAR(900) NULL,
@@ -157,8 +144,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_uploads_user_created (user_id, created_at),
                 INDEX idx_uploads_folder (folder_id),
-                INDEX idx_uploads_scope (scope),
-                INDEX idx_uploads_ticket (ticket_id, status),
                 INDEX idx_uploads_data_lost (data_lost),
                 INDEX idx_uploads_status_id (status, id),
                 CONSTRAINT fk_uploads_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -166,28 +151,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         );
 
         Schema::createFoldersTable($pdo);
-        Schema::createShareLinksTable($pdo);
-        Schema::createGroupsTable($pdo);
         Schema::createVerificationTable($pdo);
         Schema::createLoginAttemptsTable($pdo);
         Schema::createOfficialAccountsTable($pdo);
         Schema::createUserOfficialAccountsTable($pdo);
         Schema::createUploadReplicasTable($pdo);
-        Schema::createOrdersTable($pdo);
         Schema::createAdminAlertsTable($pdo);
-        Schema::createModerationRecordsTable($pdo);
-        Schema::createModerationHashesTable($pdo);
-        Schema::createTicketsTable($pdo);
-        Schema::createTicketMessagesTable($pdo);
-        Schema::createUserBansTable($pdo);
-        Schema::createTicketArchivesTable($pdo);
-        Schema::createTicketReviewsTable($pdo);
-        Schema::createUserTicketBansTable($pdo);
         Schema::createAnnouncementsTable($pdo);
-        Schema::createUserViolationsTable($pdo);
 
         // 复用既有 app_key（若 config/database.php 已存在），避免每次安装重新生成密钥
-        // 导致旧库中 notion_token / official_accounts.token_encrypted / epay_key 等密文全部无法解密
+        // 导致旧库中 notion_token / official_accounts.token_encrypted 等密文全部无法解密
         $appKey = '';
         $configPath = __DIR__ . '/config/database.php';
         if (is_file($configPath)) {
@@ -209,20 +182,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         foreach ([
             'notion_token' => Security::encrypt($token, $appKey),
             'default_page_id' => (string) $pageId,
-            'notion_plan' => $values['plan'],
-            'moderation_enabled' => '0',
-            'moderation_keywords' => '',
-            'moderation_scope' => 'filename,text,image',
-            'moderation_endpoint' => '',
-            'moderation_model' => 'gpt-4o-mini',
-            'moderation_timeout' => '8',
-            'ban_threshold' => '5',
-            'ban_notice_mode' => 'link',
         ] as $key => $value) {
             $statement->execute(['config_key' => $key, 'config_value' => $value]);
         }
 
-        // 安装时填写的 Token 同时作为官方账户池的第一个账户，供购买高级套餐的用户使用
+        // 安装时填写的 Token 同时作为官方账户池的第一个账户，供所有用户共用
         $poolStatement = $pdo->prepare(
             'INSERT INTO official_accounts (label, token_encrypted, root_page_id, is_enabled, priority)
               SELECT :label, :token_encrypted, :root_page_id, 1, 1 FROM DUAL
@@ -234,15 +198,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'root_page_id' => (string) $pageId,
         ]);
 
-        $adminGroupStatement = $pdo->prepare('SELECT id FROM `groups` WHERE name = :name LIMIT 1');
-        $adminGroupStatement->execute(['name' => Schema::BUILTIN_GROUPS[0]['name']]);
-        $adminGroupId = (int) $adminGroupStatement->fetchColumn();
-
         // 安装时填写的 Token / 页面同时绑定为管理员的自有账户，使安装后管理员可立即上传
         $adminStatement = $pdo->prepare(
-            'INSERT INTO users (username, password_hash, group_id, notion_token_encrypted, notion_parent_page_id, notion_account_source)
-             VALUES (:username, :password_hash, :group_id, :notion_token_encrypted, :notion_parent_page_id, :notion_account_source)
-             ON DUPLICATE KEY UPDATE password_hash = VALUES(password_hash), group_id = VALUES(group_id),
+            'INSERT INTO users (username, password_hash, is_admin, notion_token_encrypted, notion_parent_page_id, notion_account_source)
+             VALUES (:username, :password_hash, 1, :notion_token_encrypted, :notion_parent_page_id, :notion_account_source)
+             ON DUPLICATE KEY UPDATE password_hash = VALUES(password_hash), is_admin = 1,
                  notion_token_encrypted = VALUES(notion_token_encrypted),
                  notion_parent_page_id = VALUES(notion_parent_page_id),
                  notion_account_source = VALUES(notion_account_source)'
@@ -250,7 +210,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $adminStatement->execute([
             'username' => $values['admin_username'],
             'password_hash' => password_hash($adminPassword, PASSWORD_DEFAULT),
-            'group_id' => $adminGroupId,
             'notion_token_encrypted' => Security::encrypt($token, $appKey),
             'notion_parent_page_id' => normalizePageId((string) $pageId),
             'notion_account_source' => 'own',
@@ -294,7 +253,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>安装 · Notion Drive</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-    <link rel="stylesheet" href="assets/app.css?v=67">
+    <link rel="stylesheet" href="assets/app.css?v=68">
 </head>
 <body class="install-shell">
     <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
@@ -338,10 +297,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <fieldset>
                     <legend>Notion 工作区</legend>
                     <label><span>集成 Token</span><input type="password" name="notion_token" placeholder="ntn_••••••••••••" required><small>Token 会加密后保存，所有用户共用。</small></label>
-                    <div class="field-grid two">
-                        <label><span>默认页面 ID</span><input name="page_id" value="<?= e($values['page_id']) ?>" placeholder="页面链接末尾的 32 位 ID" required></label>
-                        <label><span>Notion 套餐</span><select name="plan"><option value="free" <?= $values['plan'] === 'free' ? 'selected' : '' ?>>免费版 · 5 MB</option><option value="paid" <?= $values['plan'] === 'paid' ? 'selected' : '' ?>>付费版 · 5 GB</option></select></label>
-                    </div>
+                    <label><span>默认页面 ID</span><input name="page_id" value="<?= e($values['page_id']) ?>" placeholder="页面链接末尾的 32 位 ID" required></label>
                 </fieldset>
                 <fieldset>
                     <legend>管理员账号</legend>

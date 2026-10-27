@@ -62,18 +62,17 @@ $levelLabels = ['ALL' => '全部级别', 'ERROR' => '仅 ERROR', 'WARNING' => '�
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('运行日志') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=67"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('运行日志') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=68"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
-        <nav class="drive-nav"><a href="dashboard.php"><?= navIcon('files') ?>我的文件</a><a href="tickets.php"><?= navIcon('tickets') ?>工单管理</a><a href="admin.php"><?= navIcon('admin') ?>管理后台</a><a href="admin_orders.php"><?= navIcon('orders') ?>订单管理</a><a href="bans.php"><?= navIcon('bans') ?>封禁管理</a><a class="active" href="logs.php"><?= navIcon('logs') ?>运行日志</a><a href="account.php"><?= navIcon('account') ?>账户管理</a></nav>
+        <nav class="drive-nav"><a href="dashboard.php"><?= navIcon('files') ?>我的文件</a><a href="admin.php"><?= navIcon('admin') ?>管理后台</a><a class="active" href="logs.php"><?= navIcon('logs') ?>运行日志</a><a href="account.php"><?= navIcon('account') ?>账户管理</a></nav>
         <?= sidebarStorageHtml($currentUser) ?>
         <?= sidebarIcpHtml() ?>
         <?= sidebarPoliceHtml() ?>
         <div class="account-menu"><?= avatarHtml($currentUser) ?><div><strong><?= e($currentUser['username']) ?></strong><small>管理员</small></div><form method="post" action="logout.php"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><button>退出</button></form></div>
     </aside>
     <main class="drive-main admin-main">
-        <?= banNoticeHtml($currentUser) ?>
         <header class="drive-header"><div><p>故障排查</p><h1>运行日志</h1></div><a class="secondary-button" href="admin.php">返回管理后台</a></header>
         <?php if ($flash): ?><div class="alert <?= e($flash['type']) ?>"><?= e($flash['message']) ?></div><?php endif; ?>
         <?php if ($error !== ''): ?><div class="alert error"><?= e($error) ?></div><?php endif; ?>
@@ -122,5 +121,5 @@ $levelLabels = ['ALL' => '全部级别', 'ERROR' => '仅 ERROR', 'WARNING' => '�
         <?php endif; ?>
     </main>
     <?= siteCreditHtml() ?>
-    <div id="toast" class="toast"></div><script src="assets/app.js?v=40" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <div id="toast" class="toast"></div><script src="assets/app.js?v=41" defer></script><script src="assets/admin.js?v=10" defer></script>
 </body></html>

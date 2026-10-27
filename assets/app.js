@@ -45,56 +45,6 @@
         }
     };
 
-    // 需要保留可点击链接的提示（目前只有封禁提示的「提交申诉」）走这个版本：
-    // 用 innerHTML 渲染并给 toast 加上 clickable 类放开 pointer-events，停留时间也拉长
-    // （toast 默认 pointer-events:none 且 2.6 秒即消失，链接根本点不到）
-    // 内容只来自服务端 banNoticeHtml()（原因字段已 e() 转义），不接受用户输入，故不存在注入风险
-    const notifyHtml = (html, type = 'success', duration = 8000) => {
-        if (!toast) return;
-        toast.innerHTML = html;
-        toast.className = `toast visible clickable ${type}`;
-        window.setTimeout(() => {
-            toast.classList.remove('visible');
-            toast.classList.remove('clickable');
-        }, duration);
-    };
-
-    // 封禁用户的上传、下载与文件操作入口一律拦下，并弹出后台配置的封禁模板文案。
-    // #banNotice 就是 banNoticeHtml() 按 ban_notice_mode 渲染出来的提示条，直接复用它的内容可避免模板两处维护
-    const banNotice = document.getElementById('banNotice');
-    // 取 innerHTML 而非 textContent：提示条里的「提交申诉」是可点击链接，
-    // 弹窗保留这段链接，用户才能像违规分区那样直接点进申诉（plain 模式没有链接，取到的就是纯文本）
-    const banToastHtml = banNotice ? banNotice.innerHTML.trim() : '';
-    if (banToastHtml !== '') {
-        // 上传区、下载直链，以及文件与文件夹的重命名、移动、删除、新建文件夹
-        // （服务端 api/file.php、api/folder.php 本就拒绝封禁用户，这里只是把失败提前到点击时并给出提示）
-        // 工单附件不在此列：封禁提示本身引导用户走工单提交申诉，申诉需要上传/查看证据，故整体放行
-        // （工单附件的下载直链用 data-ticket-download 标记，与普通文件的下载链接区分开）
-        const blockedEntry = [
-            '#dropZone', '#browseButton', '#fileInput', '#browseFolderButton', '#folderInput',
-            'a[href^="api/file.php"]:not([data-ticket-download])',
-            '[data-action]', '#newFolderButton'
-        ].join(', ');
-        // 命中即可判定为被封禁的入口；用 closest 兼顾点在图标的按钮内部等情况
-        const isBlockedEntry = target => target instanceof Element && Boolean(target.closest(blockedEntry));
-
-        // 捕获阶段先于控件自身的逻辑执行，阻止默认行为后不会真的发起上传或跳转下载
-        document.addEventListener('click', event => {
-            if (!isBlockedEntry(event.target)) return;
-            event.preventDefault();
-            event.stopPropagation();
-            notifyHtml(banToastHtml, 'error');
-        }, true);
-
-        // 拖放不经过 click，同样在捕获阶段拦下
-        ['dragenter', 'dragover', 'drop'].forEach(type => document.addEventListener(type, event => {
-            if (!isBlockedEntry(event.target)) return;
-            event.preventDefault();
-            event.stopPropagation();
-            if (type === 'drop') notifyHtml(banToastHtml, 'error');
-        }, true));
-    }
-
     // 用栈记录已打开的弹窗：只有最上层响应 Esc / Tab，避免一次 Esc 关掉全部弹窗
     const overlayStack = [];
     // 弹窗骨架：统一负责遮罩、焦点锁与 Esc 关闭；prepare 可往弹窗里补控件，result 决定确认时的返回值
@@ -415,157 +365,6 @@
         document.addEventListener('keydown', event => { if (event.key === 'Escape') closePreview(); });
     }
 
-    /** api/share.php 的薄封装：统一带 CSRF，失败抛出可直接展示的消息。 */
-    const shareRequest = async payload => {
-        const response = await fetch('api/share.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-Token': csrf },
-            body: new URLSearchParams(payload)
-        });
-        const data = await readJson(response);
-        if (!response.ok || !data.ok) throw new Error(data.message || '操作失败');
-        return data;
-    };
-
-    /** 复制到剪贴板；非安全上下文或用户拒绝授权时返回 false，由调用方退回「选中让用户自己复制」。 */
-    const copyToClipboard = async text => {
-        if (!text) return false;
-        try {
-            if (navigator.clipboard && window.isSecureContext) {
-                await navigator.clipboard.writeText(text);
-                return true;
-            }
-        } catch (_) {
-            // 落到下面的兜底分支
-        }
-        return false;
-    };
-
-    /** 直链分享弹窗：生成 / 复制 / 撤销某个文件的公开直链（该链接不需要登录即可访问）。 */
-    const openShareDialog = row => {
-        const fileId = String(row.dataset.fileId || '0');
-        const nameEl = row.querySelector('.display-name');
-
-        const dialog = document.createElement('dialog');
-        dialog.className = 'duplicate-dialog share-dialog';
-        dialog.innerHTML = '<h2>直链分享</h2><p class="share-file"></p><div class="share-quota"></div><div class="share-create"><label><span>有效期</span><select class="share-days"><option value="1">1 天</option><option value="7">7 天</option><option value="30">30 天</option><option value="0">长期有效</option></select></label><button type="button" class="primary-button compact" data-share-generate>生成直链</button></div><div class="share-result" hidden><input class="share-url" readonly><button type="button" class="secondary-button compact" data-share-copy>复制</button></div><div class="share-list"></div><div class="duplicate-actions"><button type="button" class="secondary-button" data-share-close>关闭</button></div>';
-        dialog.querySelector('.share-file').textContent = nameEl ? nameEl.textContent.trim() : '';
-
-        const quotaEl = dialog.querySelector('.share-quota');
-        const listEl = dialog.querySelector('.share-list');
-        const daysEl = dialog.querySelector('.share-days');
-        const resultEl = dialog.querySelector('.share-result');
-        const urlEl = dialog.querySelector('.share-url');
-        const generateBtn = dialog.querySelector('[data-share-generate]');
-
-        // 额度与可用性由服务端返回，前端不重复判断会员规则
-        const renderQuota = data => {
-            let text;
-            if (!data.enabled) {
-                text = '直链服务当前未开放。';
-            } else if (!data.premium) {
-                text = '直链仅对高级用户开放，开通后即可生成。';
-            } else if (data.quota === null) {
-                text = `直链额度不限（管理员），已用 ${data.used} 条。`;
-            } else {
-                text = `直链额度：已用 ${data.used} / 共 ${data.quota} 条。`;
-                if (data.remaining === 0) text += '额度已用完，可购买直链包后继续生成。';
-            }
-            quotaEl.textContent = text;
-            generateBtn.disabled = !(data.enabled && data.premium && (data.remaining === null || data.remaining > 0));
-        };
-
-        const renderList = links => {
-            listEl.innerHTML = '';
-            if (!links.length) {
-                const empty = document.createElement('p');
-                empty.className = 'share-empty';
-                empty.textContent = '这个文件还没有直链。';
-                listEl.appendChild(empty);
-                return;
-            }
-            links.forEach(link => {
-                const item = document.createElement('div');
-                item.className = `share-item${link.active ? '' : ' inactive'}`;
-                item.innerHTML = '<div class="share-item-main"><b></b><small></small></div><button type="button" class="text-action" data-share-item-copy>复制</button><button type="button" class="text-action" data-share-item-revoke>撤销</button>';
-                item.querySelector('b').textContent = link.permanent ? '长期有效' : `到期 ${link.expires_at}`;
-                const bits = [`下载 ${link.download_count} 次`];
-                if (link.last_accessed_at) bits.push(`最后访问 ${link.last_accessed_at}`);
-                if (link.revoked) bits.push('已撤销');
-                else if (link.expired) bits.push('已过期');
-                item.querySelector('small').textContent = bits.join(' · ');
-
-                item.querySelector('[data-share-item-copy]').addEventListener('click', async () => {
-                    if (await copyToClipboard(link.url)) notify('已复制到剪贴板');
-                    else notify('浏览器未授权剪贴板，请手动复制该链接', 'error');
-                });
-
-                const revokeBtn = item.querySelector('[data-share-item-revoke]');
-                // 已撤销 / 已过期的链接不再提供撤销
-                if (!link.active) {
-                    revokeBtn.remove();
-                } else {
-                    revokeBtn.addEventListener('click', async () => {
-                        revokeBtn.disabled = true;
-                        try {
-                            const data = await shareRequest({ action: 'revoke', id: String(link.id) });
-                            notify(data.message);
-                            renderQuota(data);
-                            renderList((await shareRequest({ action: 'list', file_id: fileId })).links || []);
-                        } catch (error) {
-                            revokeBtn.disabled = false;
-                            notify(error.message || '撤销失败', 'error');
-                        }
-                    });
-                }
-                listEl.appendChild(item);
-            });
-        };
-
-        const refresh = async () => {
-            const data = await shareRequest({ action: 'list', file_id: fileId });
-            renderQuota(data);
-            renderList(data.links || []);
-            return data;
-        };
-
-        generateBtn.addEventListener('click', async () => {
-            generateBtn.disabled = true;
-            try {
-                const data = await shareRequest({ action: 'create', file_id: fileId, days: daysEl.value });
-                urlEl.value = (data.link && data.link.url) || '';
-                resultEl.hidden = false;
-                // 生成后额度已变化：重新拉一次列表，按钮可用状态交给 renderQuota 决定
-                const fresh = await shareRequest({ action: 'list', file_id: fileId });
-                renderQuota(fresh);
-                renderList(fresh.links || []);
-                if (await copyToClipboard(urlEl.value)) notify(`${data.message}，已复制到剪贴板`);
-                else notify(`${data.message}，请手动复制下方链接`);
-            } catch (error) {
-                generateBtn.disabled = false;
-                notify(error.message || '生成失败', 'error');
-            }
-        });
-
-        dialog.querySelector('[data-share-copy]').addEventListener('click', async () => {
-            if (await copyToClipboard(urlEl.value)) {
-                notify('已复制到剪贴板');
-            } else {
-                urlEl.select();
-                notify('浏览器未授权剪贴板，已选中链接，请按 Ctrl+C 复制', 'error');
-            }
-        });
-        dialog.querySelector('[data-share-close]').addEventListener('click', () => dialog.close());
-        dialog.addEventListener('close', () => dialog.remove());
-
-        document.body.appendChild(dialog);
-        dialog.showModal();
-        // 有效期默认值以服务端配置为准（后台可改），只在本弹窗首次加载时套用，不覆盖用户的选择
-        refresh()
-            .then(data => { daysEl.value = String(data.default_days ?? 7); })
-            .catch(error => notify(error.message || '读取直链失败', 'error'));
-    };
-
     document.addEventListener('click', async event => {
         const button = event.target.closest('[data-action]');
         if (!button) return;
@@ -580,11 +379,6 @@
 
         if (action === 'preview') {
             openPreview(row, button);
-            return;
-        }
-
-        if (action === 'share') {
-            openShareDialog(row);
             return;
         }
 
@@ -797,7 +591,7 @@
     // 「删除」时，点保存会被误套上删除按钮的确认，甚至以删除动作提交。
     document.addEventListener('submit', async event => {
         const form = event.target;
-        // 防重复提交：服务端处理偏慢时用户连点会重复提交（例如连开多张工单），锁住后只放行第一次。
+        // 防重复提交：服务端处理偏慢时用户连点会重复提交，锁住后只放行第一次。
         // 只拦截后续提交、不禁用按钮，避免带 name/value 的提交按钮因 disabled 而丢失取值。
         if (form.dataset.submitLocked === '1') {
             event.preventDefault();
@@ -913,201 +707,6 @@
         window.setTimeout(pollWriteRows, 1200);
     }
 
-    // ── 工单附件：复用同一套分块协议，附件归属工单（scope=ticket），
-    // 不出现在「我的文件」、不计入个人容量，工单关闭时由服务端从 Notion 删除 ──
-    const ticketPanel = document.getElementById('ticketAttachments');
-    const ticketDrop = document.getElementById('ticketDropZone');
-    const ticketInput = document.getElementById('ticketFileInput');
-    const ticketBrowse = document.getElementById('ticketBrowseButton');
-    const ticketQueue = document.getElementById('ticketQueue');
-    if (ticketPanel && ticketDrop && ticketInput && ticketBrowse && ticketQueue) {
-        const ticketId = ticketPanel.dataset.ticket || '0';
-        let ticketBusy = false;
-        let ticketUploaded = 0;
-        const ticketPending = [];
-
-        const ticketValidate = file => {
-            if (new TextEncoder().encode(file.name).length > 900) return '文件名超过 900 字节';
-            if (!allowed.has(extensionOf(file))) return UNSUPPORTED_HINT;
-            if (!file.size) return '不能上传空文件';
-            return '';
-        };
-
-        const ticketAddRetry = entry => {
-            const { item } = entry;
-            if (item.querySelector('[data-retry]')) return;
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'queue-retry';
-            button.dataset.retry = '';
-            button.textContent = '重试';
-            button.addEventListener('click', () => {
-                button.remove();
-                item.classList.remove('failed');
-                const status = item.querySelector('.queue-status');
-                if (status) {
-                    status.textContent = '等待重试';
-                    status.title = '';
-                }
-                const bar = item.querySelector('.progress-track');
-                if (bar) bar.value = 0;
-                ticketPending.push(entry);
-                ticketRunQueue();
-            });
-            item.append(button);
-        };
-
-        // 分块上传：start → 逐块 chunk → finish；附件不参与重名处理，服务端始终保留原名
-        const ticketUpload = async entry => {
-            const { file, item } = entry;
-            const status = item.querySelector('.queue-status');
-            const bar = item.querySelector('.progress-track');
-            const fail = (detail, retry = true) => {
-                status.textContent = detail;
-                status.title = detail;
-                item.classList.add('failed');
-                if (retry) ticketAddRetry(entry);
-                return false;
-            };
-            const setProgress = percent => {
-                const value = Math.min(98, Math.max(0, percent));
-                bar.value = Math.max(bar.value, value);
-                status.textContent = `上传中 ${Math.round(value)}%`;
-            };
-
-            let started;
-            try {
-                started = await controlRequest({ action: 'start', scope: 'ticket', ticket_id: ticketId, filename: file.name, size: file.size });
-            } catch (_) {
-                return fail('网络连接失败，未能与服务器通信');
-            }
-            if (!started.ok || !started.data.ok) return fail(failureText(started.status, started.data));
-
-            const token = started.data.upload_token;
-            const chunkSize = Number(started.data.chunk_size) || file.size || 1;
-            let total = Number(started.data.total) || 1;
-            setProgress(0);
-
-            let index = 0;
-            while (index < total) {
-                const begin = index * chunkSize;
-                const blob = file.slice(begin, Math.min(begin + chunkSize, file.size));
-                let result;
-                for (let attempt = 1; ; attempt += 1) {
-                    result = await sendChunk(token, index, blob, loaded => setProgress((begin + loaded) / file.size * 98));
-                    const retryable = result.status === 0 || result.status >= 500;
-                    if (!retryable || attempt >= 3) break;
-                    status.textContent = `分块上传失败，正在重试（${attempt}/2）`;
-                    await new Promise(resolve => window.setTimeout(resolve, 500 * attempt));
-                }
-                if (result.status === 409 && result.data.code === 'chunk_out_of_order') {
-                    index = Number(result.data.received) || 0;
-                    total = Number(result.data.total) || total;
-                    continue;
-                }
-                if (!result.ok || !result.data.ok) return fail(failureText(result.status, result.data));
-                index += 1;
-            }
-
-            bar.value = 99;
-            status.textContent = '正在写入 Notion';
-            let finished;
-            try {
-                finished = await controlRequest({ action: 'finish', upload_token: token });
-            } catch (_) {
-                return fail('网络连接中断，文件已送达服务器但未确认结果，请刷新页面查看是否已上传成功');
-            }
-            if (!finished.ok || !finished.data.ok) return fail(failureText(finished.status, finished.data));
-
-            bar.value = 100;
-            status.textContent = '上传完成';
-            item.classList.add('complete');
-            ticketUploaded += 1;
-            return true;
-        };
-
-        async function ticketRunQueue() {
-            if (ticketBusy) return;
-            ticketBusy = true;
-            while (ticketPending.length) await ticketUpload(ticketPending.shift());
-            ticketBusy = false;
-
-            // 仍有可重试的失败条目：保留错误文案与「重试」按钮，不刷新页面
-            const failedNow = ticketQueue.querySelectorAll('[data-retry]').length;
-            if (failedNow > 0) {
-                notify(`附件上传结束：失败 ${failedNow} 个，可点击失败条目的「重试」重新上传`, 'error');
-                return;
-            }
-            if (ticketUploaded > 0) {
-                notify(`已上传 ${ticketUploaded} 个工单附件，正在刷新页面…`);
-                window.location.reload();
-            }
-        }
-
-        const ticketAddFiles = files => {
-            [...files].forEach(file => {
-                const error = ticketValidate(file);
-                const item = document.createElement('article');
-                item.className = `queue-item${error ? ' failed' : ''}`;
-                item.innerHTML = '<span class="file-kind"></span><div class="queue-meta"><b></b><small></small><progress class="progress-track" max="100" value="0"></progress></div><span class="queue-status"></span>';
-                item.querySelector('.file-kind').textContent = (file.name.split('.').pop() || 'FILE').toUpperCase();
-                item.querySelector('.queue-meta b').textContent = file.name;
-                item.querySelector('.queue-meta small').textContent = formatBytes(file.size);
-                item.querySelector('.queue-status').textContent = error || '等待上传';
-                ticketQueue.appendChild(item);
-                if (!error) ticketPending.push({ file, item });
-            });
-            ticketRunQueue();
-        };
-
-        ticketBrowse.addEventListener('click', event => { event.stopPropagation(); ticketInput.click(); });
-        ticketDrop.addEventListener('click', event => { if (!event.target.closest('button')) ticketInput.click(); });
-        ticketDrop.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); ticketInput.click(); } });
-        ticketInput.addEventListener('change', () => { ticketAddFiles(ticketInput.files); ticketInput.value = ''; });
-        ['dragenter', 'dragover'].forEach(type => ticketDrop.addEventListener(type, event => { event.preventDefault(); ticketDrop.classList.add('dragging'); }));
-        ['dragleave', 'drop'].forEach(type => ticketDrop.addEventListener(type, event => { event.preventDefault(); ticketDrop.classList.remove('dragging'); }));
-        ticketDrop.addEventListener('drop', event => ticketAddFiles(event.dataTransfer.files));
-    }
-
-    // 工单批量操作：全选与已选计数（批量表单在表格外，勾选框用 form 属性关联过来）
-    const ticketBulkForm = document.getElementById('ticketBulkForm');
-    if (ticketBulkForm) {
-        const bulkItems = [...document.querySelectorAll('[data-check-item]')];
-        const bulkMasters = [...document.querySelectorAll('[data-check-all]')];
-        const bulkCounter = ticketBulkForm.querySelector('[data-check-count]');
-        const syncBulk = () => {
-            const checked = bulkItems.filter(item => item.checked).length;
-            if (bulkCounter) bulkCounter.textContent = String(checked);
-            bulkMasters.forEach(master => {
-                master.checked = checked > 0 && checked === bulkItems.length;
-                master.indeterminate = checked > 0 && checked < bulkItems.length;
-            });
-        };
-        bulkMasters.forEach(master => master.addEventListener('change', () => {
-            bulkItems.forEach(item => { item.checked = master.checked; });
-            syncBulk();
-        }));
-        bulkItems.forEach(item => item.addEventListener('change', syncBulk));
-        syncBulk();
-    }
-
-    // 内容审核提示的「全选」：纯 UI 辅助，批量删除由表单提交 POST（action=dismiss_all_notices）完成，
-    // 取消勾选不会阻止提交（一键删除以服务端为准，作用于面板上全部提示）。
-    const noticeCheckAll = document.querySelector('[data-check-all="notice-check"]');
-    if (noticeCheckAll) {
-        const noticeItems = [...document.querySelectorAll('input[name="notice-check"]')];
-        noticeCheckAll.addEventListener('change', () => {
-            noticeItems.forEach(item => { item.checked = noticeCheckAll.checked; });
-        });
-        const syncNoticeCheckAll = () => {
-            const checked = noticeItems.filter(item => item.checked).length;
-            noticeCheckAll.checked = checked > 0 && checked === noticeItems.length;
-            noticeCheckAll.indeterminate = checked > 0 && checked < noticeItems.length;
-        };
-        noticeItems.forEach(item => item.addEventListener('change', syncNoticeCheckAll));
-        syncNoticeCheckAll();
-    }
-
     const dropZone = document.getElementById('dropZone');
     const input = document.getElementById('fileInput');
     const browse = document.getElementById('browseButton');
@@ -1186,8 +785,6 @@
     let uploaded = 0;
     let overwritten = 0;
     let renamed = 0;
-    // 内容风控：被暂停使用的文件数（不可重试，文件已被隔离等待管理员复核）
-    let held = 0;
     // 文件已提交、等待后台写入 Notion 的条目（每条一个进度条）与最终写入失败数
     let writeFailed = 0;
     // 通过「在线上传」直传、提交时即已写入 Notion 的文件数（不计入待写入轮询）
@@ -1572,7 +1169,7 @@
         }
         // 服务器暂存额度已满：询问是否改为「在线上传」（文件直传 Notion、不经服务器暂存）
         if (!started.ok && started.data.code === 'server_disk_exceeded') {
-            const goOnline = await askConfirm(`${started.data.message || '服务器暂存空间已满，无可用额度。'}\n\n是否改为「在线上传 Notion」？上传不经服务器暂存，但无法进行自动内容审核。`);
+            const goOnline = await askConfirm(`${started.data.message || '服务器暂存空间已满，无可用额度。'}\n\n是否改为「在线上传 Notion」？上传不经服务器暂存。`);
             // 拒绝或额度随后释放：保留重试按钮，用户可稍后再试（额度可能已恢复）
             if (!goOnline) return fail(failureText(started.status, started.data));
             status.textContent = '正在准备在线上传';
@@ -1583,11 +1180,6 @@
             }
         }
         if (!started.ok || !started.data.ok) {
-            // 关键词拦截：属于确定性拒绝，重试也不会通过，改为提示申诉号
-            if (started.data.code === 'moderation_rejected') {
-                held += 1;
-                return fail(failureText(started.status, started.data), false);
-            }
             // 在线上传不可用：确定性拒绝，重试也不会通过
             if (['direct_not_allowed', 'direct_unavailable'].includes(started.data.code)) {
                 return fail(failureText(started.status, started.data), false);
@@ -1654,8 +1246,7 @@
             return true;
         }
 
-        // 文件已入库：进度条交给「写入存储」阶段继续走（0% → 100%），由 waitForWrites() 轮询刷新；
-        // 内容审核也在这个阶段之后由服务端完成，结论稍后可在文件列表 / 账户面板查看
+        // 文件已入库：进度条交给「写入存储」阶段继续走（0% → 100%），由 waitForWrites() 轮询刷新
         const uploadId = Number(finished.data.upload_id) || 0;
         bar.value = 0;
         status.textContent = '已提交，正在写入存储 0%';
@@ -1686,12 +1277,6 @@
                         entry.bar.value = 100;
                         entry.status.textContent = '已写入存储';
                         entry.item.classList.add('complete');
-                    } else if (info.status === 'quarantined') {
-                        // 写入完成但内容审核命中：与改造前的语义一致，文件被暂停使用
-                        entry.bar.value = 100;
-                        entry.status.textContent = '已写入存储，但内容审核命中，已暂停使用（可在首页查看申诉号）';
-                        entry.item.classList.add('failed');
-                        held += 1;
                     } else if (info.status === 'write_failed') {
                         writeFailed += 1;
                         entry.status.textContent = '写入存储失败，文件仍可下载；请在列表中点击「重试写入」';
@@ -1745,7 +1330,6 @@
             if (onlineDone) extras.push(`${onlineDone} 个文件通过「在线上传」直接写入 Notion`);
             if (overwritten) extras.push(`覆盖 ${overwritten} 个同名文件`);
             if (renamed) extras.push(`自动编号 ${renamed} 个同名文件`);
-            if (held) extras.push(`${held} 个文件未通过内容审核，已暂停使用（首页可查看申诉号）`);
             if (writeFailed) extras.push(`${writeFailed} 个文件写入存储失败，可在列表中点击「重试写入」`);
             const suffix = extras.length ? `（${extras.join('，')}）` : '';
             // 全部为在线上传时已同步写完，不再说「正在写入存储」，避免与事实不符
@@ -1832,34 +1416,25 @@
     // 虚线框自己已处理拖放，交回给它，避免同一次拖放上传两遍
     const hasOwnDrop = target => target instanceof Element && Boolean(target.closest('#dropZone'));
 
-    if (banToastHtml === '') {
-        document.addEventListener('dragenter', event => {
-            if (!isFileDrag(event)) return;
-            if (hasOwnDrop(event.target)) { hideDropOverlay(); return; }
-            event.preventDefault();
-            if (dropOverlay) dropOverlay.hidden = false;
-        });
-        document.addEventListener('dragover', event => {
-            if (!isFileDrag(event) || hasOwnDrop(event.target)) return;
-            event.preventDefault();
-            if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
-        });
-        // 移出窗口才算离开：在子元素之间移动同样会触发 dragleave，用 relatedTarget 区分
-        document.addEventListener('dragleave', event => { if (!event.relatedTarget) hideDropOverlay(); });
-        document.addEventListener('drop', async event => {
-            hideDropOverlay();
-            if (!isFileDrag(event) || hasOwnDrop(event.target)) return;
-            event.preventDefault();
-            await handleDropped(event);
-        });
-    } else {
-        // 封禁用户：全页拖拽同样拦下（虚线框那侧已由封禁的捕获监听处理）
-        document.addEventListener('drop', event => {
-            if (!isFileDrag(event)) return;
-            event.preventDefault();
-            notifyHtml(banToastHtml, 'error');
-        }, true);
-    }
+    document.addEventListener('dragenter', event => {
+        if (!isFileDrag(event)) return;
+        if (hasOwnDrop(event.target)) { hideDropOverlay(); return; }
+        event.preventDefault();
+        if (dropOverlay) dropOverlay.hidden = false;
+    });
+    document.addEventListener('dragover', event => {
+        if (!isFileDrag(event) || hasOwnDrop(event.target)) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    });
+    // 移出窗口才算离开：在子元素之间移动同样会触发 dragleave，用 relatedTarget 区分
+    document.addEventListener('dragleave', event => { if (!event.relatedTarget) hideDropOverlay(); });
+    document.addEventListener('drop', async event => {
+        hideDropOverlay();
+        if (!isFileDrag(event) || hasOwnDrop(event.target)) return;
+        event.preventDefault();
+        await handleDropped(event);
+    });
 
     // —— Ctrl+V 粘贴上传：截图、从资源管理器复制的文件都能直接贴进来 ——
     document.addEventListener('paste', event => {
@@ -1874,10 +1449,6 @@
         // 剪贴板里是文字/表格时保持默认粘贴行为，不拦
         if (!files.length) return;
         event.preventDefault();
-        if (banToastHtml !== '') {
-            notifyHtml(banToastHtml, 'error');
-            return;
-        }
         addFiles(files);
     });
 })();

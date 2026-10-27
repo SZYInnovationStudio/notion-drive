@@ -193,7 +193,6 @@ final class SpacePatrol
     private static function reconcileReplicas(array &$stats): void
     {
         $pdo = Database::connection();
-        // 仅取 drive 域文件；工单附件不做副本补齐（随工单关闭清理）。
         // 用子查询先找出「恰好 1 份有效副本」的文件，避免 GROUP BY 与 SELECT u.* 在严格模式下冲突。
         $rows = $pdo->query(
             "SELECT u.*
@@ -205,7 +204,7 @@ final class SpacePatrol
                      GROUP BY upload_id
                     HAVING replica_count = 1
                ) single ON single.upload_id = u.id
-              WHERE u.status = 'active' AND u.data_lost = 0 AND u.scope = 'drive'
+              WHERE u.status = 'active' AND u.data_lost = 0
               ORDER BY u.updated_at DESC
               LIMIT " . self::RECONCILE_LIMIT
         )->fetchAll();
@@ -380,8 +379,7 @@ final class SpacePatrol
             return null;
         }
 
-        // 带上权限组的管理员标记：uploadTargets() 内部要按 isAdmin() 判断官方池可用性，
-        // 直接 SELECT * FROM users 缺少 group_is_admin，会把管理员误判为受限用户
+        // 统一经由 findUserById() 取用户：uploadTargets() 内部要按 isAdmin() 判断官方池可用性
         return \findUserById($userId);
     }
 }

@@ -7,12 +7,9 @@ require dirname(__DIR__) . '/src/bootstrap.php';
 use NotionDrive\Auth;
 use NotionDrive\Database;
 use NotionDrive\Logger;
-use NotionDrive\Moderation\ModerationService;
-use NotionDrive\Moderation\Verdict;
 use NotionDrive\NotionApiException;
 use NotionDrive\NotionClient;
 use NotionDrive\Security;
-use NotionDrive\Tickets\TicketService;
 use NotionDrive\Uploads\NotionWriteQueue;
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -20,9 +17,6 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 $user = Auth::requireLogin(true);
-
-// 被管理员豁免的用户跳过关键词与 AI 识别
-$moderationExempt = userModerationExempt($user);
 
 /** 参考号：便于在「运行日志」中定位上传失败记录。 */
 $reference = strtoupper(bin2hex(random_bytes(4)));
@@ -36,14 +30,6 @@ $context = [
 $fail = static function (string $code, string $message, array $extra = [], int $status = 422) use (&$context): never {
     Logger::warning('upload', $message, $extra + $context + ['code' => $code]);
     jsonResponse(['ok' => false, 'code' => $code, 'message' => $message, 'reference' => $context['reference']], $status);
-};
-
-// 封禁期间禁止上传个人文件；工单附件是申诉通道（封禁提示本身引导用户走工单申诉），不受封禁影响
-$ban = userActiveBan($user);
-$assertNotBanned = static function (string $scope) use ($ban, $fail): void {
-    if ($scope === 'drive' && $ban !== null) {
-        $fail('account_banned', '账号已被封禁，暂时无法上传文件。如有疑问请通过工单提交申诉。', ['ban_id' => (int) $ban['id']], 403);
-    }
 };
 
 /** 分块暂存目录：只存放拼接中的分块，与最终数据完全隔离。 */
@@ -185,7 +171,7 @@ $resolveDuplicate = static function (string $filename, string $duplicateAction, 
  * 因此不计入服务器暂存/磁盘校验；但它同样占用个人配额，故默认（配额校验）必须计入，
  * 否则并发直传可绕过个人容量上限。
  */
-$pendingUploadBytes = static function (?string $excludeToken, bool $includeTicket = false, bool $skipDirect = false) use ($chunkDir, $user): int {
+$pendingUploadBytes = static function (?string $excludeToken, bool $skipDirect = false) use ($chunkDir, $user): int {
     $total = 0;
     foreach (glob($chunkDir . '/*.json') ?: [] as $metaFile) {
         if ($excludeToken !== null && basename($metaFile, '.json') === $excludeToken) {
@@ -197,10 +183,6 @@ $pendingUploadBytes = static function (?string $excludeToken, bool $includeTicke
         }
         $meta = json_decode($raw, true);
         if (!is_array($meta) || (int) ($meta['user_id'] ?? 0) !== (int) $user['id']) {
-            continue;
-        }
-        // 工单附件不计入个人配额，故配额校验不参与预留；但服务器暂存校验必须在内（附件同样占磁盘）
-        if (!$includeTicket && (string) ($meta['scope'] ?? 'drive') === 'ticket') {
             continue;
         }
         if ($skipDirect && !empty($meta['direct'])) {
@@ -243,7 +225,7 @@ $assertStagingBudget = static function (int $size, ?string $excludeToken) use ($
         return;
     }
 
-    $staged = NotionWriteQueue::stagedBytes((int) $user['id']) + $pendingUploadBytes($excludeToken, true, true);
+    $staged = NotionWriteQueue::stagedBytes((int) $user['id']) + $pendingUploadBytes($excludeToken, true);
     if ($staged + $size > $limit) {
         $fail('staging_limit_exceeded', sprintf(
             '服务器待写入暂存已用 %s / 共 %s，本次还需 %s。请等正在写入存储的文件完成后重试，或先删除部分文件。',
@@ -255,8 +237,7 @@ $assertStagingBudget = static function (int $size, ?string $excludeToken) use ($
 };
 
 /**
- * 全服防爆盘额度是否已不足以容纳本次上传。仅当额度真的不够时才对用户开放「在线上传」，
- * 否则用户可以主动选择直传来跳过自动内容审核，属审核旁路。
+ * 全服防爆盘额度是否已不足以容纳本次上传。仅当额度真的不够时才对用户开放「在线上传」。
  */
 $serverDiskExceeded = static function (int $size) use ($pendingChunkBytesAll): bool {
     $limit = NotionWriteQueue::serverLimitBytes();
@@ -293,15 +274,12 @@ $assertServerDiskBudget = static function (int $size, ?string $excludeToken) use
 $assertCapacity = static function (string $filename, int $size, int $freedBytes, ?string $excludeToken = null, bool $direct = false) use ($fail, $user, $pendingUploadBytes, $assertStagingBudget, $assertServerDiskBudget): void {
     $limit = userSingleFileLimit($user);
     if ($size > $limit) {
-        $plan = (string) Database::config('notion_plan', 'free');
         $fail('file_too_large', sprintf(
-            '文件 %s 实际大小 %s，超过%s单文件上限 %s（当前套餐：%s）。',
+            '文件 %s 实际大小 %s，超过单文件上限 %s。',
             $filename,
             formatBytes($size),
-            $plan === 'paid' ? '付费版' : '免费版',
-            formatBytes($limit),
-            $plan
-        ), ['size' => $size, 'single_limit' => $limit, 'plan' => $plan], 413);
+            formatBytes($limit)
+        ), ['size' => $size, 'single_limit' => $limit], 413);
     }
 
     $quotaBytes = userQuotaBytes($user);
@@ -326,46 +304,8 @@ $assertCapacity = static function (string $filename, int $size, int $freedBytes,
     $assertServerDiskBudget($size, $excludeToken);
 };
 
-/** 单张工单可保有的附件数量上限。 */
-$ticketAttachmentLimit = 20;
-
-/**
- * 工单附件容量校验：附件不计入个人配额，但仍限制单文件上限与单张工单的附件数量，
- * 否则可借工单无限上传超大文件或囤积大量文件，绕过个人容量与单文件限制。
- */
-$assertTicketAttachmentCapacity = static function (int $ticketId, string $filename, int $size, ?string $excludeToken = null, bool $direct = false) use ($fail, $user, $ticketAttachmentLimit, $assertStagingBudget, $assertServerDiskBudget): void {
-    $limit = userSingleFileLimit($user);
-    if ($size > $limit) {
-        $fail('file_too_large', sprintf(
-            '附件 %s 实际大小 %s，超过单文件上限 %s。',
-            $filename,
-            formatBytes($size),
-            formatBytes($limit)
-        ), ['size' => $size, 'single_limit' => $limit], 413);
-    }
-
-    $statement = Database::connection()->prepare(
-        'SELECT COUNT(*) FROM uploads WHERE scope = \'ticket\' AND ticket_id = :ticket_id AND status IN (' . UPLOAD_CAPACITY_STATUSES . ')'
-    );
-    $statement->execute(['ticket_id' => $ticketId]);
-    if ((int) $statement->fetchColumn() >= $ticketAttachmentLimit) {
-        $fail('ticket_attachment_limit', sprintf('单张工单最多上传 %d 个附件，已达上限。', $ticketAttachmentLimit));
-    }
-
-    if ($direct) {
-        return;
-    }
-
-    $assertStagingBudget($size, $excludeToken);
-    $assertServerDiskBudget($size, $excludeToken);
-};
-
 /** 上传可行性前置检查：在 start 阶段就拦下不可能成功的上传，避免传完整个大文件才失败。 */
 $assertUploadAllowed = static function () use ($fail, $user): void {
-    $blocked = uploadBlockedReason($user);
-    if ($blocked !== '') {
-        $fail('upload_blocked', $blocked);
-    }
     if (uploadTargets($user) === []) {
         $fail('notion_not_configured', notionTargetsMissingReason($user));
     }
@@ -409,7 +349,7 @@ $finishDirectUpload = static function (
     string $mime,
     string $storageName,
     int $folderId
-) use ($user, $fail, $context, $moderationExempt, $resolveDuplicate, &$cleanupChunkTokens): never {
+) use ($user, $fail, $context, $resolveDuplicate, &$cleanupChunkTokens): never {
     $queue = NotionWriteQueue::create();
     $pdo = Database::connection();
     $uploadId = 0;
@@ -435,13 +375,11 @@ $finishDirectUpload = static function (
             }
 
             $pdo->prepare(
-                'INSERT INTO uploads (user_id, scope, folder_id, ticket_id, filename, display_name, storage_name, file_size, mime_type, notion_file_upload_id, notion_block_id, status, overwrite_upload_id)
-                 VALUES (:user_id, :scope, :folder_id, :ticket_id, :filename, :display_name, :storage_name, :file_size, :mime_type, :notion_file_upload_id, :notion_block_id, :status, :overwrite_upload_id)'
+                'INSERT INTO uploads (user_id, folder_id, filename, display_name, storage_name, file_size, mime_type, notion_file_upload_id, notion_block_id, status, overwrite_upload_id)
+                 VALUES (:user_id, :folder_id, :filename, :display_name, :storage_name, :file_size, :mime_type, :notion_file_upload_id, :notion_block_id, :status, :overwrite_upload_id)'
             )->execute([
                 'user_id' => $user['id'],
-                'scope' => 'drive',
                 'folder_id' => $folderId > 0 ? $folderId : null,
-                'ticket_id' => null,
                 'filename' => $filename,
                 'display_name' => $filename,
                 'storage_name' => $storageName,
@@ -562,32 +500,6 @@ $finishDirectUpload = static function (
         }
     }
 
-    // 直传无本地文件可审：风控开启且用户未豁免时登记为待人工复核并提醒管理员（关键词拦截已在 start 执行）
-    if (!$moderationExempt) {
-        try {
-            $moderationService = ModerationService::create();
-            if ($moderationService->enabled()) {
-                $appealNo = $moderationService->record(
-                    (int) $user['id'],
-                    $uploadId,
-                    $filename,
-                    ModerationService::STAGE_FINISH,
-                    Verdict::pending('在线上传无本地文件，转人工复核。')
-                );
-                Logger::warning('upload', '在线上传无法自动审核，已登记待人工复核', ['upload_id' => $uploadId, 'appeal_no' => $appealNo] + $context);
-                raiseAdminAlert('warning', sprintf(
-                    '在线上传内容待人工复核：用户 %s 上传《%s》（记录号 %s）',
-                    (string) $user['username'],
-                    $filename,
-                    $appealNo
-                ), ['upload_id' => $uploadId, 'user_id' => (int) $user['id'], 'filename' => $filename]);
-            }
-        } catch (Throwable $exception) {
-            // 登记失败不阻断已完成的写入（与队列审核一致）
-            Logger::error('upload', '在线上传降级审核登记失败，已按正常流程放行', ['error' => $exception->getMessage()] + $context);
-        }
-    }
-
     $cleanupChunkTokens[$token] = true;
     $message = match ($resolved['handled']) {
         'overwrite' => sprintf('已通过「在线上传」上传「%s」并覆盖了同名旧文件。', $filename),
@@ -675,21 +587,6 @@ try {
 
     $action = is_string($_POST['action'] ?? null) ? $_POST['action'] : '';
 
-    // 工单附件复用同一套分块协议：scope=ticket 的文件归属该工单，不进「我的文件」、
-    // 不计入个人配额、不走内容风控，工单关闭时从 Notion 删除；
-    // start 阶段校验归属与状态，chunk 通过分块元数据透传，finish 阶段再复核一次
-    $resolveTicketScope = static function (int $ticketId) use ($fail, $user): void {
-        $statement = Database::connection()->prepare('SELECT id, user_id, status FROM tickets WHERE id = :id LIMIT 1');
-        $statement->execute(['id' => $ticketId]);
-        $ticket = $statement->fetch();
-        if (!is_array($ticket) || ((int) $ticket['user_id'] !== (int) $user['id'] && !isAdmin($user))) {
-            $fail('ticket_not_found', '工单不存在或无权访问。', [], 404);
-        }
-        if (TicketService::isEnded((string) $ticket['status'])) {
-            $fail('ticket_closed', '工单已结束，无法继续上传附件。', [], 409);
-        }
-    };
-
     // 0) write_status：批量查询「正在写入存储」的进度与状态，供前端在提交后继续刷新进度条。
     //    只查当前用户自己的记录，仅返回展示所需的 status / write_progress
     if ($action === 'write_status') {
@@ -723,15 +620,8 @@ try {
 
     // 1) start：校验文件信息并建立分块会话，返回后续分块所需的大小与总数
     if ($action === 'start') {
-        $scope = (($_POST['scope'] ?? '') === 'ticket') ? 'ticket' : 'drive';
-        $assertNotBanned($scope);
         // 前端在服务器额度不足时才会请求 direct=1；是否真正允许直传在拿到文件大小后另行判定
-        $directRequested = $scope === 'drive' && (string) ($_POST['direct'] ?? '') === '1';
-        $ticketId = 0;
-        if ($scope === 'ticket') {
-            $ticketId = is_numeric($_POST['ticket_id'] ?? null) ? (int) $_POST['ticket_id'] : 0;
-            $resolveTicketScope($ticketId);
-        }
+        $directRequested = (string) ($_POST['direct'] ?? '') === '1';
 
         $filename = basename(trim(is_string($_POST['filename'] ?? null) ? $_POST['filename'] : ''));
         $size = is_numeric($_POST['size'] ?? null) ? (int) $_POST['size'] : 0;
@@ -740,79 +630,30 @@ try {
         $extension = $validateFilename($filename, $size);
         $context['file']['extension'] = $extension;
 
-        // 仅当全服额度确实不足以容纳本次上传时才启用直传，避免用户主动选择直传来跳过自动内容审核
+        // 仅当全服额度确实不足以容纳本次上传时才启用直传
         $direct = $directRequested && $serverDiskExceeded($size);
         if ($directRequested && !$direct) {
             $context['direct_downgraded'] = true;
         }
 
-        // 上传前关键词拦截：命中即拒绝（不建立分块会话），并分配唯一申诉号供用户申诉；工单附件不走风控
-        try {
-            $moderationService = ModerationService::create();
-            $blocked = ($scope === 'drive' && !$moderationExempt && $moderationService->enabled()) ? $moderationService->guardFilename($filename) : null;
-            if ($blocked !== null && !$moderationService->hasResubmitPass((int) $user['id'], $filename)) {
-                $appealNo = $moderationService->record(
-                    (int) $user['id'],
-                    null,
-                    $filename,
-                    ModerationService::STAGE_START,
-                    $blocked
-                );
-                Logger::warning('upload', '关键词审核拦截，已拒绝上传', ['appeal_no' => $appealNo, 'matched' => $blocked->matched] + $context);
-                raiseAdminAlert('warning', sprintf(
-                    '内容风控拦截：用户 %s 上传《%s》被拒绝（申诉号 %s）',
-                    (string) $user['username'],
-                    $filename,
-                    $appealNo
-                ), [
-                    'appeal_no' => $appealNo,
-                    'user_id' => (int) $user['id'],
-                    'filename' => $filename,
-                    'matched' => $blocked->matched,
-                ]);
-                jsonResponse([
-                    'ok' => false,
-                    'code' => 'moderation_rejected',
-                    'message' => sprintf(
-                        '该文件命中违禁关键词，已拒绝上传。申诉号：%s，如认为误判，可凭此号联系管理员申诉。',
-                        $appealNo
-                    ),
-                    'appeal_no' => $appealNo,
-                    'reference' => $context['reference'],
-                ], 422);
-            }
-        } catch (Throwable $exception) {
-            // 风控不可用时不阻断正常上传，但记录错误便于管理员排查
-            Logger::error('upload', '关键词审核执行失败，已按正常流程放行', ['error' => $exception->getMessage()] + $context);
+        // 上传目标文件夹：0 或无此字段表示根目录；越权或已被删除的文件夹一律按根目录处理
+        $folderId = max(0, (int) ($_POST['folder_id'] ?? 0));
+        if ($folderId > 0 && folderRow((int) $user['id'], $folderId) === null) {
+            $folderId = 0;
         }
 
-        // 上传目标文件夹：0 或无此字段表示根目录；越权或已被删除的文件夹一律按根目录处理；工单附件固定在根目录
-        $folderId = 0;
-        if ($scope === 'drive') {
-            $folderId = max(0, (int) ($_POST['folder_id'] ?? 0));
-            if ($folderId > 0 && folderRow((int) $user['id'], $folderId) === null) {
-                $folderId = 0;
-            }
-        }
-
-        // 工单附件不做重名处理，也不计入个人配额，但仍校验单文件上限与单张工单的附件数量
         $duplicateAction = is_string($_POST['duplicate_action'] ?? null) ? $_POST['duplicate_action'] : '';
-        if ($scope === 'ticket') {
-            $resolved = ['filename' => $filename, 'handled' => '', 'freed_bytes' => 0, 'renamed_to' => '', 'duplicate' => null];
-            $assertTicketAttachmentCapacity($ticketId, $filename, $size);
-        } else {
-            $resolved = $resolveDuplicate($filename, $duplicateAction);
-            $filename = $resolved['filename'];
-            if ($resolved['handled'] !== '') {
-                $context['duplicate'] = $resolved['handled'];
-            }
-            if ($resolved['renamed_to'] !== '') {
-                $context['renamed_to'] = $resolved['renamed_to'];
-            }
-            $context['file']['name'] = $filename;
-
-            $assertCapacity($filename, $size, $resolved['freed_bytes'], null, $direct);
+        $resolved = $resolveDuplicate($filename, $duplicateAction);
+        $filename = $resolved['filename'];
+        if ($resolved['handled'] !== '') {
+            $context['duplicate'] = $resolved['handled'];
         }
+        if ($resolved['renamed_to'] !== '') {
+            $context['renamed_to'] = $resolved['renamed_to'];
+        }
+        $context['file']['name'] = $filename;
+
+        $assertCapacity($filename, $size, $resolved['freed_bytes'], null, $direct);
 
         // 大文件分块上传前先确认真的能写，避免传完才发现目标账户不可用
         $assertUploadAllowed();
@@ -825,21 +666,6 @@ try {
         $token = bin2hex(random_bytes(16));
 
         if ($direct) {
-            // 重传锚定需要整份文件哈希，直传无本地文件无法校验，故命中锚定的文件名一律拒绝直传（改用常规上传）
-            $anchorBlocked = false;
-            if (!$moderationExempt) {
-                try {
-                    $anchorService = ModerationService::create();
-                    $anchorBlocked = $anchorService->enabled()
-                        && $anchorService->resubmitAnchorHash((int) $user['id'], $filename) !== null;
-                } catch (Throwable $exception) {
-                    Logger::error('upload', '直传重传锚定预检失败，已按正常流程放行', ['error' => $exception->getMessage()] + $context);
-                }
-            }
-            if ($anchorBlocked) {
-                $fail('direct_not_allowed', '该文件处于重传内容校验中，无法使用「在线上传」，请按常规方式重新上传原文件。');
-            }
-
             // 分片大小：Notion 要求每片 5~20 MB（末片可小），单分片模式仅适用于 ≤20 MB 且不超过 PHP 单块上限的文件
             $phpChunk = uploadChunkSizeBytes();
             if ($size <= 20 * 1024 * 1024 && $size <= $phpChunk) {
@@ -886,8 +712,6 @@ try {
                 'received' => 0,
                 'duplicate_action' => $duplicateAction,
                 'folder_id' => $folderId,
-                'scope' => 'drive',
-                'ticket_id' => 0,
                 'created_at' => time(),
                 'direct' => true,
                 'multi' => $multi,
@@ -924,8 +748,6 @@ try {
             'received' => 0,
             'duplicate_action' => $duplicateAction,
             'folder_id' => $folderId,
-            'scope' => $scope,
-            'ticket_id' => $ticketId,
             'created_at' => time(),
         ]);
 
@@ -1089,14 +911,6 @@ try {
         $token = $assertChunkToken(is_string($_POST['upload_token'] ?? null) ? $_POST['upload_token'] : '');
         $meta = $requireChunkMeta($token);
 
-        $scope = ((string) ($meta['scope'] ?? 'drive') === 'ticket') ? 'ticket' : 'drive';
-        $assertNotBanned($scope);
-        $ticketId = 0;
-        if ($scope === 'ticket') {
-            $ticketId = (int) ($meta['ticket_id'] ?? 0);
-            $resolveTicketScope($ticketId);
-        }
-
         $total = (int) $meta['total'];
         $received = (int) $meta['received'];
         if ($received !== $total) {
@@ -1127,32 +941,24 @@ try {
         // 重新校验：分块期间文件名与配额可能已被并发上传改变
         $extension = $validateFilename($filename, $size);
         // 重名裁决必须先知道目标文件夹（查重按文件夹隔离），故把文件夹解析提到 $resolveDuplicate 之前
-        $folderId = 0;
-        if ($scope === 'drive') {
-            // 分块期间目标文件夹可能已被删除，落库前再确认一次，失效则落到根目录而不是让整条 INSERT 失败；工单附件固定在根目录
-            $folderId = max(0, (int) ($meta['folder_id'] ?? 0));
-            if ($folderId > 0 && folderRow((int) $user['id'], $folderId) === null) {
-                $folderId = 0;
-            }
+        // 分块期间目标文件夹可能已被删除，落库前再确认一次，失效则落到根目录而不是让整条 INSERT 失败
+        $folderId = max(0, (int) ($meta['folder_id'] ?? 0));
+        if ($folderId > 0 && folderRow((int) $user['id'], $folderId) === null) {
+            $folderId = 0;
         }
-        if ($scope === 'ticket') {
-            // 工单附件不做重名处理，也不计入个人配额，但仍复核单文件上限与单张工单的附件数量
-            $resolved = ['filename' => $filename, 'handled' => '', 'freed_bytes' => 0, 'renamed_to' => '', 'duplicate' => null];
-            $assertTicketAttachmentCapacity($ticketId, $filename, $size, $token, $isDirect);
-        } else {
-            $resolved = $resolveDuplicate($filename, (string) ($meta['duplicate_action'] ?? ''), $folderId);
-            $filename = $resolved['filename'];
-            if ($resolved['handled'] !== '') {
-                $context['duplicate'] = $resolved['handled'];
-            }
-            if ($resolved['renamed_to'] !== '') {
-                $context['renamed_to'] = $resolved['renamed_to'];
-            }
-            $context['file']['name'] = $filename;
 
-            // 本次会话的元数据仍在，须排除自身，否则会把本文件重复计入在途占用（直传会话同样按此排除后单独计入 $size）
-            $assertCapacity($filename, $size, $resolved['freed_bytes'], $token, $isDirect);
+        $resolved = $resolveDuplicate($filename, (string) ($meta['duplicate_action'] ?? ''), $folderId);
+        $filename = $resolved['filename'];
+        if ($resolved['handled'] !== '') {
+            $context['duplicate'] = $resolved['handled'];
         }
+        if ($resolved['renamed_to'] !== '') {
+            $context['renamed_to'] = $resolved['renamed_to'];
+        }
+        $context['file']['name'] = $filename;
+
+        // 本次会话的元数据仍在，须排除自身，否则会把本文件重复计入在途占用（直传会话同样按此排除后单独计入 $size）
+        $assertCapacity($filename, $size, $resolved['freed_bytes'], $token, $isDirect);
 
         if (uploadTargets($user) === []) {
             $assertUploadAllowed();
@@ -1176,35 +982,8 @@ try {
         $mime = $computeMime($partPath, $extension);
         $context['file']['mime'] = $mime;
 
-        // 管理员放行重传后的内容锚定校验：重传文件必须与申诉记录中的原文件哈希一致，
-        // 防止借「同名不同内容」绕过内容审核上传真违规内容（锚定哈希来自放行记录的 content_hash）。
-        // 与其它风控调用一致：风控关闭 / 用户豁免时不做校验，且校验本身异常时不阻断正常上传
-        $contentHash = '';
-        $matchedResubmitAnchor = false;
-        if ($scope === 'drive' && !$moderationExempt) {
-            try {
-                $moderationService = ModerationService::create();
-                if ($moderationService->enabled()) {
-                    $anchorHash = $moderationService->resubmitAnchorHash((int) $user['id'], (string) $meta['filename']);
-                    if ($anchorHash !== null) {
-                        $contentHash = is_file($partPath) ? (string) (hash_file('sha256', $partPath) ?: '') : '';
-                        if ($contentHash === '' || !hash_equals($anchorHash, $contentHash)) {
-                            $fail('resubmit_content_mismatch', '重传文件内容与申诉记录中的原文件不一致，无法重传。请上传与原文件相同的内容后重试。', [
-                                'anchor_sha256' => $anchorHash,
-                                'actual_sha256' => $contentHash,
-                            ]);
-                        }
-                        $matchedResubmitAnchor = true;
-                    }
-                }
-            } catch (Throwable $exception) {
-                // 风控不可用不阻断上传：记录错误便于排查（与 start / finish 其它风控调用一致）
-                Logger::error('upload', '重传内容锚定校验执行失败，已按正常流程放行', ['error' => $exception->getMessage()] + $context);
-            }
-        }
-
         // 异步写入存储：先把文件收进服务器暂存区，再入库为「正在写入存储」（writing），浏览器立刻拿到成功响应；
-        // 真正写 Notion 与内容审核交给后台队列（NotionWriteQueue），用户不必等它写完
+        // 真正写 Notion 交给后台队列（NotionWriteQueue），用户不必等它写完
         $storageName = uniqueStorageName((int) $user['id'], $filename, $partPath);
         $queue = NotionWriteQueue::create();
         $uploadId = 0;
@@ -1216,31 +995,27 @@ try {
                 // 锁定该用户行，串行化同一用户的并发落库：配额与重名判定若只在上传前读一次，
                 // 同一用户的两次并发上传会各自读到未含对方的状态而同时通过（TOCTOU 超卖 / 同名重复）
                 $pdo->prepare('SELECT id FROM users WHERE id = :id FOR UPDATE')->execute(['id' => (int) $user['id']]);
-                if ($scope === 'drive') {
-                    // 持锁后以原始文件名重新裁决重名，避免并发同名上传各写一条可用文件
-                    $resolved = $resolveDuplicate((string) $meta['filename'], (string) ($meta['duplicate_action'] ?? ''), $folderId);
-                    $filename = $resolved['filename'];
-                    if ($resolved['handled'] !== '') {
-                        $context['duplicate'] = $resolved['handled'];
-                    }
-                    $context['renamed_to'] = $resolved['renamed_to'];
-                    $context['file']['name'] = $filename;
+                // 持锁后以原始文件名重新裁决重名，避免并发同名上传各写一条可用文件
+                $resolved = $resolveDuplicate((string) $meta['filename'], (string) ($meta['duplicate_action'] ?? ''), $folderId);
+                $filename = $resolved['filename'];
+                if ($resolved['handled'] !== '') {
+                    $context['duplicate'] = $resolved['handled'];
+                }
+                $context['renamed_to'] = $resolved['renamed_to'];
+                $context['file']['name'] = $filename;
 
-                    $quotaBytes = userQuotaBytes($user);
-                    $usedBytes = userUsedBytes((int) $user['id']);
-                    if ($quotaBytes !== null && $usedBytes - $resolved['freed_bytes'] + $size > $quotaBytes) {
-                        throw new RuntimeException('个人空间不足：并发上传占用了剩余空间，本次上传已取消，请稍后重试。');
-                    }
+                $quotaBytes = userQuotaBytes($user);
+                $usedBytes = userUsedBytes((int) $user['id']);
+                if ($quotaBytes !== null && $usedBytes - $resolved['freed_bytes'] + $size > $quotaBytes) {
+                    throw new RuntimeException('个人空间不足：并发上传占用了剩余空间，本次上传已取消，请稍后重试。');
                 }
 
                 $pdo->prepare(
-                    'INSERT INTO uploads (user_id, scope, folder_id, ticket_id, filename, display_name, storage_name, file_size, mime_type, notion_file_upload_id, notion_block_id, status, overwrite_upload_id)
-                     VALUES (:user_id, :scope, :folder_id, :ticket_id, :filename, :display_name, :storage_name, :file_size, :mime_type, :notion_file_upload_id, :notion_block_id, :status, :overwrite_upload_id)'
+                    'INSERT INTO uploads (user_id, folder_id, filename, display_name, storage_name, file_size, mime_type, notion_file_upload_id, notion_block_id, status, overwrite_upload_id)
+                     VALUES (:user_id, :folder_id, :filename, :display_name, :storage_name, :file_size, :mime_type, :notion_file_upload_id, :notion_block_id, :status, :overwrite_upload_id)'
                 )->execute([
                     'user_id' => $user['id'],
-                    'scope' => $scope,
                     'folder_id' => $folderId > 0 ? $folderId : null,
-                    'ticket_id' => $scope === 'ticket' ? $ticketId : null,
                     'filename' => $filename,
                     'display_name' => $filename,
                     'storage_name' => $storageName,
@@ -1282,16 +1057,6 @@ try {
                 ->execute(['id' => (int) $resolved['duplicate']['id']]);
         }
 
-        // 重传凭证一次性消费：锚定校验通过且文件已成功落库后，撤销该文件名的重传放行，
-        // 避免该文件名被永久锁定为原哈希（此后同名的新内容可正常上传并重新进入审核）
-        if ($matchedResubmitAnchor) {
-            try {
-                ModerationService::create()->consumeResubmitPass((int) $user['id'], (string) $meta['filename']);
-            } catch (Throwable $exception) {
-                Logger::warning('upload', '重传凭证消费失败，该文件名可能仍被锚定', ['error' => $exception->getMessage()] + $context);
-            }
-        }
-
         $message = match ($resolved['handled']) {
             'overwrite' => sprintf('已上传「%s」并覆盖了同名旧文件，正在写入存储。', $filename),
             'rename' => sprintf('同名文件已存在，已自动编号为「%s」并上传，正在写入存储。', $filename),
@@ -1305,7 +1070,7 @@ try {
         ]);
 
         // 浏览器先拿到成功响应，随后在同一进程内立即开始写入 Notion（PHP-FPM 下此刻已与浏览器断开）；
-        // 内容审核与暂存文件清理都在队列里完成，非 FPM 环境退化为「写完才结束请求」
+        // 暂存文件清理在队列里完成，非 FPM 环境退化为「写完才结束请求」
         jsonResponseThen([
             'ok' => true,
             'message' => $message,

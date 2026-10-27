@@ -82,7 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $notionSource = 'own';
         }
 
-        // 自有账户注册即绑定（Token 必须能读到父页面，否则不建号）；官方账户待购买高级套餐后由系统分配
+        // 自有账户注册即绑定（Token 必须能读到父页面，否则不建号）；官方账户由系统从账户池分配
         if ($notionSource === 'own') {
             $binding = assertNotionBinding($notionToken, $notionParentPage);
             $notionTokenEncrypted = Security::encrypt((string) $binding['token'], (string) appConfig()['app_key']);
@@ -94,22 +94,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $notionParentPageId = null;
         }
 
-        $group = findGroup(defaultGroupId());
-        if ($group === null) {
-            throw new RuntimeException('系统尚未创建默认权限组，请联系管理员。');
-        }
-
         // 验证时间的取值只有 NOW() 与 NULL 两种固定字面量，用数据库时间以保证时区一致
         $verifiedAt = $emailRequired ? 'NOW()' : 'NULL';
         $pdo->prepare(
-            'INSERT INTO users (username, password_hash, group_id, email, email_verified_at,
+            'INSERT INTO users (username, password_hash, is_admin, email, email_verified_at,
                                 notion_token_encrypted, notion_parent_page_id, notion_account_source)
-             VALUES (:username, :password_hash, :group_id, :email, ' . $verifiedAt . ',
+             VALUES (:username, :password_hash, 0, :email, ' . $verifiedAt . ',
                      :notion_token_encrypted, :notion_parent_page_id, :notion_account_source)'
         )->execute([
             'username' => $username,
             'password_hash' => password_hash($password, PASSWORD_DEFAULT),
-            'group_id' => (int) $group['id'],
             'email' => $email === '' ? null : $email,
             'notion_token_encrypted' => $notionTokenEncrypted,
             'notion_parent_page_id' => $notionParentPageId,
@@ -138,7 +132,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <?= siteTitleTag('注册') ?>
     <?= siteFaviconTag() ?>
-    <link rel="stylesheet" href="assets/app.css?v=67">
+    <link rel="stylesheet" href="assets/app.css?v=68">
 </head>
 <body class="login-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <main class="login-layout">
@@ -166,7 +160,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <label><span>Notion 父页面</span><input name="notion_parent_page" value="<?= e($notionParentPage) ?>" maxlength="500" placeholder="https://www.notion.so/..."><small>把该页面共享给上面的集成（页面右上角 ··· → 连接），你的文件将保存在它下面。</small></label>
                 </div>
                 <div class="source-official">
-                    <p class="code-hint">选择官方账户无需填写 Token；注册后购买高级用户套餐，系统会自动为你分配官方账户（不限总容量，单个文件最大 5 GB）。</p>
+                    <p class="code-hint">选择官方账户无需填写 Token；注册后系统会自动为你分配官方账户（单个文件最大 5 GB）。</p>
                 </div>
                 <?php if ($emailRequired): ?>
                 <label><span>邮箱</span><input type="email" name="email" value="<?= e($email) ?>" autocomplete="email" maxlength="191" required placeholder="you@example.com"><small>管理员已开启强制绑定邮箱，注册后需验证邮箱才能上传文件。</small></label>
@@ -182,7 +176,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </section>
     </main>
     <?= siteCreditHtml() ?>
-    <script src="assets/app.js?v=40" defer></script>
+    <script src="assets/app.js?v=41" defer></script>
     <?php if ($emailRequired): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>
 </html>

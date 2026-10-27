@@ -2,28 +2,24 @@
 
 declare(strict_types=1);
 
-use NotionDrive\Bans\BanService;
 use NotionDrive\Database;
-use NotionDrive\Epay;
 use NotionDrive\Logger;
 use NotionDrive\Mail\MailTemplate;
 use NotionDrive\Mailer;
 use NotionDrive\NotionApiException;
 use NotionDrive\NotionClient;
 use NotionDrive\NotionSpaceRepair;
-use NotionDrive\Schema;
 use NotionDrive\Security;
-use NotionDrive\Share\ShareService;
 use NotionDrive\Uploads\NotionWriteQueue;
 
 /**
- * 「我的文件」与工单附件中可见的上传状态：正在写入存储（writing）与写入失败（write_failed）
+ * 「我的文件」中可见的上传状态：正在写入存储（writing）与写入失败（write_failed）
  * 的文件同样要显示出来，并可预览、下载、重命名、移动、删除。
  */
 const UPLOAD_VISIBLE_STATUSES = "'active', 'writing', 'write_failed'";
 
-/** 计入个人容量与服务器暂存占用的上传状态：隔离文件仍占用空间，故一并计入。 */
-const UPLOAD_CAPACITY_STATUSES = "'active', 'quarantined', 'writing', 'write_failed'";
+/** 计入个人容量与服务器暂存占用的上传状态。 */
+const UPLOAD_CAPACITY_STATUSES = "'active', 'writing', 'write_failed'";
 
 function e(?string $value): string
 {
@@ -138,13 +134,9 @@ function navIcon(string $name): string
 {
     $shapes = [
         'files'   => '<path d="M3 7a2 2 0 0 1 2-2h3.6l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
-        'tickets' => '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.6 6.6 8.4 5.9 8.4-5.9"/>',
         'admin'   => '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
-        'orders'  => '<rect x="2.5" y="5" width="19" height="14" rx="2.2"/><path d="M2.5 10h19M6 15h4"/>',
-        'bans'    => '<circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/>',
         'logs'    => '<path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/>',
         'account' => '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
-        'premium' => '<path d="m12 2.6 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3.1-5.8 3.1 1.1-6.5-4.7-4.6 6.5-.9z"/>',
     ];
 
     if (!isset($shapes[$name])) {
@@ -325,7 +317,7 @@ function policeLink(string $police): string
     return '<a href="https://beian.mps.gov.cn/#/query/webSearch" target="_blank" rel="noopener noreferrer">' . e($police) . '</a>';
 }
 
-/** 侧边栏「用量信息」区块：我的文件 / 账户管理 / 会员套餐三页共用，非管理员额外展示套餐状态与续费/升级入口。 */
+/** 侧边栏「用量信息」区块：我的文件 / 账户管理两页共用，非管理员额外展示账号类型。 */
 function sidebarStorageHtml(array $user): string
 {
     $quotaBytes = userQuotaBytes($user);
@@ -349,20 +341,20 @@ function sidebarStorageHtml(array $user): string
             : '<small>不限暂存额度</small>');
 
     if (!isAdmin($user)) {
-        $html .= '<div><span>会员套餐</span><strong>' . e(premiumShortStatus($user)) . '</strong></div>'
-            . '<small><a href="pricing.php">' . (isPremiumUser($user) ? '续费 / 延长' : '升级高级用户') . '</a></small>';
+        $html .= '<div><span>账号类型</span><strong>普通用户</strong></div>';
     }
 
     return $html . '</div>';
 }
 
-/** 全站页脚：ICP 备案号 + 公网安备号（有侧边栏的页面桌面端改由侧边栏展示）+ SZY创新工作室技术支持署名（固定不可配置）。 */
+/** 全站页脚：社区版声明 + ICP 备案号 + 公网安备号（有侧边栏的页面桌面端改由侧边栏展示）+ SZY创新工作室技术支持署名（固定不可配置）。 */
 function siteCreditHtml(): string
 {
     $icp = icpLicense();
     $police = policeLicense();
 
     return '<footer class="site-credit">'
+        . '<span class="site-credit-notice">社区版免费禁止商业</span>'
         . ($icp === '' ? '' : '<span class="icp-license">' . icpLink($icp) . '</span>')
         . ($police === '' ? '' : '<span class="police-license">' . policeLink($police) . '</span>')
         . '<span class="site-credit-owner">由 SZY创新工作室 提供技术支持：<a href="https://www.szystudio.cn" target="_blank" rel="noopener noreferrer">www.szystudio.cn</a></span>'
@@ -618,14 +610,10 @@ function ownFileLimitBytes(): int
     return 5 * 1024 * 1024;
 }
 
-/** 官方账户的单文件上限：仅当官方账户为付费方案时放宽，可在后台调整。 */
+/** 官方账户的单文件上限：可在后台调整，默认 5 GB。 */
 function officialFileLimitBytes(): int
 {
     $fallback = 5 * 1024 * 1024 * 1024;
-    if (Database::config('notion_plan', 'free') !== 'paid') {
-        return 5 * 1024 * 1024;
-    }
-
     $configured = (int) Database::config('official_single_file_limit_bytes', (string) $fallback);
 
     return $configured > 0 ? $configured : $fallback;
@@ -672,44 +660,11 @@ function uploadChunkSizeBytes(): int
 
 function userUsedBytes(int $userId): int
 {
-    // 隔离（quarantined）文件仍占服务器与 Notion 空间，因此同样计入已用容量；
-    // 工单附件（scope = ticket）不计入个人容量配额
     $statement = Database::connection()->prepare(
-        "SELECT COALESCE(SUM(file_size), 0) FROM uploads WHERE user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_CAPACITY_STATUSES . ')'
+        'SELECT COALESCE(SUM(file_size), 0) FROM uploads WHERE user_id = :user_id AND status IN (' . UPLOAD_CAPACITY_STATUSES . ')'
     );
     $statement->execute(['user_id' => $userId]);
     return (int) $statement->fetchColumn();
-}
-
-function findGroup(int $groupId): ?array
-{
-    $statement = Database::connection()->prepare('SELECT * FROM `groups` WHERE id = :id LIMIT 1');
-    $statement->execute(['id' => $groupId]);
-    $group = $statement->fetch();
-
-    return is_array($group) ? $group : null;
-}
-
-function allGroups(): array
-{
-    return Database::connection()
-        ->query('SELECT * FROM `groups` ORDER BY level DESC, id ASC')
-        ->fetchAll();
-}
-
-function defaultGroupId(): int
-{
-    $statement = Database::connection()->prepare('SELECT id FROM `groups` WHERE name = :name LIMIT 1');
-    $statement->execute(['name' => Schema::DEFAULT_GROUP_NAME]);
-    $groupId = (int) $statement->fetchColumn();
-    if ($groupId > 0) {
-        return $groupId;
-    }
-
-    // 内置普通用户组被改名或删除时回退到等级最低的组，避免新用户拿不到权限组
-    return (int) Database::connection()
-        ->query('SELECT id FROM `groups` ORDER BY level ASC, id ASC LIMIT 1')
-        ->fetchColumn();
 }
 
 /** 删除头像文件（仅允许删除 storage/avatars 目录内的文件，避免被路径穿越利用）。 */
@@ -738,35 +693,20 @@ function avatarHtml(array $user, string $class = 'avatar'): string
 
 function isAdmin(array $user): bool
 {
-    return (int) ($user['group_is_admin'] ?? 0) === 1;
+    return (int) ($user['is_admin'] ?? 0) === 1;
 }
 
+/** 个人容量上限（null 表示不限），仅由 users.quota_bytes 决定。 */
 function userQuotaBytes(array $user): ?int
 {
-    $override = $user['quota_bytes'] ?? null;
-    if ($override !== null) {
-        return (int) $override;
-    }
+    $quota = $user['quota_bytes'] ?? null;
 
-    // 权限组不存在（LEFT JOIN 未命中）属于账号数据异常：按 0 容量处理，宁可拒绝上传也不放行超额写入
-    if (($user['group_name'] ?? null) === null) {
-        return 0;
-    }
-
-    $groupQuota = $user['group_quota_bytes'] ?? null;
-
-    return $groupQuota === null ? null : (int) $groupQuota;
+    return $quota === null ? null : (int) $quota;
 }
 
 function userSingleFileLimit(array $user): int
 {
-    $sourceLimit = userNotionSource($user) === 'own' ? ownFileLimitBytes() : officialFileLimitBytes();
-    $groupLimit = $user['group_single_file_limit_bytes'] ?? null;
-    if ($groupLimit === null) {
-        return $sourceLimit;
-    }
-
-    return min($sourceLimit, (int) $groupLimit);
+    return userNotionSource($user) === 'own' ? ownFileLimitBytes() : officialFileLimitBytes();
 }
 
 function userUploadLimit(array $user): int
@@ -779,94 +719,6 @@ function userUploadLimit(array $user): int
 
     $remaining = max(0, $quota - userUsedBytes((int) $user['id']));
     return min($singleFileLimit, $remaining);
-}
-
-/** 被管理员豁免的用户上传时跳过关键词与 AI 识别。 */
-function userModerationExempt(?array $user): bool
-{
-    return (int) ($user['moderation_exempt'] ?? 0) === 1;
-}
-
-/**
- * 用户当前生效中的封禁记录；未被封禁返回 null。
- * 封禁期间禁止上传、下载、修改与重命名，只保留工单申诉入口。
- *
- * @return array<string, mixed>|null
- */
-function userActiveBan(?array $user): ?array
-{
-    if (!is_array($user) || (int) ($user['id'] ?? 0) <= 0) {
-        return null;
-    }
-
-    $service = BanService::create();
-    // 懒结算自动解封：读状态前先解除到期封禁，避免只在账户页访问才刷新导致封禁「看起来还在」
-    $service->expireDue((int) $user['id']);
-
-    return $service->activeBan((int) $user['id']);
-}
-
-/**
- * 账户封禁提示条：在所有页面顶端统一输出，替代以往只在上传/下载时报错的做法。
- * 展示样式由后台「封禁管理」的 ban_notice_mode 决定：
- *   plain  = 仅一句「您的账户已被封禁」；
- *   link   = 文案 + 工单申诉入口；
- *   detail = 文案 + 封禁原因与时间 + 工单申诉入口。
- * 未被封禁时返回空字符串，页面直接输出即可。
- */
-function banNoticeHtml(?array $user): string
-{
-    $ban = userActiveBan($user);
-    if ($ban === null) {
-        return '';
-    }
-
-    $mode = (string) Database::config('ban_notice_mode', 'link');
-    $html = '<div class="alert error" id="banNotice" role="alert">' . e(banNoticeMessage($ban, $mode));
-
-    if ($mode === 'plain') {
-        return $html . '</div>';
-    }
-
-    return $html . '如有疑问请 <a href="tickets.php?appeal=1">提交申诉</a>。</div>';
-}
-
-/**
- * 封禁提示文案的正文（不含申诉入口）：由 ban_notice_mode 决定是否展开封禁原因与时间。
- * 页面提示条、前端弹提示、接口错误响应都从这里取词，保证后台改了样式后三处同步变化。
- */
-function banNoticeMessage(array $ban, string $mode): string
-{
-    $message = '您的账户已被封禁';
-    if ($mode !== 'detail') {
-        return $message . '。';
-    }
-
-    // 封禁原因由管理员手填，可能自带句尾标点（如「管理员手动封禁。」）；
-    // 直接拼「，封禁时间」会出现「。，」这类重复标点，故先剥掉尾部的标点再拼接
-    $reason = trim((string) ($ban['reason'] ?? ''));
-    $reason = trim((string) preg_replace('/[。．.，,、；;：:！!？?]+$/u', '', $reason));
-    $bannedAt = (string) ($ban['banned_at'] ?? '');
-
-    return $message . '（原因：' . ($reason !== '' ? $reason : '未说明')
-        . '，封禁时间：' . ($bannedAt !== '' ? date('Y-m-d H:i', (int) strtotime($bannedAt)) : '未知') . '）。';
-}
-
-/**
- * 封禁提示的纯文本版本：供接口错误响应使用（下载链接被直接访问时只能返回文本，不能回 HTML）。
- * 未封禁时返回空字符串。
- */
-function banNoticeText(?array $user): string
-{
-    $ban = userActiveBan($user);
-    if ($ban === null) {
-        return '';
-    }
-
-    $mode = (string) Database::config('ban_notice_mode', 'link');
-    $message = banNoticeMessage($ban, $mode);
-
-    return $mode === 'plain' ? $message : $message . '如有疑问请通过工单提交申诉。';
 }
 
 function registrationEnabled(): bool
@@ -1006,7 +858,7 @@ function findActiveUploadByName(int $userId, string $name, int $folderId = 0): ?
     // 重名按文件夹隔离：同名文件可在不同文件夹共存；folder_id <=> NULL 是 NULL 安全等值，能命中根目录（未归类）的文件
     $statement = Database::connection()->prepare(
         "SELECT id, filename, display_name, file_size, notion_block_id FROM uploads
-         WHERE user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ")
+         WHERE user_id = :user_id AND status IN (" . UPLOAD_VISIBLE_STATUSES . ")
            AND COALESCE(NULLIF(display_name, ''), filename) = :name
            AND folder_id <=> :folder_id
          ORDER BY id DESC LIMIT 1"
@@ -1360,10 +1212,10 @@ function hasOwnNotionAccount(array $user): bool
     return userNotionToken($user) !== '' && (string) ($user['notion_parent_page_id'] ?? '') !== '';
 }
 
-/** 是否允许使用官方账户来源（仅对有效期内的高级用户与管理员开放，且账户池必须至少有一个已启用账户）。 */
+/** 是否允许使用官方账户来源：所有用户均可使用，前提是账户池至少有一个已启用账户。 */
 function canUseOfficialSource(array $user): bool
 {
-    return (isAdmin($user) || isPremiumUser($user)) && activeOfficialAccounts() !== [];
+    return activeOfficialAccounts() !== [];
 }
 
 /** 用户当前的 Notion 账户来源是否可用（来源可用 ≠ 有剩余容量，仅判断上传目标能否确定）。 */
@@ -1372,31 +1224,11 @@ function notionSourceUsable(array $user): bool
     return uploadTargets($user) !== [];
 }
 
-/** 当前账号是否被禁止上传新文件（降级为普通用户后官方账户来源被硬性禁用）；返回空串表示允许，否则返回提示文案。 */
-function uploadBlockedReason(array $user): string
-{
-    // 管理员始终可用官方账户：与 canUseOfficialSource() 的口径保持一致，
-    // 否则「管理员 + 官方账户 + 未购套餐」会被当成降级用户拦下，且报错文案会误指向「未绑定自有账户」
-    if (userNotionSource($user) !== 'official' || isPremiumUser($user) || isAdmin($user)) {
-        return '';
-    }
-
-    // 区分「到期降级」与「从未开通」：没开通过的用户不该被提示「套餐已到期」
-    return premiumExpiresAt($user) !== null
-        ? '高级用户套餐已到期，官方账户上传已暂停；续费后即可恢复，也可以切换到自有账户继续上传。'
-        : '官方账户仅对高级用户开放，当前无法用它上传新文件；开通高级套餐后即可使用，也可以切换到自有账户继续上传。';
-}
-
-/** 没有可用上传目标时的准确提示：按账户来源区分「未绑定自有账户」「套餐受限」「官方池无可用账户」，避免一律误报「未绑定」。 */
+/** 没有可用上传目标时的准确提示：按账户来源区分「未绑定自有账户」「官方池无可用账户」，避免一律误报「未绑定」。 */
 function notionTargetsMissingReason(array $user): string
 {
     if (userNotionSource($user) !== 'official') {
         return '当前账号尚未完成 Notion 账户绑定，请先到「账户管理」中绑定后再上传。';
-    }
-
-    $blocked = uploadBlockedReason($user);
-    if ($blocked !== '') {
-        return $blocked;
     }
 
     return activeOfficialAccounts() === []
@@ -1440,7 +1272,7 @@ function switchNotionSource(int $userId, array $user, string $source): void
             throw new RuntimeException('切换到自有账户前，请先填写并验证 Notion 集成 Token 与父页面。');
         }
     } elseif (!canUseOfficialSource($user)) {
-        throw new RuntimeException('官方账户仅对有效期内的付费用户开放，请先购买高级用户套餐。');
+        throw new RuntimeException('官方账户池当前没有可用账户，请联系管理员。');
     }
 
     Database::connection()
@@ -1476,7 +1308,7 @@ function assignOfficialAccounts(int $userId, array $accountIds): void
 {
     $pdo = Database::connection();
 
-    // 结算订单时本函数会处于外层事务中，此时不能再开事务（PDO 不支持嵌套事务）
+    // 可能处于外层事务中，此时不能再开事务（PDO 不支持嵌套事务）
     $ownsTransaction = !$pdo->inTransaction();
     if ($ownsTransaction) {
         $pdo->beginTransaction();
@@ -1533,14 +1365,6 @@ function assignOfficialAccounts(int $userId, array $accountIds): void
     }
 }
 
-function premiumGroupId(): int
-{
-    $statement = Database::connection()->prepare('SELECT id FROM `groups` WHERE name = :name LIMIT 1');
-    $statement->execute(['name' => Schema::PREMIUM_GROUP_NAME]);
-
-    return (int) $statement->fetchColumn();
-}
-
 /** 写入后台告警（顶部告警条与告警列表可查看）：相同内容的未读告警只保留一条，写入失败不影响主流程。 */
 function raiseAdminAlert(string $level, string $message, array $context = []): void
 {
@@ -1573,7 +1397,7 @@ function raiseAdminAlert(string $level, string $message, array $context = []): v
     }
 
     // 只在新告警时发邮件，避免重复提醒；同一请求内相同内容也只发一次。
-    // 发信走 SMTP 可达数秒，推迟到响应发出后再发，避免用户提交工单/删除文件等操作时干等
+    // 发信走 SMTP 可达数秒，推迟到响应发出后再发，避免用户删除文件等操作时干等
     if ($inserted) {
         deferAfterResponse(static function () use ($level, $message, $context): void {
             sendAdminAlertMail($level, $message, $context);
@@ -1601,7 +1425,7 @@ function unreadAdminAlerts(int $limit = 20): array
         ->fetchAll();
 }
 
-/** 管理员告警邮件收件人：优先使用后台配置的收件邮箱，未配置时回退到管理员组内已验证的邮箱。 */
+/** 管理员告警邮件收件人：优先使用后台配置的收件邮箱，未配置时回退到管理员账号内已验证的邮箱。 */
 function adminAlertRecipients(): array
 {
     $configured = trim((string) Database::config('alert_email', ''));
@@ -1618,10 +1442,9 @@ function adminAlertRecipients(): array
     }
 
     $statement = Database::connection()->query(
-        "SELECT u.email FROM users u
-         JOIN `groups` g ON g.id = u.group_id
-         WHERE g.is_admin = 1 AND u.email IS NOT NULL AND u.email <> '' AND u.email_verified_at IS NOT NULL
-         GROUP BY u.email"
+        "SELECT email FROM users
+         WHERE is_admin = 1 AND email IS NOT NULL AND email <> '' AND email_verified_at IS NOT NULL
+         GROUP BY email"
     );
 
     return array_values(array_filter(array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN)), static fn (string $email): bool => $email !== ''));
@@ -1682,19 +1505,14 @@ function uploadTargets(array $user): array
             ]];
         }
 
-        // 自有账户尚未绑定：不直接失败，有官方池使用权限的账号直接回落到官方池，
-        // 避免「用官方池却被迫先绑定自有账户」；无权限的仍返回空，由上层给出准确提示
+        // 自有账户尚未绑定：不直接失败，官方池可用时回落到官方池，
+        // 避免「用官方池却被迫先绑定自有账户」；池内没有可用账户时返回空，由上层给出准确提示
         if (!canUseOfficialSource($user)) {
             return [];
         }
     }
 
-    // 官方账户仅对有效期内的高级用户（与管理员）开放；降级后立即停止向官方账户写入
-    if (uploadBlockedReason($user) !== '') {
-        return [];
-    }
-
-    // 官方账户池是全体付费用户共享的资源：管理员指定的主备账户优先，未分配或分配不足时按池内优先级
+    // 官方账户池是全体用户共享的资源：管理员指定的主备账户优先，未分配或分配不足时按池内优先级
     // 补齐。这样「池里有启用账户但该用户没有分配记录」也能正常上传，不会误报「池内没有可用账户」。
     $pool = [];
     $seen = [];
@@ -2187,7 +2005,7 @@ function folderFileCountMap(int $userId): array
 {
     $statement = Database::connection()->prepare(
         "SELECT folder_id, COUNT(*) AS total FROM uploads
-         WHERE user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ") AND folder_id IS NOT NULL
+         WHERE user_id = :user_id AND status IN (" . UPLOAD_VISIBLE_STATUSES . ") AND folder_id IS NOT NULL
          GROUP BY folder_id"
     );
     $statement->execute(['user_id' => $userId]);
@@ -2228,179 +2046,9 @@ function folderDescendantIds(int $userId, int $folderId): array
     return $ids;
 }
 
-// ---------------------------------------------------------------------------
-// 付费系统
-// ---------------------------------------------------------------------------
-
-function siteUrl(): string
-{
-    $configured = trim((string) Database::config('site_url', ''));
-    if ($configured !== '') {
-        return rtrim($configured, '/');
-    }
-
-    $host = trim((string) ($_SERVER['HTTP_HOST'] ?? ''));
-    // Host 头由客户端提供，会出现在回调地址与邮件正文里：格式不合法、端口越界时宁可不识别，
-    // 避免被伪造成任意域名。生产环境建议在后台显式填写「站点地址」，即可完全绕开该回退分支。
-    if ($host === '' || !preg_match('/^(?:\[[0-9A-Fa-f:]+\]|[A-Za-z0-9](?:[A-Za-z0-9.\-]*[A-Za-z0-9])?)(?::([0-9]{1,5}))?$/', $host, $hostMatch)) {
-        return '';
-    }
-    if (isset($hostMatch[1]) && $hostMatch[1] !== '' && ((int) $hostMatch[1] < 1 || (int) $hostMatch[1] > 65535)) {
-        return '';
-    }
-
-    $scheme = requestIsHttps() ? 'https://' : 'http://';
-
-    // 应用可能部署在子目录：基址 = 入口脚本 URL 去掉「脚本相对项目根的路径」。
-    // 不能用 dirname(SCRIPT_NAME)：入口脚本既有根目录的（dashboard.php、s.php），也有子目录的
-    // （api/share.php），直接取脚本所在目录会把 /api 之类前缀带进直链与回调地址。
-    $baseDir = '';
-    $scriptName = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? ''));
-    $scriptFile = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_FILENAME'] ?? ''));
-    $appRoot = str_replace('\\', '/', dirname(__DIR__)); // 本文件位于 src/，其上一级即项目根
-    if ($scriptName !== '' && $scriptFile !== '' && str_starts_with($scriptFile, $appRoot . '/')) {
-        $relative = substr($scriptFile, strlen($appRoot)); // 例如 /api/share.php
-        if (str_ends_with($scriptName, $relative)) {
-            $baseDir = substr($scriptName, 0, strlen($scriptName) - strlen($relative));
-        }
-    }
-    if ($baseDir === '/') {
-        $baseDir = '';
-    }
-
-    return $scheme . $host . $baseDir;
-}
-
-function absoluteUrl(string $path): string
-{
-    $base = siteUrl();
-
-    return $base === '' ? $path : $base . '/' . ltrim($path, '/');
-}
-
-/** 易支付的异步通知地址（网关不支持带参数，只能是固定路径）。 */
-function epayNotifyUrl(): string
-{
-    return absoluteUrl('pay_notify.php');
-}
-
-/** 易支付的同步回跳地址（网关不支持带参数，回跳后由该页自行跳转带上订单号）。 */
-function epayReturnUrl(): string
-{
-    return absoluteUrl('pay_return.php');
-}
-
-/** 高级用户套餐档位：月数 => 价格（元），价格可在后台调整。 */
-function premiumPlans(): array
-{
-    $defaults = [1 => '30.00', 3 => '90.00', 6 => '180.00', 12 => '360.00'];
-
-    $plans = [];
-    foreach ($defaults as $months => $fallback) {
-        $price = (float) Database::config('premium_price_' . $months, $fallback);
-        // 价格兜底为 0.01 元，避免后台误填 0 或负数导致无法下单
-        $plans[$months] = max(0.01, round($price, 2));
-    }
-
-    return $plans;
-}
-
-function premiumPlan(int $months): ?array
-{
-    $plans = premiumPlans();
-    if (!isset($plans[$months])) {
-        return null;
-    }
-
-    return ['months' => $months, 'price' => $plans[$months], 'label' => $months . ' 个月'];
-}
-
-function epayPayTypeOptions(): array
-{
-    return ['alipay' => '支付宝', 'wxpay' => '微信支付'];
-}
-
-function epayPayTypes(): array
-{
-    $all = epayPayTypeOptions();
-
-    $types = [];
-    foreach (explode(',', (string) Database::config('epay_pay_types', 'alipay,wxpay')) as $type) {
-        $type = trim($type);
-        if (isset($all[$type]) && !isset($types[$type])) {
-            $types[$type] = $all[$type];
-        }
-    }
-
-    return $types;
-}
-
-function payTypeLabel(string $type): string
-{
-    return ['alipay' => '支付宝', 'wxpay' => '微信支付', 'manual' => '管理员授权'][$type] ?? $type;
-}
-
-function orderStatusLabel(string $status): string
-{
-    return match ($status) {
-        'paid' => '已支付',
-        'closed' => '已关闭',
-        'void' => '已作废',
-        default => '待支付',
-    };
-}
-
-/** 是否为管理员人工开通的订单：trade_no 统一带 MANUAL- 前缀，与网关流水号区分。 */
-function isManualOrder(array $order): bool
-{
-    return str_starts_with((string) ($order['trade_no'] ?? ''), 'MANUAL-');
-}
-
-function orderDisplayLabel(array $order): string
-{
-    return isManualOrder($order) && (string) ($order['status'] ?? '') === 'paid'
-        ? '管理员授权'
-        : orderStatusLabel((string) ($order['status'] ?? ''));
-}
-
-function orderDisplayClass(array $order): string
-{
-    return isManualOrder($order) && (string) ($order['status'] ?? '') === 'paid'
-        ? 'granted'
-        : (string) ($order['status'] ?? '');
-}
-
-function generateOrderNo(): string
-{
-    $statement = Database::connection()->prepare('SELECT 1 FROM orders WHERE order_no = :order_no LIMIT 1');
-
-    for ($attempt = 0; $attempt < 5; $attempt++) {
-        $orderNo = 'ND' . date('YmdHis') . str_pad((string) random_int(0, 9999), 4, '0', STR_PAD_LEFT);
-        $statement->execute(['order_no' => $orderNo]);
-        if (!$statement->fetch()) {
-            return $orderNo;
-        }
-    }
-
-    throw new RuntimeException('订单号生成失败，请重试。');
-}
-
-function findOrderByNo(string $orderNo): ?array
-{
-    $statement = Database::connection()->prepare('SELECT * FROM orders WHERE order_no = :order_no LIMIT 1');
-    $statement->execute(['order_no' => $orderNo]);
-    $order = $statement->fetch();
-
-    return is_array($order) ? $order : null;
-}
-
 function findUserByUsername(string $username): ?array
 {
-    // 一并取出权限组的管理员标记，调用方才能用 isAdmin() 判断
-    $statement = Database::connection()->prepare(
-        'SELECT u.*, g.is_admin AS group_is_admin FROM users u
-         LEFT JOIN `groups` g ON g.id = u.group_id WHERE u.username = :username LIMIT 1'
-    );
+    $statement = Database::connection()->prepare('SELECT * FROM users WHERE username = :username LIMIT 1');
     $statement->execute(['username' => $username]);
     $user = $statement->fetch();
 
@@ -2409,256 +2057,11 @@ function findUserByUsername(string $username): ?array
 
 function findUserById(int $userId): ?array
 {
-    // 与 findUserByUsername 一致：带上权限组的管理员标记，调用方才能用 isAdmin() 判断
-    $statement = Database::connection()->prepare(
-        'SELECT u.*, g.is_admin AS group_is_admin FROM users u
-         LEFT JOIN `groups` g ON g.id = u.group_id WHERE u.id = :id LIMIT 1'
-    );
+    $statement = Database::connection()->prepare('SELECT * FROM users WHERE id = :id LIMIT 1');
     $statement->execute(['id' => $userId]);
     $user = $statement->fetch();
 
     return is_array($user) ? $user : null;
-}
-
-function createOrder(int $userId, int $months, float $amount, string $payType, string $productType = 'premium', ?string $productMeta = null): array
-{
-    $pdo = Database::connection();
-    $orderNo = generateOrderNo();
-
-    $pdo->beginTransaction();
-    try {
-        // 锁定用户行：双击「立即支付」会并发进入这里，此时「关闭旧单 + 插入新单」之间没有任何行锁，
-        // 两个请求都看不到彼此的待支付订单，最终会同时插入两笔 pending。串行化到同一用户即可避免
-        $lock = $pdo->prepare('SELECT id FROM users WHERE id = :id LIMIT 1 FOR UPDATE');
-        $lock->execute(['id' => $userId]);
-        if ($lock->fetchColumn() === false) {
-            throw new RuntimeException('用户不存在，无法创建订单。');
-        }
-
-        // 同一订单号在网关重复提单的行为不可靠，因此每次下单都换新订单号并关闭该用户此前的待支付订单
-        $pdo->prepare("UPDATE orders SET status = 'closed' WHERE user_id = :user_id AND status = 'pending'")
-            ->execute(['user_id' => $userId]);
-
-        $pdo->prepare(
-            "INSERT INTO orders (order_no, user_id, months, amount, pay_type, status, product_type, product_meta)
-             VALUES (:order_no, :user_id, :months, :amount, :pay_type, 'pending', :product_type, :product_meta)"
-        )->execute([
-            'order_no' => $orderNo,
-            'user_id' => $userId,
-            'months' => $months,
-            'amount' => number_format($amount, 2, '.', ''),
-            'pay_type' => $payType,
-            'product_type' => $productType,
-            'product_meta' => $productMeta,
-        ]);
-        $pdo->commit();
-    } catch (Throwable $exception) {
-        $pdo->rollBack();
-        throw $exception;
-    }
-
-    $order = findOrderByNo($orderNo);
-    if ($order === null) {
-        throw new RuntimeException('订单创建失败，请重试。');
-    }
-
-    return $order;
-}
-
-/** 订单商品的可读名称：会员按「N 个月」，直链包按「N 条」；存量订单缺字段时按会员兜底。 */
-function orderProductLabel(array $order): string
-{
-    if ((string) ($order['product_type'] ?? 'premium') === 'share_pack') {
-        $meta = json_decode((string) ($order['product_meta'] ?? ''), true);
-        $links = is_array($meta) ? (int) ($meta['links'] ?? 0) : 0;
-
-        return $links > 0 ? '直链包 ' . $links . ' 条' : '直链包';
-    }
-
-    return '会员 ' . (int) $order['months'] . ' 个月';
-}
-
-/** 高级用户套餐的到期时间；未开通时返回 null（null 也代表永久有效）。 */
-function premiumExpiresAt(array $user): ?string
-{
-    $value = $user['premium_expires_at'] ?? null;
-
-    return $value === null || $value === '' ? null : (string) $value;
-}
-
-/** 套餐是否已逾期：未设置到期时间表示永久有效。 */
-function premiumExpired(array $user): bool
-{
-    $expiresAt = premiumExpiresAt($user);
-
-    return $expiresAt !== null && strtotime($expiresAt) <= time();
-}
-
-function isPremiumUser(array $user): bool
-{
-    if (isAdmin($user)) {
-        return true;
-    }
-    if ((int) ($user['group_id'] ?? 0) !== premiumGroupId()) {
-        return false;
-    }
-
-    return !premiumExpired($user);
-}
-
-/** 距到期剩余天数（不足一天按一天计）；永久有效或未开通返回 null。 */
-function premiumDaysLeft(array $user): ?int
-{
-    $expiresAt = premiumExpiresAt($user);
-    if ($expiresAt === null) {
-        return null;
-    }
-
-    $remaining = strtotime($expiresAt) - time();
-
-    return $remaining <= 0 ? 0 : (int) ceil($remaining / 86400);
-}
-
-function premiumStatusText(array $user): string
-{
-    if (isAdmin($user)) {
-        return '管理员 · 不受套餐限制';
-    }
-    $expiresAt = premiumExpiresAt($user);
-    if (isPremiumUser($user)) {
-        return $expiresAt === null
-            ? '高级用户 · 永久有效'
-            : '高级用户 · 剩余 ' . (int) premiumDaysLeft($user) . ' 天（' . date('Y-m-d', (int) strtotime($expiresAt)) . ' 到期）';
-    }
-    if ($expiresAt !== null && premiumExpired($user)) {
-        return '套餐已到期（' . date('Y-m-d', (int) strtotime($expiresAt)) . '），续费后恢复高级权限';
-    }
-
-    return '普通用户';
-}
-
-function premiumShortStatus(array $user): string
-{
-    if (isAdmin($user)) {
-        return '不受限制';
-    }
-    $expiresAt = premiumExpiresAt($user);
-    if (isPremiumUser($user)) {
-        return $expiresAt === null ? '高级 · 永久' : '高级 · ' . (int) premiumDaysLeft($user) . ' 天';
-    }
-
-    // 到期时间在未来但权限组不是高级组（管理员手工改过组）时按普通用户展示，不能谎报「已到期」
-    return $expiresAt !== null && premiumExpired($user) ? '已到期' : '普通用户';
-}
-
-/** 站内到期提醒文案：距到期 3 天内、已到期或刚被降级时返回提示，其余为空串；只提醒曾开通过套餐的用户。 */
-function premiumNotice(array $user): string
-{
-    if (isAdmin($user)) {
-        return '';
-    }
-    $expiresAt = premiumExpiresAt($user);
-    if ($expiresAt === null) {
-        return '';
-    }
-    $date = date('Y-m-d', (int) strtotime($expiresAt));
-    if (premiumExpired($user)) {
-        // 已到期：可能已被懒检查降级为普通用户，两种情况都提示续费
-        return '你的高级套餐已于 ' . $date . ' 到期，账号已恢复普通用户权限（容量 5 GB、单文件 5 MB）；已上传文件仍可查看与下载，续费后即可恢复高级权益。';
-    }
-    if ((int) ($user['group_id'] ?? 0) !== premiumGroupId()) {
-        return '';
-    }
-    $daysLeft = premiumDaysLeft($user);
-    if ($daysLeft !== null && $daysLeft <= 3) {
-        return '你的高级套餐将在 ' . (int) $daysLeft . ' 天后到期（' . $date . '），到期后无法上传新文件，请及时续费。';
-    }
-
-    return '';
-}
-
-/** 高级套餐到期的懒检查：访问页面时把已到期的付费用户降级回普通组；只降权限组，保留到期时间与文件，降级后仍可查看下载。 */
-function downgradeExpiredPremium(array $user): array
-{
-    if (isAdmin($user) || (int) ($user['group_id'] ?? 0) !== premiumGroupId() || !premiumExpired($user)) {
-        return $user;
-    }
-
-    try {
-        $groupId = defaultGroupId();
-        if ($groupId <= 0) {
-            return $user;
-        }
-        $pdo = Database::connection();
-        $pdo->prepare('UPDATE users SET group_id = :group_id WHERE id = :id')
-            ->execute(['group_id' => $groupId, 'id' => (int) $user['id']]);
-
-        // 同步内存中的数据，避免本次请求内仍按高级组判定
-        $group = findGroup($groupId);
-        $user['group_id'] = $groupId;
-        $user['group_name'] = (string) ($group['name'] ?? Schema::DEFAULT_GROUP_NAME);
-        $user['group_quota_bytes'] = $group['quota_bytes'] ?? null;
-        $user['group_single_file_limit_bytes'] = $group['single_file_limit_bytes'] ?? null;
-        $user['group_is_admin'] = (int) ($group['is_admin'] ?? 0);
-
-        Logger::info('payment', '高级套餐已到期，账号自动降级为普通用户。', [
-            'user_id' => (int) $user['id'],
-            'expires_at' => premiumExpiresAt($user),
-        ]);
-    } catch (Throwable $exception) {
-        // 降级失败不影响正常访问，下次访问会重试
-        Logger::warning('payment', '自动降级失败。', [
-            'user_id' => (int) $user['id'],
-            'reason' => $exception->getMessage(),
-        ]);
-    }
-
-    return $user;
-}
-
-/** 到期前 3 天的邮件提醒（无定时任务，故在访问页面时懒触发）；同一到期周期只提醒一次，发送成功才写去重标记。 */
-function maybeSendPremiumReminder(array $user): void
-{
-    if (isAdmin($user) || !isPremiumUser($user) || !emailBound($user) || !smtpConfigured()) {
-        return;
-    }
-    $expiresAt = premiumExpiresAt($user);
-    if ($expiresAt === null) {
-        return;
-    }
-    $daysLeft = premiumDaysLeft($user);
-    if ($daysLeft === null || $daysLeft > 3) {
-        return;
-    }
-    if ((string) ($user['premium_reminder_sent_at'] ?? '') !== '') {
-        return;
-    }
-
-    $date = date('Y-m-d', (int) strtotime($expiresAt));
-    $body = "你好 " . (string) $user['username'] . "：\n\n"
-        . "你的 Notion Drive 高级套餐将于 " . $date . " 到期（剩余 " . (int) $daysLeft . " 天）。\n"
-        . "到期后账号会自动恢复为普通用户权限（容量 5 GB、单文件 5 MB），"
-        . "已上传的文件仍可查看与下载，但无法再上传新文件。\n\n"
-        . "如需继续使用不限总容量的高级权益，请登录后前往「会员套餐」页面续费：\n"
-        . absoluteUrl('pay.php') . "\n\n"
-        . "本邮件由系统自动发送，请勿直接回复。";
-
-    try {
-        Mailer::fromConfig()->send((string) $user['email'], 'Notion Drive 高级套餐即将到期', $body);
-        Database::connection()
-            ->prepare('UPDATE users SET premium_reminder_sent_at = NOW() WHERE id = :id')
-            ->execute(['id' => (int) $user['id']]);
-        Logger::info('payment', '已发送高级套餐到期提醒邮件。', [
-            'user_id' => (int) $user['id'],
-            'expires_at' => $expiresAt,
-        ]);
-    } catch (Throwable $exception) {
-        // 发信失败只记日志，下次访问会重试；不写标记以免漏掉提醒
-        Logger::warning('payment', '发送高级套餐到期提醒邮件失败。', [
-            'user_id' => (int) $user['id'],
-            'reason' => $exception->getMessage(),
-        ]);
-    }
 }
 
 function autoAssignOfficialAccounts(int $userId): void
@@ -2682,457 +2085,4 @@ function autoAssignOfficialAccounts(int $userId): void
     }
 
     assignOfficialAccounts($userId, $accountIds);
-}
-
-/** 在时间戳上增加月数并按目标月实际天数收敛：strtotime('+1 month') 在月末会溢出到下下月，这里改为取该月最后一天。 */
-function addMonthsClamped(int $timestamp, int $months): int
-{
-    $targetMonth = (int) date('n', $timestamp) - 1 + $months;
-    $year = (int) date('Y', $timestamp) + intdiv($targetMonth, 12);
-    $month = $targetMonth % 12 + 1;
-    $day = min((int) date('j', $timestamp), (int) date('t', mktime(0, 0, 0, $month, 1, $year)));
-
-    return (int) mktime(
-        (int) date('G', $timestamp),
-        (int) date('i', $timestamp),
-        (int) date('s', $timestamp),
-        $month,
-        $day,
-        $year
-    );
-}
-
-/** 开通或续费高级用户：原套餐未到期时从原到期时间顺延、已到期或首次开通从当前时间起算；永久会员的续费保持永久。 */
-function grantPremium(int $userId, int $months): array
-{
-    $months = max(1, $months);
-    $pdo = Database::connection();
-
-    // 结算订单时本函数会被包在外层事务里，此时不能重复开启事务（PDO 不支持嵌套事务）
-    $ownsTransaction = !$pdo->inTransaction();
-    if ($ownsTransaction) {
-        $pdo->beginTransaction();
-    }
-    try {
-        // 先锁定用户行再读取到期时间：同一用户的两笔订单并发结算时，后到者会等前一笔提交后
-        // 再基于新的到期时间顺延，否则两笔都从同一个旧到期时间起算，会丢掉一期时长
-        $statement = $pdo->prepare(
-            'SELECT premium_expires_at, notion_account_source, group_id FROM users WHERE id = :id LIMIT 1 FOR UPDATE'
-        );
-        $statement->execute(['id' => $userId]);
-        $user = $statement->fetch();
-        if (!is_array($user)) {
-            throw new RuntimeException('用户不存在，无法开通高级用户。');
-        }
-
-        // 权限组单独读取，避免 FOR UPDATE 顺带锁住 groups 行而阻塞其他用户的结算
-        $groupStatement = $pdo->prepare('SELECT is_admin FROM `groups` WHERE id = :id LIMIT 1');
-        $groupStatement->execute(['id' => (int) ($user['group_id'] ?? 0)]);
-        $isAdminGroup = (int) $groupStatement->fetchColumn() === 1;
-
-        $before = $user['premium_expires_at'] !== null ? (string) $user['premium_expires_at'] : null;
-
-        // 到期时间为 NULL 且当前已在高级组，说明是永久会员（管理员手工授予）：
-        // 一次续费不能把永久权益反而缩成限时，这里保持永久有效、不写到期时间
-        $keepPermanent = $before === null && !$isAdminGroup && (int) ($user['group_id'] ?? 0) === premiumGroupId();
-
-        if ($keepPermanent) {
-            $after = null;
-        } else {
-            $base = $before !== null && strtotime($before) > time() ? (int) strtotime($before) : time();
-            $after = date('Y-m-d H:i:s', addMonthsClamped($base, $months));
-
-            // 同时清空到期提醒标记，让新的到期周期可以重新提醒
-            $pdo->prepare('UPDATE users SET premium_expires_at = :expires_at, premium_reminder_sent_at = NULL WHERE id = :id')
-                ->execute(['expires_at' => $after, 'id' => $userId]);
-        }
-
-        // 管理员不随付费调整权限组，避免把管理员降级出管理组
-        if (!$isAdminGroup) {
-            $groupId = premiumGroupId();
-            if ($groupId > 0) {
-                $pdo->prepare('UPDATE users SET group_id = :group_id WHERE id = :id')
-                    ->execute(['group_id' => $groupId, 'id' => $userId]);
-            }
-        }
-        if ($ownsTransaction) {
-            $pdo->commit();
-        }
-    } catch (Throwable $exception) {
-        if ($ownsTransaction) {
-            $pdo->rollBack();
-        }
-        throw $exception;
-    }
-
-    // 使用官方账户的高级用户必须具备可用的官方账户，否则付费后依然无法上传
-    if (userNotionSource($user) === 'official' && userOfficialAccounts($userId) === []) {
-        autoAssignOfficialAccounts($userId);
-    }
-
-    Logger::info('payment', '开通/续费高级用户。', [
-        'user_id' => $userId,
-        'months' => $months,
-        'expires_before' => $before,
-        'expires_after' => $after,
-    ]);
-
-    return ['expires_before' => $before, 'expires_after' => $after];
-}
-
-/** 管理员人工开通/续费高级用户并生成一条「管理员授权」订单（金额 0 元、trade_no 用 MANUAL- 前缀），作为后台对账凭据。 */
-function grantManualPremiumOrder(int $userId, int $months, int $operatorId): array
-{
-    if (!isset(premiumPlans()[$months])) {
-        throw new RuntimeException('请选择有效的开通时长。');
-    }
-
-    $pdo = Database::connection();
-    $orderNo = generateOrderNo();
-
-    // 订单落库与顺延套餐必须同一个事务：任一步失败都不能留下「有订单没开通」或反之的脏数据
-    $ownsTransaction = !$pdo->inTransaction();
-    if ($ownsTransaction) {
-        $pdo->beginTransaction();
-    }
-    try {
-        // 锁定用户行，确认用户仍在（后台页面可能停留在已删除用户的旧渲染上）
-        $lock = $pdo->prepare('SELECT id FROM users WHERE id = :id LIMIT 1 FOR UPDATE');
-        $lock->execute(['id' => $userId]);
-        if ($lock->fetchColumn() === false) {
-            throw new RuntimeException('该用户不存在或已被删除。');
-        }
-
-        $pdo->prepare(
-            "INSERT INTO orders (order_no, user_id, months, amount, pay_type, status, trade_no, paid_at)
-             VALUES (:order_no, :user_id, :months, 0.00, 'manual', 'paid', :trade_no, NOW())"
-        )->execute([
-            'order_no' => $orderNo,
-            'user_id' => $userId,
-            'months' => $months,
-            'trade_no' => 'MANUAL-' . $operatorId,
-        ]);
-
-        $result = grantPremium($userId, $months);
-
-        // 回填本次开通前后的到期时间，订单列表与用户端可据此看到顺延结果
-        $pdo->prepare('UPDATE orders SET expires_before = :before, expires_after = :after WHERE order_no = :order_no')
-            ->execute([
-                'before' => $result['expires_before'],
-                'after' => $result['expires_after'],
-                'order_no' => $orderNo,
-            ]);
-
-        if ($ownsTransaction) {
-            $pdo->commit();
-        }
-    } catch (Throwable $exception) {
-        if ($ownsTransaction) {
-            $pdo->rollBack();
-        }
-        throw $exception;
-    }
-
-    return ['order_no' => $orderNo] + $result;
-}
-
-/** 管理员人工发放直链包并生成一条「管理员授权」订单（金额 0 元、trade_no 用 MANUAL- 前缀），作为后台对账凭据。 */
-function grantManualSharePackOrder(int $userId, int $links, int $operatorId): array
-{
-    // 只接受后台配置里的档位条数；不看「是否上架」，方便管理员为已下架档位做补偿发放
-    $allowed = array_column(ShareService::packs(), 'count');
-    if (!in_array($links, $allowed, true)) {
-        throw new RuntimeException('请选择有效的直链包档位。');
-    }
-
-    $pdo = Database::connection();
-    $orderNo = generateOrderNo();
-
-    // 订单落库与额度发放必须同一个事务：任一步失败都不能留下「有订单没到账」或反之的脏数据
-    $ownsTransaction = !$pdo->inTransaction();
-    if ($ownsTransaction) {
-        $pdo->beginTransaction();
-    }
-    try {
-        $lock = $pdo->prepare('SELECT id FROM users WHERE id = :id LIMIT 1 FOR UPDATE');
-        $lock->execute(['id' => $userId]);
-        if ($lock->fetchColumn() === false) {
-            throw new RuntimeException('该用户不存在或已被删除。');
-        }
-
-        $pdo->prepare(
-            "INSERT INTO orders (order_no, user_id, months, amount, pay_type, status, trade_no, paid_at, product_type, product_meta)
-             VALUES (:order_no, :user_id, 0, 0.00, 'manual', 'paid', :trade_no, NOW(), 'share_pack', :product_meta)"
-        )->execute([
-            'order_no' => $orderNo,
-            'user_id' => $userId,
-            'trade_no' => 'MANUAL-' . $operatorId,
-            'product_meta' => (string) json_encode(['links' => $links], JSON_UNESCAPED_UNICODE),
-        ]);
-
-        ShareService::grantPack($userId, $links);
-
-        if ($ownsTransaction) {
-            $pdo->commit();
-        }
-    } catch (Throwable $exception) {
-        if ($ownsTransaction) {
-            $pdo->rollBack();
-        }
-        throw $exception;
-    }
-
-    Logger::info('payment', '管理员手动发放直链包。', [
-        'user_id' => $userId,
-        'links' => $links,
-        'operator' => $operatorId,
-        'order_no' => $orderNo,
-    ]);
-
-    return ['order_no' => $orderNo];
-}
-
-/** 订单当初实际贡献的会员时长（秒）＝下单后到期时间 − max(下单前到期时间, 下单时刻)，与 grantPremium 起算点一致；缺字段时返回 null。 */
-function orderContributedSeconds(array $order): ?int
-{
-    $afterAt = strtotime((string) ($order['expires_after'] ?? ''));
-    if ($afterAt === false) {
-        return null;
-    }
-
-    $beforeAt = (int) strtotime((string) ($order['expires_before'] ?? ''));
-    $paidAt = (string) ($order['paid_at'] ?? '');
-    $orderedAt = (int) strtotime($paidAt !== '' ? $paidAt : (string) ($order['created_at'] ?? ''));
-    $base = max($beforeAt, $orderedAt);
-    if ($base <= 0) {
-        return null;
-    }
-
-    $contributed = $afterAt - $base;
-
-    return $contributed > 0 ? $contributed : null;
-}
-
-/** 作废指定的一笔订单并把该订单当初贡献的会员时长精确回滚：只动这一笔，按 expires_before/expires_after 算出的秒数从当前到期时间扣除，扣完才降回普通组；永久有效与管理员组不受影响。 */
-function revokePremium(int $userId, int $orderId): array
-{
-    $pdo = Database::connection();
-
-    $ownsTransaction = !$pdo->inTransaction();
-    if ($ownsTransaction) {
-        $pdo->beginTransaction();
-    }
-    try {
-        $statement = $pdo->prepare('SELECT group_id, premium_expires_at FROM users WHERE id = :id LIMIT 1 FOR UPDATE');
-        $statement->execute(['id' => $userId]);
-        $user = $statement->fetch();
-        if (!is_array($user)) {
-            throw new RuntimeException('该用户不存在或已被删除。');
-        }
-
-        // 先锁定这一笔待作废的订单并取出月数与下单前后的到期时间：
-        // 取不到说明已被作废或状态已变更，直接报错
-        $orderStatement = $pdo->prepare("SELECT months, expires_before, expires_after, paid_at, created_at FROM orders WHERE id = :id AND user_id = :user_id AND status = 'paid' LIMIT 1 FOR UPDATE");
-        $orderStatement->execute(['id' => $orderId, 'user_id' => $userId]);
-        $lockedOrder = $orderStatement->fetch();
-        if (!is_array($lockedOrder)) {
-            throw new RuntimeException('该订单已作废，无需重复操作。');
-        }
-        $months = (int) $lockedOrder['months'];
-
-        // 权限组单独读取，避免 FOR UPDATE 顺带锁住 groups 行而阻塞其他用户的结算
-        $groupStatement = $pdo->prepare('SELECT is_admin FROM `groups` WHERE id = :id LIMIT 1');
-        $groupStatement->execute(['id' => (int) $user['group_id']]);
-        $isAdminGroup = (int) $groupStatement->fetchColumn() === 1;
-
-        $currentExpiry = ($user['premium_expires_at'] ?? null) !== null && (string) $user['premium_expires_at'] !== ''
-            ? (string) $user['premium_expires_at']
-            : null;
-        $stillPremium = false;
-        $expiresAt = $currentExpiry;
-        if ($currentExpiry === null) {
-            // 永久有效：没有具体到期时间可扣，保持高级用户不变
-            $stillPremium = true;
-        } else {
-            $contributed = orderContributedSeconds($lockedOrder);
-            if ($contributed !== null) {
-                // 用订单自己贡献的秒数精确回滚：作废这一笔不会吃掉同一用户其它订单的时长
-                $remaining = (int) strtotime($currentExpiry) - $contributed;
-            } else {
-                // 缺少下单前后的到期时间（首次开通等）：退化为按订单月数回退
-                $remaining = strtotime('-' . $months . ' month', (int) strtotime($currentExpiry));
-            }
-            if ($remaining !== false && $remaining > time()) {
-                // 扣减后仍有剩余有效期：保持高级用户，仅缩短到期时间
-                $expiresAt = date('Y-m-d H:i:s', $remaining);
-                $stillPremium = true;
-            } else {
-                // 扣完即失效：到期时间落在当前时刻，留下「何时失效」的时间点
-                $expiresAt = date('Y-m-d H:i:s');
-            }
-            $pdo->prepare('UPDATE users SET premium_expires_at = :expires_at, premium_reminder_sent_at = NULL WHERE id = :id')
-                ->execute(['expires_at' => $expiresAt, 'id' => $userId]);
-        }
-
-        // 只有扣完会员时长才降回普通用户组；管理员组不调整，避免把管理员降级出管理组
-        if (!$stillPremium && !$isAdminGroup) {
-            $defaultGroup = defaultGroupId();
-            if ($defaultGroup > 0) {
-                $pdo->prepare('UPDATE users SET group_id = :group_id WHERE id = :id')
-                    ->execute(['group_id' => $defaultGroup, 'id' => $userId]);
-            }
-        }
-
-        // 只作废这一笔订单：同一用户的其他已支付订单保持原状，避免「作废一笔连作废全部」
-        $void = $pdo->prepare("UPDATE orders SET status = 'void', voided_at = NOW() WHERE id = :id AND user_id = :user_id AND status = 'paid'");
-        $void->execute(['id' => $orderId, 'user_id' => $userId]);
-        $voidedOrders = $void->rowCount();
-        if ($voidedOrders === 0) {
-            // 并发下订单已被作废：回滚上面的套餐调整，提示无需重复操作
-            throw new RuntimeException('该订单已作废，无需重复操作。');
-        }
-
-        if ($ownsTransaction) {
-            $pdo->commit();
-        }
-    } catch (Throwable $exception) {
-        if ($ownsTransaction) {
-            $pdo->rollBack();
-        }
-        throw $exception;
-    }
-
-    Logger::info('payment', '作废单笔订单并扣减对应会员时长。', [
-        'user_id' => $userId,
-        'order_id' => $orderId,
-        'months' => $months,
-        'voided_orders' => $voidedOrders,
-        'still_premium' => $stillPremium,
-        'expires_at' => $expiresAt,
-    ]);
-
-    return [
-        'voided_orders' => $voidedOrders,
-        'months' => $months,
-        'expires_at' => $expiresAt,
-        'still_premium' => $stillPremium,
-    ];
-}
-
-/** 结算订单并开通/续费高级用户（幂等）：异步通知与主动查单可能并发到达，用行锁保证同一订单只开通一次。 */
-function settleOrderPayment(array $order, string $tradeNo, array $notify = []): bool
-{
-    $pdo = Database::connection();
-
-    $pdo->beginTransaction();
-    try {
-        // 加锁顺序统一为「users → orders」：createOrder / revokePremium 都是先锁 users 行再动 orders 行，
-        // 结算若反过来先锁 orders 行再等 users 行，会与「下单时关闭旧待支付单」反向等待而死锁
-        $userId = (int) ($order['user_id'] ?? 0);
-        if ($userId > 0) {
-            $pdo->prepare('SELECT id FROM users WHERE id = :id LIMIT 1 FOR UPDATE')->execute(['id' => $userId]);
-        }
-
-        $statement = $pdo->prepare('SELECT * FROM orders WHERE id = :id FOR UPDATE');
-        $statement->execute(['id' => (int) $order['id']]);
-        $locked = $statement->fetch();
-
-        // 允许进入结算的只有「待支付」与「已关闭」两种状态：
-        //  - 已支付：直接跳过（幂等），避免重复开通
-        //  - 已作废：管理员已明确撤销并精确回滚过时长，绝不能被重放的回调复活
-        //  - 已关闭：多是反复下单时被新单顶掉的旧单，若这笔其实已在网关付款成功，
-        //    回调必须能把它开通回来，否则用户的钱会白付（关闭只代表本站放弃该单，不代表没付款）
-        if (!is_array($locked) || !in_array((string) $locked['status'], ['pending', 'closed'], true)) {
-            $pdo->commit();
-            return false;
-        }
-
-        // 按商品类型分流：直链包只加条数额度、不动会员到期时间；其余（含存量订单）一律按会员处理
-        if ((string) ($locked['product_type'] ?? 'premium') === 'share_pack') {
-            $meta = json_decode((string) ($locked['product_meta'] ?? ''), true);
-            $links = is_array($meta) ? (int) ($meta['links'] ?? 0) : 0;
-            if ($links <= 0) {
-                throw new RuntimeException('直链包订单缺少条数，无法开通：' . (string) $locked['order_no']);
-            }
-            ShareService::grantPack((int) $locked['user_id'], $links);
-            // 直链包不涉及会员到期时间，用 null 占位以保持订单表字段语义一致
-            $result = ['expires_before' => null, 'expires_after' => null];
-        } else {
-            $result = grantPremium((int) $locked['user_id'], (int) $locked['months']);
-        }
-
-        $pdo->prepare(
-            "UPDATE orders
-             SET status = 'paid', trade_no = :trade_no, expires_before = :expires_before,
-                 expires_after = :expires_after, notify_raw = :notify_raw, paid_at = NOW()
-             WHERE id = :id"
-        )->execute([
-            'trade_no' => $tradeNo === '' ? null : mb_strcut($tradeNo, 0, 64, 'UTF-8'),
-            'expires_before' => $result['expires_before'],
-            'expires_after' => $result['expires_after'],
-            'notify_raw' => $notify === [] ? null : (string) json_encode($notify, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-            'id' => (int) $locked['id'],
-        ]);
-        $pdo->commit();
-    } catch (Throwable $exception) {
-        $pdo->rollBack();
-        throw $exception;
-    }
-
-    Logger::info('payment', '订单支付成功并已开通：' . orderProductLabel($order) . '。', [
-        'order_no' => (string) $order['order_no'],
-        'user_id' => (int) $order['user_id'],
-        'product_type' => (string) ($order['product_type'] ?? 'premium'),
-        'trade_no' => $tradeNo,
-    ]);
-
-    return true;
-}
-
-/** 主动向网关查单并对账结算（异步通知丢失时的兜底），用户从收银台回跳或手动刷新状态时调用。 */
-function reconcileOrder(array $order): array
-{
-    $epay = Epay::fromConfig();
-    if ($epay === null) {
-        return ['paid' => false, 'message' => '支付功能尚未配置，请联系管理员。'];
-    }
-
-    $result = $epay->queryOrder((string) $order['order_no']);
-    if ($result === null) {
-        return ['paid' => false, 'message' => '暂时无法连接支付网关，请稍后点击「刷新状态」重试。'];
-    }
-
-    if (!Epay::isPaidResult($result)) {
-        return ['paid' => false, 'message' => '该订单尚未完成支付，支付后请点击「刷新状态」。'];
-    }
-
-    // 金额核对：网关回传金额与订单金额不符时拒绝开通并留下告警（查单接口未回传金额时跳过）
-    $paidAmount = $result['money'] ?? $result['amount'] ?? null;
-    if ($paidAmount !== null && abs((float) $paidAmount - (float) $order['amount']) >= 0.01) {
-        Logger::error('payment', '查单金额与订单金额不一致，已拒绝开通。', [
-            'order_no' => (string) $order['order_no'],
-            'expected' => (string) $order['amount'],
-        ]);
-        raiseAdminAlert('error', '订单查单金额不一致，请人工核对：' . (string) $order['order_no']);
-
-        return ['paid' => false, 'message' => '订单金额校验失败，请联系管理员处理。'];
-    }
-
-    $settled = settleOrderPayment($order, (string) ($result['trade_no'] ?? ''), $result);
-
-    if ($settled) {
-        return ['paid' => true, 'message' => '支付成功，高级用户已开通。'];
-    }
-
-    // 网关已确认收款但本地未开通：多为已作废订单（管理员已精确回滚时长、绝不复活），
-    // 或并发下已被其它回调抢先结算。必须按订单真实状态给出提示，不能笼统回「已完成支付」误导用户
-    $statusStatement = Database::connection()->prepare('SELECT status FROM orders WHERE id = :id LIMIT 1');
-    $statusStatement->execute(['id' => (int) $order['id']]);
-    $status = (string) $statusStatement->fetchColumn();
-
-    return match ($status) {
-        'paid' => ['paid' => true, 'message' => '该订单已完成支付。'],
-        'void' => ['paid' => false, 'message' => '该订单已被作废，若已付款请联系管理员核对。'],
-        default => ['paid' => false, 'message' => '订单状态异常，请联系管理员核对后再试。'],
-    };
 }

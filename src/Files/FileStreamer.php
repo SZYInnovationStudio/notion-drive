@@ -14,11 +14,9 @@ use NotionDrive\Uploads\NotionWriteQueue;
 /**
  * 把一份 uploads 记录的内容流式转发给客户端。
  *
- * 登录态下载（api/file.php）与公开直链（s.php）共用这份实现，保证两者的
- * Range 透传、预览白名单、安全 Content-Type、多副本回退与中断告警行为完全一致。
- * 调用方负责鉴权与状态校验（封禁、数据丢失、直链有效期等），本类只负责「把内容安全地发出去」。
- *
- * 本类代码由 api/file.php 原样搬移而来，行为未做任何调整。
+ * 登录态下载（api/file.php）统一走这份实现，保证 Range 透传、预览白名单、
+ * 安全 Content-Type、多副本回退与中断告警行为一致。
+ * 调用方负责鉴权与状态校验（数据丢失等），本类只负责「把内容安全地发出去」。
  */
 final class FileStreamer
 {
@@ -35,14 +33,13 @@ final class FileStreamer
      * @param array $file            uploads 记录（含 display_name/filename/mime_type/status 等）
      * @param array $owner           文件所属用户（下载要用他的 Token 访问 Notion）
      * @param bool  $inlineRequested 是否请求内联预览（仅白名单类型 + 后台开关开启才真正内联）
-     * @param array $context         ['viewer_id' => int|null, 'via' => 'file'|'share', 'share_id' => int|null]，仅用于日志
+     * @param array $context         ['viewer_id' => int|null, 'via' => 'file']，仅用于日志
      */
     public static function stream(array $file, array $owner, bool $inlineRequested, array $context = []): never
     {
         $id = (int) ($file['id'] ?? 0);
         $viewerId = $context['viewer_id'] ?? null;
         $via = (string) ($context['via'] ?? 'file');
-        $shareId = $context['share_id'] ?? null;
 
         // 预览：仅当请求带 inline=1、文件类型在预览白名单内、且后台已开启对应开关时，才内联输出；
         // 否则退化为普通下载（避免被当作任意文件的内联挂载点）
@@ -129,8 +126,7 @@ final class FileStreamer
                 $file,
                 $target,
                 $via,
-                $viewerId,
-                $shareId
+                $viewerId
             );
             if ($parallelWritten > 0) {
                 exit;
@@ -216,7 +212,6 @@ final class FileStreamer
                             'account_type' => $target['type'],
                             'account_id' => $target['account_id'],
                             'via' => $via,
-                            'share_id' => $shareId,
                             'reason' => $reason,
                         ]);
                         raiseAdminAlert('error', sprintf('账户「%s」下载文件 #%d 时中断，该副本可能不可用。', (string) $target['label'], $id), [
@@ -342,7 +337,6 @@ final class FileStreamer
      * @param array      $file        uploads 记录（仅用于日志）
      * @param array      $target      当前副本信息（仅用于日志）
      * @param int|null   $viewerId    下载者用户 ID（仅用于日志）
-     * @param int|null   $shareId     直链 ID（仅用于日志）
      */
     private static function relayRangeParallel(
         string $url,
@@ -350,8 +344,7 @@ final class FileStreamer
         array $file,
         array $target,
         string $via,
-        ?int $viewerId,
-        ?int $shareId
+        ?int $viewerId
     ): int {
         $connections = self::parallelConnections();
         if ($connections < 2) {
@@ -608,7 +601,6 @@ final class FileStreamer
                     'account_type' => $target['type'] ?? null,
                     'account_id' => $target['account_id'] ?? null,
                     'via' => $via,
-                    'share_id' => $shareId,
                     'written' => $writtenTotal,
                     'reason' => $failReason,
                 ]);

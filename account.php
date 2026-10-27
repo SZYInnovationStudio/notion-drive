@@ -5,15 +5,12 @@ declare(strict_types=1);
 require __DIR__ . '/src/bootstrap.php';
 
 use NotionDrive\Auth;
-use NotionDrive\Bans\BanService;
 use NotionDrive\Database;
 use NotionDrive\Logger;
 use NotionDrive\Security;
 use NotionDrive\Verification;
 
 $user = Auth::requireLogin();
-// 到期前 3 天的邮件提醒：无 cron，靠页面访问懒触发，同一到期周期只发一次
-maybeSendPremiumReminder($user);
 
 /** 把上传的图片中心裁剪为 256×256 的方形头像并保存到 storage/avatars。 */
 function storeAvatar(array $file): string
@@ -176,43 +173,35 @@ $emailBound = emailBound($user);
 $canBindEmail = smtpConfigured();
 $quotaBytes = userQuotaBytes($user);
 $usedBytes = userUsedBytes((int) $user['id']);
-$isPremium = isPremiumUser($user);
-$premiumStatus = premiumStatusText($user);
-$premiumNotice = premiumNotice($user);
 $fileLimit = userSingleFileLimit($user);
 $notionSource = userNotionSource($user);
 $ownNotionBound = hasOwnNotionAccount($user);
 $notionSourceUsable = notionSourceUsable($user);
 $officialAccountsUsable = canUseOfficialSource($user);
 $assignedOfficialAccounts = $notionSource === 'official' ? userOfficialAccounts((int) $user['id']) : [];
-// R10 可信度（违规次数）：普通用户展示；管理员账户不受违规分约束，无需展示
-$trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user['id']);
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('账户管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=67"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('账户管理') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=68"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
         <nav class="drive-nav" aria-label="主导航">
             <a href="dashboard.php"><?= navIcon('files') ?>我的文件</a>
-            <a href="tickets.php"><?= navIcon('tickets') ?><?= isAdmin($user) ? '工单管理' : '我的工单' ?></a>
-            <?php if (isAdmin($user)): ?><a href="admin.php"><?= navIcon('admin') ?>管理后台</a><a href="admin_orders.php"><?= navIcon('orders') ?>订单管理</a><a href="bans.php"><?= navIcon('bans') ?>封禁管理</a><a href="logs.php"><?= navIcon('logs') ?>运行日志</a><?php endif; ?>
+            <?php if (isAdmin($user)): ?><a href="admin.php"><?= navIcon('admin') ?>管理后台</a><a href="logs.php"><?= navIcon('logs') ?>运行日志</a><?php endif; ?>
             <a class="active" href="account.php"><?= navIcon('account') ?>账户管理</a>
-            <?php if (!isAdmin($user)): ?><a href="pricing.php"><?= navIcon('premium') ?>会员套餐</a><?php endif; ?>
         </nav>
         <?= sidebarStorageHtml($user) ?>
         <?= sidebarIcpHtml() ?>
         <?= sidebarPoliceHtml() ?>
         <div class="account-menu">
             <?= avatarHtml($user) ?>
-            <div><strong><?= e($user['username']) ?></strong><small><?= isAdmin($user) ? '管理员' : e((string) ($user['group_name'] ?? '用户')) ?></small></div>
+            <div><strong><?= e($user['username']) ?></strong><small><?= isAdmin($user) ? '管理员' : '普通用户' ?></small></div>
             <form method="post" action="logout.php"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><button title="退出登录">退出</button></form>
         </div>
     </aside>
 
     <main class="drive-main">
-        <?= banNoticeHtml($user) ?>
         <header class="drive-header">
             <div><p>个人设置</p><h1>账户管理</h1></div>
             <a class="secondary-button" href="dashboard.php">返回我的文件</a>
@@ -223,7 +212,7 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
         <section class="admin-panel">
             <div class="panel-title">
                 <div><h2>账号资料</h2><p>用户名用于登录，修改后请使用新用户名登录。</p></div>
-                <span class="sync-state"><?= e((string) ($user['group_name'] ?? '未分组')) ?> · 容量 <?= e(quotaLabel($quotaBytes)) ?> · 已用 <?= e(formatBytes($usedBytes)) ?></span></div>
+                <span class="sync-state"><?= isAdmin($user) ? '管理员' : '普通用户' ?> · 容量 <?= e(quotaLabel($quotaBytes)) ?> · 已用 <?= e(formatBytes($usedBytes)) ?></span></div>
             <form method="post" class="account-form profile">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="update_profile">
                 <label><span>用户名</span><input name="username" value="<?= e($user['username']) ?>" minlength="3" maxlength="64" required></label>
@@ -231,66 +220,18 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
             </form>
         </section>
 
-        <?php if ($trust !== null): ?>
-        <section class="admin-panel">
-            <?php $trustPoints = (int) $trust['points']; $trustMax = max(1, (int) $trust['threshold']); ?>
-            <div class="panel-title">
-                <div><h2>可信度</h2><p>违规次数累计到 <?= $trustMax ?> 次会自动封禁（禁止上传、下载与文件操作，工单申诉入口保留），封禁 30 天后自动解封并清零。</p></div>
-                <span class="status-badge <?= $trust['tone'] === 'good' ? 'granted' : ($trust['tone'] === 'warn' ? 'pending' : 'void') ?>"><?= e((string) $trust['label']) ?></span>
-            </div>
-            <div class="trust-card tone-<?= e((string) $trust['tone']) ?>">
-                <div class="trust-score">
-                    <strong><?= $trustPoints ?><span>/<?= $trustMax ?></span></strong>
-                    <small><?= $trustPoints === 0 ? '无违规记录，请继续保持' : '当前违规次数，等级：' . e((string) $trust['label']) ?></small>
-                </div>
-                <div class="trust-progress" role="progressbar" aria-valuemin="0" aria-valuemax="<?= $trustMax ?>" aria-valuenow="<?= $trustPoints ?>" aria-label="违规次数">
-                    <?php for ($slot = 1; $slot <= $trustMax; $slot++): ?><i class="<?= $slot <= $trustPoints ? 'filled' : '' ?>"></i><?php endfor; ?>
-                </div>
-            </div>
-            <?php if ((bool) $trust['banned']): ?>
-            <div class="alert error">你的账户当前处于封禁状态<?= (string) $trust['ban_until'] === '' ? '。' : '，预计 ' . e(date('Y-m-d H:i', (int) strtotime((string) $trust['ban_until']))) . ' 自动解封。' ?>如有疑问请 <a href="tickets.php?appeal=1">提交申诉</a>。</div>
-            <?php endif; ?>
-            <?php
-            // 去重：打回记录已在上方按文件展示，这里只列管理员手动加计的留痕
-            $manualHistory = array_values(array_filter($trust['history'], static fn (array $row): bool => (string) ($row['source'] ?? '') === 'manual'));
-            ?>
-            <?php if ($trust['recent'] || $manualHistory): ?>
-            <details class="trust-history">
-                <summary>历史违规记录（<?= (int) ($trust['total'] ?? 0) ?> 条）</summary>
-                <ul>
-                    <?php foreach ($trust['recent'] as $violation): ?>
-                    <li><span class="status-badge void">违规文件</span><span><?= e((string) $violation['filename']) ?></span><small><?= e((string) ($violation['reason'] ?? '') !== '' ? (string) $violation['reason'] : '未通过内容审核') ?><?= (string) ($violation['appeal_no'] ?? '') === '' ? '' : ' · 申诉号 ' . e((string) $violation['appeal_no']) ?> · <?= e(date('Y-m-d H:i', (int) strtotime((string) $violation['occurred_at']))) ?></small></li>
-                    <?php endforeach; ?>
-                    <?php foreach ($manualHistory as $violation): ?>
-                    <li><span class="status-badge pending">管理员加计</span><span><?= (int) $violation['points'] > 0 ? '+' . (int) $violation['points'] . ' 次' : '留痕' ?></span><small><?= e((string) ($violation['reason'] ?? '') !== '' ? (string) $violation['reason'] : '未说明') ?> · <?= e(date('Y-m-d H:i', (int) strtotime((string) $violation['created_at']))) ?></small></li>
-                    <?php endforeach; ?>
-                </ul>
-            </details>
-            <?php endif; ?>
-        </section>
-        <?php endif; ?>
-
-        <?php if (!isAdmin($user)): ?>
         <section class="admin-panel">
             <div class="panel-title">
-                <div><h2>会员套餐</h2><p>高级用户不限总容量；官方账户来源的单个文件最大 5 GB，自有账户来源受 Notion 官方限制（5 MB）。</p></div>
-                <span class="<?= $isPremium ? 'status-badge' : 'sync-state' ?>"><?= e($premiumStatus) ?></span>
+                <div><h2>容量与来源</h2><p>总容量由管理员按账号单独设置；官方账户来源的单个文件最大 5 GB，自有账户来源受 Notion 官方限制（5 MB）。</p></div>
+                <span class="status-badge"><?= isAdmin($user) ? '管理员' : '普通用户' ?></span>
             </div>
-            <?php if ($premiumNotice !== ''): ?><div class="alert error"><?= e($premiumNotice) ?></div><?php endif; ?>
-            <div class="subscribe-form">
-                <div class="plan-summary">
-                    <div><span>权限组</span><strong><?= e((string) ($user['group_name'] ?? '用户')) ?></strong></div>
-                    <div><span>总容量</span><strong><?= e(quotaLabel($quotaBytes)) ?></strong></div>
-                    <div><span>单个文件上限</span><strong><?= e(formatBytes($fileLimit)) ?></strong></div>
-                    <div><span>账户来源</span><strong><?= userNotionSource($user) === 'own' ? '自有账户' : '官方账户池' ?></strong></div>
-                </div>
-                <div class="subscribe-actions">
-                    <a class="primary-button compact" href="pricing.php"><?= $isPremium ? '续费 / 延长' : '升级高级用户' ?></a>
-                    <p class="field-hint">前往「会员套餐」页选择时长与支付方式，支付成功后自动开通；已是高级用户时，购买时长在原到期时间基础上顺延。</p>
-                </div>
+            <div class="plan-summary">
+                <div><span>角色</span><strong><?= isAdmin($user) ? '管理员' : '普通用户' ?></strong></div>
+                <div><span>总容量</span><strong><?= e(quotaLabel($quotaBytes)) ?></strong></div>
+                <div><span>单个文件上限</span><strong><?= e(formatBytes($fileLimit)) ?></strong></div>
+                <div><span>账户来源</span><strong><?= userNotionSource($user) === 'own' ? '自有账户' : '官方账户池' ?></strong></div>
             </div>
         </section>
-        <?php endif; ?>
 
         <section class="admin-panel">
             <div class="panel-title">
@@ -300,10 +241,8 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
             <?php if (!$notionSourceUsable): ?>
             <?php if ($notionSource === 'own'): ?>
             <div class="alert error">自有账户尚未绑定或不可用，上传会失败。请在下方填写并验证 Notion 集成 Token 与父页面。</div>
-            <?php elseif (!$officialAccountsUsable): ?>
-            <div class="alert error">官方账户仅对有效期内的付费用户开放。请先 <a href="pricing.php">升级高级用户</a>，或在下方绑定自有账户后切换到自有账户。</div>
             <?php else: ?>
-            <div class="alert error">官方账户池暂时没有可用账户，请联系管理员检查账户池状态。</div>
+            <div class="alert error">官方账户池暂时没有可用账户，可以在下方绑定自有账户后切换到自有账户，或联系管理员检查账户池状态。</div>
             <?php endif; ?>
             <?php endif; ?>
 
@@ -313,11 +252,11 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
                     <?php if ($officialAccountsUsable): ?>
                     <form method="post" class="inline-form"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="switch_notion_source"><input type="hidden" name="source" value="official"><button class="secondary-button" data-confirm="切换为官方账户后，新上传的文件将存入官方账户池，单文件最大 5 GB。已上传文件不受影响。确认切换？">切换为官方账户</button></form>
                     <?php else: ?>
-                    <p class="source-note">购买高级用户套餐后即可切换到官方账户池（不限总容量、单文件最大 5 GB）。</p>
+                    <p class="source-note">官方账户池暂时没有可用账户，添加后即可切换到官方账户池（单文件最大 5 GB）。</p>
                     <?php endif; ?>
                 <?php else: ?>
                     <form method="post" class="inline-form"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="switch_notion_source"><input type="hidden" name="source" value="own"><button class="secondary-button" <?= $ownNotionBound ? '' : 'disabled' ?>>切换为自有账户</button></form>
-                    <p class="source-note">官方账户池为全体付费用户共享：优先使用这里分配的 <?= count($assignedOfficialAccounts) ?> 个账户，池内其他启用账户在需要时自动顺延（最多主备两个）。<?= $ownNotionBound ? '' : '需先绑定自有账户才能切回。' ?></p>
+                    <p class="source-note">官方账户池为全体用户共享：优先使用这里分配的 <?= count($assignedOfficialAccounts) ?> 个账户，池内其他启用账户在需要时自动顺延（最多主备两个）。<?= $ownNotionBound ? '' : '需先绑定自有账户才能切回。' ?></p>
                 <?php endif; ?>
             </div>
 
@@ -382,8 +321,8 @@ $trust = isAdmin($user) ? null : BanService::create()->trustSummary((int) $user[
     </main>
     <?= siteCreditHtml() ?>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="assets/app.js?v=40" defer></script>
-    <script src="assets/admin.js?v=9" defer></script>
+    <script src="assets/app.js?v=41" defer></script>
+    <script src="assets/admin.js?v=10" defer></script>
     <?php if ($canBindEmail): ?><script src="assets/verify.js?v=1" defer></script><?php endif; ?>
 </body>
 </html>

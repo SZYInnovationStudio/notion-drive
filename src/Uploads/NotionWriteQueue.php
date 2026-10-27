@@ -6,8 +6,6 @@ namespace NotionDrive\Uploads;
 
 use NotionDrive\Database;
 use NotionDrive\Logger;
-use NotionDrive\Moderation\ModerationService;
-use NotionDrive\Moderation\Verdict;
 use RuntimeException;
 use Throwable;
 
@@ -68,7 +66,7 @@ final class NotionWriteQueue
         return $megabytes > 0 ? $megabytes * 1024 * 1024 : 0;
     }
 
-    /** 该用户当前占用的待写入暂存字节数（含写入失败、等待重试的文件；工单附件一样占服务器空间，故一并计入）。 */
+    /** 该用户当前占用的待写入暂存字节数（含写入失败、等待重试的文件）。 */
     public static function stagedBytes(int $userId): int
     {
         $statement = Database::connection()->prepare(
@@ -92,7 +90,7 @@ final class NotionWriteQueue
         return $megabytes > 0 ? $megabytes * 1024 * 1024 : 0;
     }
 
-    /** 全服当前占用的待写入暂存字节数（所有用户合计；工单附件一样占服务器空间，故一并计入）。 */
+    /** 全服当前占用的待写入暂存字节数（所有用户合计）。 */
     public static function stagedBytesAll(): int
     {
         $statement = Database::connection()->query(
@@ -336,10 +334,6 @@ final class NotionWriteQueue
         // 新文件已确认写入 Notion，此时才归档被覆盖旧文件的副本（失败则恢复旧文件，见 markFailed）
         $this->finalizeOverwrite($upload);
 
-        // 内容审核放在写入完成之后：命中违规时把文件置为隔离（quarantined），与改造前「先存储后隔离」的语义一致
-        $this->moderate($upload, $owner, $filename, $mime, $size, $stagingPath);
-
-        // 审核（AI 识别）需要读暂存文件，因此暂存文件最后才删
         $this->discard($userId, $uploadId);
     }
 
@@ -395,91 +389,6 @@ final class NotionWriteQueue
         }
 
         return true;
-    }
-
-    /**
-     * 内容审核：先按全站内容指纹比对，命中白名单免重复审核、命中黑名单直接按违规处理，未收录才调用 AI。
-     * 工单附件不走风控；审核本身异常不阻断写入结果（与改造前一致）。
-     */
-    private function moderate(array $upload, array $owner, string $filename, string $mime, int $size, string $stagingPath): void
-    {
-        if ((string) $upload['scope'] !== 'drive' || userModerationExempt($owner)) {
-            return;
-        }
-
-        $uploadId = (int) $upload['id'];
-        $userId = (int) $owner['id'];
-        $context = ['user_id' => $userId, 'username' => (string) ($owner['username'] ?? ''), 'upload_id' => $uploadId];
-
-        try {
-            $moderationService = ModerationService::create();
-            if (!$moderationService->enabled()) {
-                return;
-            }
-
-            $contentHash = is_file($stagingPath) ? (string) (hash_file('sha256', $stagingPath) ?: '') : '';
-            if ($contentHash !== '') {
-                $context['sha256'] = $contentHash;
-            }
-
-            $known = $contentHash !== '' ? $moderationService->lookupHash($contentHash) : null;
-            if ($known === Verdict::APPROVED) {
-                Logger::info('upload', '内容指纹命中白名单，本次免重复审核', $context);
-                // 指纹命中白名单即审核通过：获准重传的用户重新上传成功后自动闭环待处理记录
-                $moderationService->completeResubmit($userId, $filename);
-
-                return;
-            }
-
-            $verdict = $known === Verdict::FLAGGED
-                ? Verdict::flagged('该内容此前已被判定违规（SHA-256 命中），无需重复审核。', '', 'hash', 'sha256', $contentHash)
-                : $moderationService->inspect($filename, $mime, $stagingPath, $size);
-
-            if ($verdict->isFlagged()) {
-                $appealNo = $moderationService->record($userId, $uploadId, $filename, ModerationService::STAGE_FINISH, $verdict, $contentHash);
-                // 自动识别只隔离当前文件，不写全站黑名单：AI 存在误判，待管理员人工打回时才登记黑名单
-                $moderationService->quarantine($uploadId);
-                Logger::warning('upload', '内容审核命中，文件已暂停使用', [
-                    'appeal_no' => $appealNo,
-                    'provider'  => $verdict->provider,
-                    'matched'   => $verdict->matched,
-                ] + $context);
-                raiseAdminAlert('warning', sprintf(
-                    '内容风控拦截：用户 %s 上传《%s》已被暂停使用（申诉号 %s）',
-                    (string) $owner['username'],
-                    $filename,
-                    $appealNo
-                ), [
-                    'appeal_no' => $appealNo,
-                    'upload_id' => $uploadId,
-                    'user_id'   => $userId,
-                    'filename'  => $filename,
-                    'reason'    => $verdict->reason,
-                ]);
-
-                return;
-            }
-
-            if ($verdict->isPending()) {
-                // AI 不可用或超时：不阻断、不隔离，仅登记为待人工复核并提醒管理员；结论未定，不登记内容指纹
-                $moderationService->record($userId, $uploadId, $filename, ModerationService::STAGE_FINISH, $verdict, $contentHash);
-                Logger::warning('upload', '内容审核降级为人工复核', ['reason' => $verdict->reason] + $context);
-                raiseAdminAlert('warning', '内容审核降级：AI 接口不可用，已有文件转为人工复核，请检查风控配置。', [
-                    'upload_id' => $uploadId,
-                    'reason'    => $verdict->reason,
-                ]);
-
-                return;
-            }
-
-            // 审核通过：仅当审核确实执行过才登记内容指纹，避免把「未实际审核」的内容登记为已通过（指纹投毒）
-            if (ModerationService::isScanned($verdict)) {
-                $moderationService->rememberHash($contentHash, Verdict::APPROVED);
-            }
-            $moderationService->completeResubmit($userId, $filename);
-        } catch (Throwable $exception) {
-            Logger::error('upload', '内容审核执行失败，文件已按正常流程放行', ['error' => $exception->getMessage()] + $context);
-        }
     }
 
     /**
@@ -642,9 +551,7 @@ final class NotionWriteQueue
 
     private function owner(int $userId): array
     {
-        // 必须带上权限组的管理员标记：group_is_admin 来自 `groups`.is_admin 的 JOIN，
-        // 直接 SELECT * FROM users 拿不到该键，isAdmin() 会误判为 false，
-        // 导致管理员在队列写入阶段被「官方账户仅对高级用户开放」拦下
+        // 统一经由 findUserById() 取用户，保证 isAdmin() 与官方池可用性判断正确
         $owner = findUserById($userId);
         if ($owner === null) {
             throw new RuntimeException('文件所属用户不存在。');

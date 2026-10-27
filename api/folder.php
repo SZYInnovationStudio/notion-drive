@@ -24,11 +24,6 @@ function normalizeFolderName(string $raw): string
 $user = Auth::requireLogin(true);
 $userId = (int) $user['id'];
 
-// 封禁期间禁止文件夹的创建/重命名/移动/删除（均属「修改」范畴）
-if (userActiveBan($user) !== null) {
-    jsonResponse(['ok' => false, 'message' => '账号已被封禁，暂时无法管理文件夹。如有疑问请通过工单提交申诉。'], 403);
-}
-
 try {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         jsonResponse(['ok' => false, 'message' => '请求方法不受支持。'], 405);
@@ -158,7 +153,7 @@ try {
             throw new RuntimeException('目标文件夹不存在。');
         }
         $statement = $connection->prepare(
-            "SELECT id, data_lost FROM uploads WHERE id = :id AND user_id = :user_id AND scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ') LIMIT 1'
+            "SELECT id, data_lost FROM uploads WHERE id = :id AND user_id = :user_id AND status IN (" . UPLOAD_VISIBLE_STATUSES . ') LIMIT 1'
         );
         $statement->execute(['id' => $fileId, 'user_id' => $userId]);
         $upload = $statement->fetch();
@@ -204,8 +199,6 @@ try {
 
     if ($action === 'delete') {
         // 递归删除：该文件夹及全部子孙文件夹一并移除，其中的文件按删除文件处理（本地标记 + 归档 Notion 副本）
-        // 含被内容审核隔离（quarantined）的文件：它们不在「我的文件」中显示，若不在此一并清除，
-        // 会变成既看不到、也无法删除的孤儿记录，永久占用用户容量。
         $folderIds = folderDescendantIds($userId, $folderId);
         $placeholders = implode(',', array_fill(0, count($folderIds), '?'));
 

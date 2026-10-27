@@ -6,18 +6,13 @@ require __DIR__ . '/src/bootstrap.php';
 
 use NotionDrive\Auth;
 use NotionDrive\Database;
-use NotionDrive\Epay;
 use NotionDrive\Logger;
 use NotionDrive\Mailer;
-use NotionDrive\Moderation\ModerationService;
 use NotionDrive\NotionApiException;
 use NotionDrive\NotionClient;
 use NotionDrive\Restore\RestoreService;
 use NotionDrive\Security;
-use NotionDrive\Share\ShareService;
 use NotionDrive\Space\SpacePatrol;
-use NotionDrive\Tickets\TicketBanService;
-use NotionDrive\Tickets\TicketService;
 
 $currentUser = Auth::requireAdmin();
 $error = '';
@@ -26,14 +21,11 @@ $error = '';
 function adminTabs(): array
 {
     return [
-        'users' => ['group' => '管理后台', 'label' => '用户管理', 'desc' => '用户账号、容量与权限组'],
+        'users' => ['group' => '管理后台', 'label' => '用户管理', 'desc' => '用户账号、角色与容量'],
         'content' => ['group' => '管理后台', 'label' => '账户池管理', 'desc' => '官方账户池与用户账户分配'],
-        'risk' => ['group' => '管理后台', 'label' => '内容风控', 'desc' => '关键词拦截、AI 识别、豁免免审核上传与申诉复核'],
         'files' => ['group' => '管理后台', 'label' => '文件管理', 'desc' => '查看与管理各用户的文件'],
-        'tickets' => ['group' => '管理后台', 'label' => '工单设置', 'desc' => '工单过期、重开、评价与批量管理'],
         'preview' => ['group' => '管理后台', 'label' => '预览设置', 'desc' => '图片 / PDF / 音视频在线预览的开关与体积提醒阈值'],
-        'reviews' => ['group' => '管理后台', 'label' => '评价统计', 'desc' => '工单评价的平均分、分布与最近明细'],
-        'system' => ['group' => '管理后台', 'label' => '系统设置', 'desc' => '站点信息、注册与邮箱、上传与支付'],
+        'system' => ['group' => '管理后台', 'label' => '系统设置', 'desc' => '站点信息、注册与邮箱、上传与容量'],
         'restore' => ['group' => '管理后台', 'label' => '还原/恢复', 'desc' => '站点还原与恢复出厂设置'],
     ];
 }
@@ -45,7 +37,7 @@ function normalizeAdminTab(mixed $value): string
 
 $adminTabs = adminTabs();
 $selectedUserId = (int) ($_GET['user_id'] ?? 0);
-// 当前分区：优先取 ?tab=；未指定时，带 user_id 进入（订单页点「用户」）默认展示账户池管理
+// 当前分区：优先取 ?tab=；未指定时，带 user_id 进入默认展示账户池管理
 $requestedTab = normalizeAdminTab($_GET['tab'] ?? null);
 $activeTab = $requestedTab !== '' ? $requestedTab : ($selectedUserId > 0 ? 'content' : 'users');
 // 表单保存后仍回到当前分区，避免管理员被弹回默认页签
@@ -61,18 +53,6 @@ function parseQuota(string $value): ?int
         throw new RuntimeException('容量必须是大于等于 0 的数字；留空或 -1 表示不限。');
     }
     return (int) round((float) $value * 1024 * 1024 * 1024);
-}
-
-function parseMegabytes(string $value): ?int
-{
-    $value = trim($value);
-    if ($value === '' || $value === '-1') {
-        return null;
-    }
-    if (!is_numeric($value) || (float) $value < 0) {
-        throw new RuntimeException('单文件上限必须是大于等于 0 的数字（MB）；留空或 -1 表示不限。');
-    }
-    return (int) round((float) $value * 1024 * 1024);
 }
 
 /** 保存 SMTP 表单字段；密码留空表示沿用旧值。 */
@@ -255,17 +235,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (mb_strlen($password) < 6) {
                 throw new RuntimeException('密码至少需要 6 个字符。');
             }
-            $groupId = (int) ($_POST['group_id'] ?? 0);
-            $group = findGroup($groupId > 0 ? $groupId : defaultGroupId());
-            if ($group === null) {
-                throw new RuntimeException('请选择有效的权限组。');
-            }
             $notionSource = (string) ($_POST['notion_source'] ?? 'own') === 'official' ? 'official' : 'own';
-            $statement = $pdo->prepare('INSERT INTO users (username, password_hash, group_id, quota_bytes, notion_account_source) VALUES (:username, :password_hash, :group_id, :quota_bytes, :notion_account_source)');
+            $statement = $pdo->prepare('INSERT INTO users (username, password_hash, is_admin, quota_bytes, notion_account_source) VALUES (:username, :password_hash, :is_admin, :quota_bytes, :notion_account_source)');
             $statement->execute([
                 'username' => $username,
                 'password_hash' => password_hash($password, PASSWORD_DEFAULT),
-                'group_id' => (int) $group['id'],
+                'is_admin' => isset($_POST['is_admin']) ? 1 : 0,
                 'quota_bytes' => parseQuota((string) ($_POST['quota_gb'] ?? '')),
                 'notion_account_source' => $notionSource,
             ]);
@@ -289,97 +264,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!preg_match('/^[\p{L}\p{N}_.-]{3,64}$/u', $username)) {
                 throw new RuntimeException('用户名格式无效。');
             }
-            $group = findGroup((int) ($_POST['group_id'] ?? 0));
-            if ($group === null) {
-                throw new RuntimeException('请选择有效的权限组。');
-            }
-            if ($id === (int) $currentUser['id'] && (int) $group['is_admin'] !== 1) {
+            $isAdminTarget = isset($_POST['is_admin']) ? 1 : 0;
+            if ($id === (int) $currentUser['id'] && $isAdminTarget !== 1) {
                 throw new RuntimeException('不能取消自己的管理员权限。');
             }
             if ($password !== '' && mb_strlen($password) < 6) {
                 throw new RuntimeException('新密码至少需要 6 个字符。');
             }
-            $sql = 'UPDATE users SET username = :username, group_id = :group_id, quota_bytes = :quota_bytes';
-            $params = ['id' => $id, 'username' => $username, 'group_id' => (int) $group['id'], 'quota_bytes' => parseQuota((string) ($_POST['quota_gb'] ?? ''))];
+            $sql = 'UPDATE users SET username = :username, is_admin = :is_admin, quota_bytes = :quota_bytes';
+            $params = ['id' => $id, 'username' => $username, 'is_admin' => $isAdminTarget, 'quota_bytes' => parseQuota((string) ($_POST['quota_gb'] ?? ''))];
             if ($password !== '') {
                 $sql .= ', password_hash = :password_hash';
                 $params['password_hash'] = password_hash($password, PASSWORD_DEFAULT);
             }
             $sql .= ' WHERE id = :id';
             $pdo->prepare($sql)->execute($params);
-            flash('success', '用户资料、权限组与容量已更新。');
-        } elseif ($action === 'save_group') {
-            $groupId = (int) ($_POST['group_id'] ?? 0);
-            $name = trim((string) ($_POST['group_name'] ?? ''));
-            if (!preg_match('/^[\p{L}\p{N}_.\- ]{1,64}$/u', $name)) {
-                throw new RuntimeException('权限组名称需为 1–64 个字符，仅使用文字、数字、空格、点、横线或下划线。');
-            }
-            $level = (int) ($_POST['group_level'] ?? 0);
-            if ($level < 0 || $level > 1000) {
-                throw new RuntimeException('等级需在 0–1000 之间。');
-            }
-            $quota = parseQuota((string) ($_POST['group_quota_gb'] ?? ''));
-            $singleLimit = parseMegabytes((string) ($_POST['group_single_mb'] ?? ''));
-            $isAdminGroup = isset($_POST['group_is_admin']) ? 1 : 0;
-
-            if ($groupId > 0) {
-                $existing = findGroup($groupId);
-                if ($existing === null) {
-                    throw new RuntimeException('权限组不存在。');
-                }
-                if ((int) $existing['is_builtin'] === 1 && $existing['name'] !== $name) {
-                    throw new RuntimeException('内置权限组的名称不可修改。');
-                }
-                if ($groupId === (int) $currentUser['group_id'] && $isAdminGroup === 0) {
-                    throw new RuntimeException('不能移除自己所在权限组的管理员权限。');
-                }
-                if ((int) $existing['is_admin'] === 1 && $isAdminGroup === 0) {
-                    $adminGroups = (int) $pdo->query('SELECT COUNT(*) FROM `groups` WHERE is_admin = 1')->fetchColumn();
-                    if ($adminGroups <= 1) {
-                        throw new RuntimeException('至少要保留一个管理员权限组。');
-                    }
-                }
-                $pdo->prepare(
-                    'UPDATE `groups` SET name = :name, quota_bytes = :quota_bytes, single_file_limit_bytes = :single_file_limit_bytes,
-                        is_admin = :is_admin, level = :level WHERE id = :id'
-                )->execute([
-                    'id' => $groupId,
-                    'name' => $name,
-                    'quota_bytes' => $quota,
-                    'single_file_limit_bytes' => $singleLimit,
-                    'is_admin' => $isAdminGroup,
-                    'level' => $level,
-                ]);
-                flash('success', '权限组已更新。');
-            } else {
-                $pdo->prepare(
-                    'INSERT INTO `groups` (name, quota_bytes, single_file_limit_bytes, is_admin, level, is_builtin)
-                     VALUES (:name, :quota_bytes, :single_file_limit_bytes, :is_admin, :level, 0)'
-                )->execute([
-                    'name' => $name,
-                    'quota_bytes' => $quota,
-                    'single_file_limit_bytes' => $singleLimit,
-                    'is_admin' => $isAdminGroup,
-                    'level' => $level,
-                ]);
-                flash('success', '权限组已创建。');
-            }
-        } elseif ($action === 'delete_group') {
-            $groupId = (int) ($_POST['group_id'] ?? 0);
-            $group = findGroup($groupId);
-            if ($group === null) {
-                throw new RuntimeException('权限组不存在。');
-            }
-            if ((int) $group['is_builtin'] === 1) {
-                throw new RuntimeException('内置权限组不可删除。');
-            }
-            $members = $pdo->prepare('SELECT COUNT(*) FROM users WHERE group_id = :id');
-            $members->execute(['id' => $groupId]);
-            if ((int) $members->fetchColumn() > 0) {
-                throw new RuntimeException('该权限组下仍有用户，请先把用户迁移到其他权限组。');
-            }
-            $pdo->prepare('DELETE FROM `groups` WHERE id = :id')->execute(['id' => $groupId]);
-            flash('success', '权限组已删除。');
+            flash('success', '用户资料、角色与容量已更新。');
         } elseif ($action === 'save_access' || $action === 'test_mail') {
             // 注册开关与 SMTP 配置相互独立：未填写 SMTP 服务器时只保存注册开关，不校验邮件设置
             if ($action === 'test_mail' || trim((string) ($_POST['smtp_host'] ?? '')) !== '') {
@@ -744,7 +644,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (activeOfficialAccounts() === []) {
                     throw new RuntimeException('官方账户池为空或全部未启用，无法自动分配。');
                 }
-                // 负载最低者优先的挑选逻辑在 helpers 中统一实现，避免与付费开通时的自动分配行为不一致
+                // 负载最低者优先的挑选逻辑在 helpers 中统一实现
                 autoAssignOfficialAccounts($userId);
                 flash('success', $usingOwnAccount
                     ? '已按负载自动分配主备官方账户，但该用户当前使用自有 Notion 账户，切换为官方账户后才会生效。'
@@ -760,15 +660,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 : '已更新该用户的主备官方账户。');
             header('Location: admin.php?tab=' . $activeTab . '&user_id=' . $userId);
             exit;
-        } elseif ($action === 'save_plan') {
-            // 「套餐」原属系统设置里的「Notion 连接」面板，该面板已删除（Token/根页面改由账户池按账户管理），
-            // 仅把套餐这一全局项迁到「账户池管理」页；它决定官方账户单文件上限是否放宽（见 officialFileLimitBytes()）
-            $plan = (string) ($_POST['plan'] ?? '');
-            if (!in_array($plan, ['free', 'paid'], true)) {
-                throw new RuntimeException('套餐选项无效。');
-            }
-            Database::setConfig('notion_plan', $plan);
-            flash('success', '官方账户套餐已更新。');
         } elseif ($action === 'save_limits') {
             $officialLimitMb = (int) ($_POST['official_single_file_limit_mb'] ?? 0);
             $chunkMb = (int) ($_POST['upload_chunk_size_mb'] ?? 0);
@@ -794,152 +685,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             flash('success', $effective < $chunkMb * 1024 * 1024
                 ? sprintf('上传与容量设置已保存；受服务器 PHP 上传限制约束，分块实际生效值为 %s。', formatBytes($effective))
                 : '上传与容量设置已保存。');
-        } elseif ($action === 'save_payment') {
-            $gateway = trim((string) ($_POST['epay_gateway'] ?? ''));
-            if ($gateway !== '' && !preg_match('#^https?://#i', $gateway)) {
-                throw new RuntimeException('易支付接口地址需以 http:// 或 https:// 开头；留空表示暂时停用在线支付。');
-            }
-            // 查单请求会把商户密钥放在 URL 查询串里，明文 http 会让密钥在链路上泄露；本机调试地址除外
-            $gatewayHost = strtolower((string) parse_url($gateway, PHP_URL_HOST));
-            if ($gateway !== '' && strncasecmp($gateway, 'http://', 7) === 0
-                && !in_array($gatewayHost, ['localhost', '127.0.0.1', '::1'], true)) {
-                throw new RuntimeException('易支付接口地址必须使用 https://；http:// 仅允许本机地址（商户密钥会随请求出现在 URL 上）。');
-            }
-            $pid = trim((string) ($_POST['epay_pid'] ?? ''));
-            if (mb_strlen($pid) > 64) {
-                throw new RuntimeException('商户 ID 不能超过 64 个字符。');
-            }
-            if ($gateway !== '' && $pid === '') {
-                throw new RuntimeException('填写了易支付接口地址时必须同时填写商户 ID。');
-            }
-            $siteUrlInput = trim((string) ($_POST['site_url'] ?? ''));
-            if ($siteUrlInput !== '' && !preg_match('#^https?://#i', $siteUrlInput)) {
-                throw new RuntimeException('站点地址需以 http:// 或 https:// 开头；留空表示按访问地址自动识别。');
-            }
-
-            // 渠道只接受白名单内的值，避免把任意字符串写进配置后被下游当成 type 使用
-            $validTypes = epayPayTypeOptions();
-            $types = [];
-            foreach ((array) ($_POST['epay_pay_types'] ?? []) as $type) {
-                $type = trim((string) $type);
-                if (isset($validTypes[$type]) && !in_array($type, $types, true)) {
-                    $types[] = $type;
-                }
-            }
-
-            $key = trim((string) ($_POST['epay_key'] ?? ''));
-            if ($gateway !== '' && (string) Database::config('epay_key', '') === '' && $key === '') {
-                throw new RuntimeException('首次配置支付接口时请填写商户密钥。');
-            }
-
-            // 价格先全量校验再落库，避免部分档位写成功、部分写失败造成配置不一致
-            $prices = [];
-            foreach (array_keys(premiumPlans()) as $months) {
-                $price = trim((string) ($_POST['premium_price_' . $months] ?? ''));
-                if (!is_numeric($price) || (float) $price < 0.01 || (float) $price > 99999) {
-                    throw new RuntimeException(sprintf('%d 个月套餐的价格需为 0.01 ~ 99999 之间的数字。', $months));
-                }
-                $prices[$months] = number_format(round((float) $price, 2), 2, '.', '');
-            }
-
-            Database::setConfig('epay_gateway', $gateway);
-            Database::setConfig('epay_pid', $pid);
-            Database::setConfig('site_url', rtrim($siteUrlInput, '/'));
-            Database::setConfig('epay_pay_types', implode(',', $types));
-            if ($key !== '') {
-                Database::setConfig('epay_key', Security::encrypt($key, (string) appConfig()['app_key']));
-            }
-            foreach ($prices as $months => $price) {
-                Database::setConfig('premium_price_' . $months, $price);
-            }
-
-            Logger::info('payment', '易支付配置已更新。', [
-                'operator' => $currentUser['username'],
-                'gateway' => $gateway,
-                'enabled_types' => $types,
-                'key_updated' => $key !== '',
-            ]);
-            flash('success', '支付设置已保存。');
-        } elseif ($action === 'grant_premium') {
-            $userId = (int) ($_POST['user_id'] ?? 0);
-            $months = (int) ($_POST['grant_months'] ?? 0);
-            if (!isset(premiumPlans()[$months])) {
-                throw new RuntimeException('请选择有效的开通时长。');
-            }
-            $targetUser = findUserById($userId);
-            if ($targetUser === null) {
-                throw new RuntimeException('该用户不存在或已被删除。');
-            }
-            if (isAdmin($targetUser)) {
-                throw new RuntimeException('管理员账号无需开通高级套餐。');
-            }
-            // 人工开通同时生成一条「管理员授权」订单，用户端能看到凭据，后台对账也能区分线上支付
-            $result = grantManualPremiumOrder($userId, $months, (int) $currentUser['id']);
-            Logger::info('payment', '管理员手动开通/续费高级用户。', [
-                'user_id' => $userId,
-                'months' => $months,
-                'operator' => $currentUser['username'],
-                'order_no' => $result['order_no'],
-                'expires_after' => $result['expires_after'],
-            ]);
-            // 永久会员时 grantPremium 不设到期时间，需单独提示，否则会显示成 1970-01-01 08:00
-            $expiryText = $result['expires_after'] === null
-                ? '永久有效'
-                : date('Y-m-d H:i', (int) strtotime((string) $result['expires_after']));
-            flash('success', sprintf(
-                '已为 %s 开通 %d 个月高级套餐，有效期至 %s（授权订单 %s）。',
-                (string) $targetUser['username'],
-                $months,
-                $expiryText,
-                $result['order_no']
-            ));
-            header('Location: admin.php?tab=' . $activeTab . '&user_id=' . $userId);
-            exit;
-        } elseif ($action === 'save_share') {
-            $defaultDays = (int) ($_POST['share_default_days'] ?? 7);
-            if (!in_array($defaultDays, ShareService::ALLOWED_DAYS, true)) {
-                throw new RuntimeException('默认有效期不在允许范围内。');
-            }
-
-            // 逐个档位从表单收集价格与上架状态；档位条数只取自现有配置，防止伪造出新的档位
-            $submitted = [];
-            foreach (ShareService::packs() as $pack) {
-                $count = (int) $pack['count'];
-                $submitted[] = [
-                    'count' => $count,
-                    'price' => trim((string) ($_POST['share_pack_price'][$count] ?? '')),
-                    'enabled' => (int) ($_POST['share_pack_enabled'][$count] ?? 0),
-                ];
-            }
-            ShareService::savePacks($submitted);
-            Database::setConfig('share_enabled', isset($_POST['share_enabled']) ? '1' : '0');
-            Database::setConfig('share_default_days', (string) $defaultDays);
-
-            Logger::info('share', '直链分享设置已更新。', [
-                'operator' => $currentUser['username'],
-                'enabled' => isset($_POST['share_enabled']) ? 1 : 0,
-                'default_days' => $defaultDays,
-            ]);
-            flash('success', '直链分享设置已保存。');
-        } elseif ($action === 'grant_share_pack') {
-            $userId = (int) ($_POST['user_id'] ?? 0);
-            $links = (int) ($_POST['grant_links'] ?? 0);
-            $targetUser = findUserById($userId);
-            if ($targetUser === null) {
-                throw new RuntimeException('该用户不存在或已被删除。');
-            }
-            if (isAdmin($targetUser)) {
-                throw new RuntimeException('管理员账号无需购买直链包（额度不限）。');
-            }
-            $result = grantManualSharePackOrder($userId, $links, (int) $currentUser['id']);
-            flash('success', sprintf(
-                '已为 %s 发放 %d 条直链额度（授权订单 %s）。',
-                (string) $targetUser['username'],
-                $links,
-                $result['order_no']
-            ));
-            header('Location: admin.php?tab=' . $activeTab . '&user_id=' . $userId);
-            exit;
         } elseif ($action === 'read_alerts') {
             $pdo->prepare('UPDATE admin_alerts SET is_read = 1 WHERE is_read = 0')->execute();
             flash('success', '所有告警已标记为已读。');
@@ -948,107 +693,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $alertId = (int) ($_POST['alert_id'] ?? 0);
             $pdo->prepare('UPDATE admin_alerts SET is_read = 1 WHERE id = :id')->execute(['id' => $alertId]);
             flash('success', '该告警已忽略。');
-        } elseif ($action === 'save_moderation') {
-            ModerationService::saveSettings($_POST, (string) ($_POST['api_key'] ?? ''));
-            flash('success', '内容风控设置已保存。');
-        } elseif ($action === 'moderation_reject' || $action === 'moderation_resubmit' || $action === 'moderation_clear') {
-            $recordId = (int) ($_POST['record_id'] ?? 0);
-            if ($recordId <= 0) {
-                throw new RuntimeException('审核记录不存在或已被删除。');
-            }
-            $moderationService = ModerationService::create();
-            $adminId = (int) $currentUser['id'];
-            $reviewNote = (string) ($_POST['review_note'] ?? '');
-            $moderationResult = match ($action) {
-                'moderation_reject'   => $moderationService->reject($recordId, $adminId, $reviewNote),
-                'moderation_resubmit' => $moderationService->allowResubmit($recordId, $adminId, $reviewNote),
-                default               => $moderationService->clearRecord($recordId, $adminId, $reviewNote),
-            };
-            Logger::info('moderation', $moderationResult['message'], [
-                'record_id' => $recordId,
-                'operator' => (string) $currentUser['username'],
-            ]);
-            flash('success', $moderationResult['message']);
-        } elseif ($action === 'save_moderation_exempt') {
-            // 豁免指定用户免审核上传：被豁免用户上传时跳过关键词与 AI 识别
-            $exemptUserId = (int) ($_POST['exempt_user_id'] ?? 0);
-            $exempt = (string) ($_POST['exempt_mode'] ?? 'on') === 'on';
-            if ($exemptUserId <= 0) {
-                throw new RuntimeException('请选择要设置的用户。');
-            }
-            ModerationService::create()->setUserExempt($exemptUserId, $exempt);
-            Logger::info('moderation', $exempt ? '已豁免用户免审核上传' : '已取消用户免审核上传', [
-                'target_user' => $exemptUserId,
-                'operator'    => (string) $currentUser['username'],
-            ]);
-            flash('success', $exempt ? '已豁免该用户免审核上传。' : '已取消该用户的免审核上传。');
-        } elseif ($action === 'ban_ticket_user') {
-            // R2 禁止提交工单：独立于账户封禁体系，仅限制「新建工单」，不影响已有工单的查看与回复
-            $targetUserId = (int) ($_POST['ticket_ban_user_id'] ?? 0);
-            if ($targetUserId <= 0) {
-                throw new RuntimeException('请选择要禁止提交工单的用户。');
-            }
-            if ($targetUserId === (int) $currentUser['id']) {
-                throw new RuntimeException('不能禁止当前登录账号提交工单。');
-            }
-            $days = (int) ($_POST['ticket_ban_days'] ?? 0);
-            $reason = trim((string) ($_POST['ticket_ban_reason'] ?? ''));
-            TicketBanService::create()->ban(
-                $targetUserId,
-                $reason !== '' ? $reason : '管理员禁止提交工单。',
-                $days,
-                (int) $currentUser['id']
-            );
-            Logger::warning('ticket', '管理员禁止用户提交工单。', [
-                'target_user' => $targetUserId,
-                'days'        => $days,
-                'operator'    => (string) $currentUser['username'],
-            ]);
-            flash('success', '已禁止该用户提交新工单，其已有工单仍可查看与回复。');
-        } elseif ($action === 'unban_ticket_user') {
-            $targetUserId = (int) ($_POST['user_id'] ?? 0);
-            TicketBanService::create()->unban($targetUserId);
-            Logger::info('ticket', '管理员解除用户禁止提交工单限制。', [
-                'target_user' => $targetUserId,
-                'operator'    => (string) $currentUser['username'],
-            ]);
-            flash('success', '已解除该用户禁止提交工单的限制。');
-        } elseif ($action === 'save_ticket_settings') {
-            // R5 工单过期档位：全局一个设置，值为有效天数（1~3650）或 0 表示不过期
-            $expireDays = (int) ($_POST['ticket_expire_days'] ?? 0);
-            if ($expireDays < 0 || $expireDays > 3650) {
-                throw new RuntimeException('工单过期天数需为 0 ~ 3650 之间的整数（0 表示不过期）。');
-            }
-            Database::setConfig(TicketService::EXPIRE_CONFIG_KEY, (string) $expireDays);
-            Logger::info('ticket', '更新工单过期档位。', [
-                'expire_days' => $expireDays,
-                'operator'    => (string) $currentUser['username'],
-            ]);
-            flash('success', $expireDays > 0
-                ? sprintf('工单过期档位已设为 %d 天；客服回复后用户超过该天数未回应，工单会自动过期。', $expireDays)
-                : '工单过期已设为「不过期」。');
-        } elseif ($action === 'save_survey_url') {
-            // R6 外部调研链接：工单评价只在站内使用，外部渠道的用户评价走这个链接（留空即关闭入口）
-            $surveyUrl = (string) ($_POST['ticket_survey_url'] ?? '');
-            TicketService::saveSurveyUrl($surveyUrl);
-            Logger::info('ticket', '更新工单外部调研链接。', [
-                'survey_url' => trim($surveyUrl) === '' ? '(已关闭)' : trim($surveyUrl),
-                'operator'   => (string) $currentUser['username'],
-            ]);
-            flash('success', trim($surveyUrl) === ''
-                ? '外部调研入口已关闭，工单详情页不再展示调研链接。'
-                : '外部调研链接已保存，将在已结束工单的详情页展示。');
-        } elseif ($action === 'save_review_enabled') {
-            // R12 站内评价总开关：关闭后工单结束不再展示评价区块，调研入口也一并隐藏
-            $enabled = (string) ($_POST['ticket_review_enabled'] ?? '') === '1';
-            TicketService::saveReviewEnabled($enabled);
-            Logger::info('ticket', '更新工单评价开关。', [
-                'enabled'  => $enabled ? 'on' : 'off',
-                'operator' => (string) $currentUser['username'],
-            ]);
-            flash('success', $enabled
-                ? '工单评价已开启，已结束的工单会展示评价区块。'
-                : '工单评价已关闭，工单详情页不再展示评价与外部调研入口（历史评价仍可在「评价统计」查看）。');
         } elseif ($action === 'save_preview_settings') {
             // R11 文件预览：图片 / PDF / 音视频 三个大类开关 + 大文件体积提醒阈值（MB，1~10240）
             $imageOn = (string) ($_POST['preview_image'] ?? '') === '1';
@@ -1144,27 +788,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// 工单到期清扫：客服回复后用户长期未回应、或关闭超过重开窗口的工单自动置为「已过期」
-TicketService::create()->expireDueTickets();
-
 $users = Database::connection()->query(
-    "SELECT u.id, u.username, u.group_id, u.quota_bytes, u.notion_page_id, u.email, u.email_verified_at, u.created_at, u.avatar_path,
-            u.notion_token_encrypted, u.notion_parent_page_id, u.notion_account_source, u.premium_expires_at,
-            g.name AS group_name, g.is_admin AS group_is_admin, g.quota_bytes AS group_quota_bytes, g.level AS group_level,
+    "SELECT u.id, u.username, u.is_admin, u.quota_bytes, u.notion_page_id, u.email, u.email_verified_at, u.created_at, u.avatar_path,
+            u.notion_token_encrypted, u.notion_parent_page_id, u.notion_account_source,
             COALESCE(f.file_count, 0) AS file_count, COALESCE(f.used_bytes, 0) AS used_bytes
      FROM users u
-     LEFT JOIN `groups` g ON g.id = u.group_id
      LEFT JOIN (
          SELECT user_id, COUNT(*) AS file_count, SUM(file_size) AS used_bytes
-         FROM uploads WHERE scope = 'drive' AND status IN (" . UPLOAD_VISIBLE_STATUSES . ") GROUP BY user_id
+         FROM uploads WHERE status IN (" . UPLOAD_VISIBLE_STATUSES . ") GROUP BY user_id
      ) f ON f.user_id = u.id
-     ORDER BY g.level DESC, u.id ASC"
+     ORDER BY u.id ASC"
 )->fetchAll();
-$groups = allGroups();
-$groupMemberCounts = [];
-foreach (Database::connection()->query('SELECT group_id, COUNT(*) AS total FROM users GROUP BY group_id')->fetchAll() as $row) {
-    $groupMemberCounts[(int) $row['group_id']] = (int) $row['total'];
-}
 $officialAccounts = allOfficialAccounts();
 $accountAssignmentCounts = [];
 foreach (Database::connection()->query('SELECT account_id, COUNT(*) AS total FROM user_official_accounts GROUP BY account_id')->fetchAll() as $row) {
@@ -1180,7 +814,7 @@ if ($selectedUserId > 0) {
         if ((int) $item['id'] === $selectedUserId) { $selectedUser = $item; break; }
     }
     if ($selectedUser) {
-        $filesStatement = Database::connection()->prepare('SELECT * FROM uploads WHERE user_id = :id AND scope = \'drive\' AND status IN (' . UPLOAD_VISIBLE_STATUSES . ') ORDER BY id DESC');
+        $filesStatement = Database::connection()->prepare('SELECT * FROM uploads WHERE user_id = :id AND status IN (' . UPLOAD_VISIBLE_STATUSES . ') ORDER BY id DESC');
         $filesStatement->execute(['id' => $selectedUserId]);
         $selectedFiles = $filesStatement->fetchAll();
         foreach (userOfficialAccounts($selectedUserId) as $account) {
@@ -1193,7 +827,6 @@ if ($selectedUserId > 0) {
     }
 }
 $flash = pullFlash();
-$plan = (string) Database::config('notion_plan', 'free');
 $registrationEnabled = registrationEnabled();
 $emailRequired = emailRequired();
 // 上传分块与官方账户单文件上限：输入用 MB，实际生效值由 uploadChunkSizeBytes() 按 PHP 限制收敛
@@ -1231,59 +864,6 @@ try {
 } catch (Throwable $alertException) {
     $adminAlerts = [];
 }
-$payment = [
-    'gateway' => (string) Database::config('epay_gateway', ''),
-    'pid' => (string) Database::config('epay_pid', ''),
-    'site_url' => (string) Database::config('site_url', ''),
-    'has_key' => (string) Database::config('epay_key', '') !== '',
-];
-$epayConfigured = Epay::configured();
-$enabledPayTypes = epayPayTypes();
-$plans = premiumPlans();
-// 直链分享：全局开关 + 默认有效期 + 直链包档位（价格可留空表示暂不售卖）
-$shareEnabled = ShareService::enabled();
-$shareDefaultDays = ShareService::defaultDays();
-$sharePacks = ShareService::packs();
-// 内容风控：配置项与最近审核记录（读取失败只影响该页签，不阻塞后台）
-$moderationSettings = [
-    'enabled'     => (string) Database::config('moderation_enabled', '0') === '1',
-    'keywords'    => (string) Database::config('moderation_keywords', ''),
-    'scope'       => ['filename', 'text', 'image'],
-    'endpoint'    => (string) Database::config('moderation_endpoint', ''),
-    'model'       => (string) Database::config('moderation_model', 'gpt-4o-mini'),
-    'api_key_set' => (string) Database::config('moderation_api_key', '') !== '',
-    'timeout'     => (int) Database::config('moderation_timeout', '8'),
-];
-$moderationRecords = [];
-$moderationUsers = [];
-try {
-    $moderationService = ModerationService::create();
-    $moderationSettings = $moderationService->settings();
-    $moderationRecords = $moderationService->recentRecords(100);
-    $moderationUsers = $moderationService->moderationUsers();
-} catch (Throwable $moderationException) {
-    Logger::warning('moderation', '读取风控设置或记录失败', ['error' => $moderationException->getMessage()]);
-}
-$groupSelectOptions = function (int $selectedId) use ($groups): string {
-    // 选中的组可能已被删除（例如 defaultGroupId() 回退失败返回 0），此时选中第一项，避免下拉框空白
-    $matched = false;
-    foreach ($groups as $group) {
-        if ((int) $group['id'] === $selectedId) {
-            $matched = true;
-            break;
-        }
-    }
-    if (!$matched && $groups !== []) {
-        $selectedId = (int) $groups[0]['id'];
-    }
-    $html = '';
-    foreach ($groups as $group) {
-        $html .= '<option value="' . (int) $group['id'] . '"' . ((int) $group['id'] === $selectedId ? ' selected' : '') . '>'
-            . e($group['name']) . ' · ' . e(quotaLabel($group['quota_bytes'] === null ? null : (int) $group['quota_bytes'])) . '</option>';
-    }
-
-    return $html;
-};
 $accountOptions = function (int $selectedId) use ($officialAccounts): string {
     $html = '<option value="0">未分配</option>';
     foreach ($officialAccounts as $account) {
@@ -1293,52 +873,20 @@ $accountOptions = function (int $selectedId) use ($officialAccounts): string {
 
     return $html;
 };
-$premiumGroupId = premiumGroupId();
-$premiumLabel = function (array $managedUser) use ($premiumGroupId): string {
-    if (isAdmin($managedUser)) {
-        return '管理员';
-    }
-    if ((int) $managedUser['group_id'] !== $premiumGroupId) {
-        return '普通用户';
-    }
-    $expiresAt = premiumExpiresAt($managedUser);
-    if ($expiresAt === null) {
-        return '高级用户 · 永久';
-    }
-    $date = date('Y-m-d', (int) strtotime($expiresAt));
-
-    return strtotime($expiresAt) > time() ? '高级用户 · 至 ' . $date : '高级已到期 · ' . $date;
-};
-$premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
-    if (isAdmin($managedUser)) {
-        return '永久';
-    }
-    if ((int) $managedUser['group_id'] !== $premiumGroupId) {
-        return '未开通';
-    }
-    $expiresAt = premiumExpiresAt($managedUser);
-    if ($expiresAt === null) {
-        return '永久';
-    }
-    $daysLeft = premiumDaysLeft($managedUser);
-
-    return $daysLeft > 0 ? '剩余 ' . $daysLeft . ' 天' : '已到期';
-};
 ?>
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('管理后台') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=67"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><?= siteTitleTag('管理后台') ?><?= siteFaviconTag() ?><link rel="stylesheet" href="assets/app.css?v=68"></head>
 <body class="drive-shell" data-csrf="<?= e(Security::csrfToken()) ?>">
     <aside class="drive-sidebar">
         <?= brandHtml('dashboard.php') ?>
-        <nav class="drive-nav"><a href="dashboard.php"><?= navIcon('files') ?>我的文件</a><a href="tickets.php"><?= navIcon('tickets') ?>工单管理</a><a class="active nav-admin-link" href="admin.php"><?= navIcon('admin') ?>管理后台</a><details class="nav-group" open><summary><?= navIcon('admin') ?>管理后台</summary><div class="nav-sub"><?php foreach ($adminTabs as $tabKey => $tabMeta): ?><a class="<?= $tabKey === $activeTab ? 'active' : '' ?>" href="<?= e($tabUrl((string) $tabKey)) ?>"><?= e($tabMeta['label']) ?></a><?php endforeach; ?></div></details><a href="admin_orders.php"><?= navIcon('orders') ?>订单管理</a><a href="bans.php"><?= navIcon('bans') ?>封禁管理</a><a href="logs.php"><?= navIcon('logs') ?>运行日志</a><a href="account.php"><?= navIcon('account') ?>账户管理</a></nav>
+        <nav class="drive-nav"><a href="dashboard.php"><?= navIcon('files') ?>我的文件</a><a class="active nav-admin-link" href="admin.php"><?= navIcon('admin') ?>管理后台</a><details class="nav-group" open><summary><?= navIcon('admin') ?>管理后台</summary><div class="nav-sub"><?php foreach ($adminTabs as $tabKey => $tabMeta): ?><a class="<?= $tabKey === $activeTab ? 'active' : '' ?>" href="<?= e($tabUrl((string) $tabKey)) ?>"><?= e($tabMeta['label']) ?></a><?php endforeach; ?></div></details><a href="logs.php"><?= navIcon('logs') ?>运行日志</a><a href="account.php"><?= navIcon('account') ?>账户管理</a></nav>
         <?= sidebarStorageHtml($currentUser) ?>
         <?= sidebarIcpHtml() ?>
         <?= sidebarPoliceHtml() ?>
         <div class="account-menu"><?= avatarHtml($currentUser) ?><div><strong><?= e($currentUser['username']) ?></strong><small>管理员</small></div><form method="post" action="logout.php"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><button>退出</button></form></div>
     </aside>
     <main class="drive-main admin-main">
-        <?= banNoticeHtml($currentUser) ?>
         <header class="drive-header"><div><p><?= e($adminTabs[$activeTab]['desc']) ?></p><h1>管理后台 · <?= e($adminTabs[$activeTab]['label']) ?></h1></div><a class="secondary-button" href="dashboard.php">返回我的文件</a></header>
         <nav class="admin-tabs" aria-label="管理后台分区"><?php foreach ($adminTabs as $tabKey => $tabMeta): ?><a class="<?= $tabKey === $activeTab ? 'active' : '' ?>" href="<?= e($tabUrl((string) $tabKey)) ?>"><?= e($tabMeta['label']) ?></a><?php endforeach; ?></nav>
         <?php if ($flash): ?><div class="alert <?= e($flash['type']) ?>"><?= e($flash['message']) ?></div><?php endif; ?>
@@ -1359,10 +907,10 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
 
         <?php if ($activeTab === 'users'): ?>
         <section class="admin-panel">
-            <div class="panel-title"><div><h2>用户与容量</h2><p>容量由权限组决定；单独填写容量会覆盖组容量，留空或 -1 表示继承组容量。每位用户默认只显示概览，展开「编辑」后才能修改密码、权限组与容量。</p></div><span><?= count($users) ?> 位用户</span></div>
+            <div class="panel-title"><div><h2>用户与容量</h2><p>账号只区分「普通用户 / 管理员」。容量按用户单独设置，留空或 -1 表示不限。每位用户默认只显示概览，展开「编辑」后才能修改密码、角色与容量。</p></div><span><?= count($users) ?> 位用户</span></div>
             <form method="post" class="create-user-row">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="create_user">
-                <label><span>用户名</span><input name="username" minlength="3" required></label><label><span>初始密码</span><input type="password" name="password" minlength="6" required></label><label><span>权限组</span><select name="group_id"><?= $groupSelectOptions(defaultGroupId()) ?></select></label><label><span>单独容量（GB）</span><input name="quota_gb" inputmode="decimal" placeholder="-1"></label><label><span>Notion 来源</span><select name="notion_source"><option value="own">自有账户</option><option value="official">官方账户池</option></select></label><button class="primary-button compact">添加用户</button>
+                <label><span>用户名</span><input name="username" minlength="3" required></label><label><span>初始密码</span><input type="password" name="password" minlength="6" required></label><label class="checkbox"><input type="checkbox" name="is_admin">设为管理员</label><label><span>容量（GB）</span><input name="quota_gb" inputmode="decimal" placeholder="-1 表示不限"></label><label><span>Notion 来源</span><select name="notion_source"><option value="own">自有账户</option><option value="official">官方账户池</option></select></label><button class="primary-button compact">添加用户</button>
             </form>
             <div class="log-filters user-search"><label><span>搜索用户</span><input id="user-search" type="search" placeholder="输入用户 ID、用户名或邮箱即时筛选"></label></div>
             <div class="admin-user-list">
@@ -1373,85 +921,40 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
                         <summary>
                             <span class="user-row-summary">
                                 <span class="user-identity"><?= avatarHtml($managedUser) ?><strong><?= e((string) $managedUser['username']) ?></strong></span>
-                                <small class="user-meta">ID <?= (int) $managedUser['id'] ?> · <?= (int) $managedUser['file_count'] ?> 个文件 · <?= e(formatBytes((int) $managedUser['used_bytes'])) ?><?= emailBound($managedUser) ? ' · ' . e((string) $managedUser['email']) : ' · 未绑定邮箱' ?> · <?= e($premiumLabel($managedUser)) ?> · Notion <?= userNotionSource($managedUser) === 'own' ? (hasOwnNotionAccount($managedUser) ? '自有账户' : '自有账户（未绑定）') : '官方账户' ?> · 到期时长 <?= e($premiumDuration($managedUser)) ?></small>
+                                <small class="user-meta">ID <?= (int) $managedUser['id'] ?> · <?= (int) $managedUser['file_count'] ?> 个文件 · <?= e(formatBytes((int) $managedUser['used_bytes'])) ?><?= emailBound($managedUser) ? ' · ' . e((string) $managedUser['email']) : ' · 未绑定邮箱' ?> · <?= isAdmin($managedUser) ? '管理员' : '普通用户' ?> · Notion <?= userNotionSource($managedUser) === 'own' ? (hasOwnNotionAccount($managedUser) ? '自有账户' : '自有账户（未绑定）') : '官方账户' ?></small>
                             </span>
                             <span class="user-row-actions">
-                                <?php if (!isAdmin($managedUser)): ?><button type="button" class="text-action" data-grant-toggle><?= isPremiumUser($managedUser) ? '续费订阅' : '开通订阅' ?></button><?php endif; ?>
                                 <span class="text-action user-row-toggle"><span class="fold-open">编辑</span><span class="fold-close">收起</span></span>
                             </span>
                         </summary>
                         <div class="user-row-editor-body">
                             <label><span>用户名</span><input name="username" value="<?= e($managedUser['username']) ?>" required></label>
                             <label><span>新密码</span><input type="password" name="password" placeholder="留空不修改"></label>
-                            <label><span>权限组</span><select name="group_id"><?= $groupSelectOptions((int) $managedUser['group_id']) ?></select></label>
-                            <label><span>单独容量 GB</span><input name="quota_gb" value="<?= e($quotaGb) ?>"></label>
+                            <label class="checkbox"><input type="checkbox" name="is_admin" <?= isAdmin($managedUser) ? 'checked' : '' ?>>管理员</label>
+                            <label><span>容量 GB</span><input name="quota_gb" value="<?= e($quotaGb) ?>" placeholder="-1 表示不限"></label>
                             <div class="row-actions">
                                 <button class="save-action" name="action" value="update_user">保存</button>
                                 <?php if ((int) $managedUser['id'] !== (int) $currentUser['id']): ?><button class="delete-action" name="action" value="delete_user" data-confirm="确认删除用户及其全部文件？">删除</button><?php endif; ?>
                             </div>
                         </div>
                     </details>
-                    <?php if (!isAdmin($managedUser)): ?>
-                    <div class="user-row-grant" hidden>
-                        <label><span>开通时长</span><select name="grant_months"><?php foreach ($plans as $months => $price): ?><option value="<?= (int) $months ?>"><?= (int) $months ?> 个月 · ¥<?= e(number_format((float) $price, 2)) ?></option><?php endforeach; ?></select></label>
-                        <button class="primary-button compact" name="action" value="grant_premium" data-confirm="确认为该用户开通高级套餐？将生成一条「管理员授权」订单。">确认开通</button>
-                        <label><span>发放直链包</span><select name="grant_links"><?php foreach ($sharePacks as $pack): ?><option value="<?= (int) $pack['count'] ?>"><?= (int) $pack['count'] ?> 条</option><?php endforeach; ?></select></label>
-                        <button class="primary-button compact" name="action" value="grant_share_pack" data-confirm="确认为该用户发放直链包？将生成一条「管理员授权」订单。">发放直链包</button>
-                        <button type="button" class="text-action" data-grant-cancel>取消</button>
-                    </div>
-                    <?php endif; ?>
                 </form>
                 <?php endforeach; ?>
                 <p class="compact-empty" id="user-search-empty" hidden>没有匹配的用户。</p>
             </div>
         </section>
 
-        <section class="admin-panel">
-            <div class="panel-title"><div><h2>权限组</h2><p>组容量对组内用户生效；单文件上限与 Notion 套餐上限取较小值。等级用于排序与后续高级账号扩展。</p></div><span><?= count($groups) ?> 个权限组</span></div>
-            <form method="post" class="create-user-row create-group-row">
-                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_group"><input type="hidden" name="group_id" value="0">
-                <label><span>组名称</span><input name="group_name" maxlength="64" required></label><label><span>组容量（GB）</span><input name="group_quota_gb" inputmode="decimal" placeholder="-1"></label><label><span>单文件上限（MB）</span><input name="group_single_mb" inputmode="decimal" placeholder="-1"></label><label><span>等级</span><input name="group_level" inputmode="numeric" value="0"></label><label class="checkbox"><input type="checkbox" name="group_is_admin">管理员组</label><button class="primary-button compact">新建权限组</button>
-            </form>
-            <div class="admin-user-list">
-                <?php foreach ($groups as $group): $groupQuotaGb = bytesToInputValue($group['quota_bytes'] === null ? null : (int) $group['quota_bytes'], 1073741824); $groupSingleMb = bytesToInputValue($group['single_file_limit_bytes'] === null ? null : (int) $group['single_file_limit_bytes'], 1048576); ?>
-                <form method="post" class="admin-user-row group-row">
-                    <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="group_id" value="<?= (int) $group['id'] ?>">
-                    <div class="user-identity"><span class="avatar"><?= e(mb_strtoupper(mb_substr((string) $group['name'], 0, 1))) ?></span><div><strong><?= e($group['name']) ?><?= (int) $group['is_builtin'] === 1 ? ' · 内置' : '' ?></strong><small><?= (int) ($groupMemberCounts[(int) $group['id']] ?? 0) ?> 位用户 · 容量 <?= e(quotaLabel($group['quota_bytes'] === null ? null : (int) $group['quota_bytes'])) ?></small></div></div>
-                    <label><span>组名称</span><input name="group_name" value="<?= e($group['name']) ?>" maxlength="64" required></label><label><span>组容量 GB</span><input name="group_quota_gb" value="<?= e($groupQuotaGb) ?>"></label><label><span>单文件 MB</span><input name="group_single_mb" value="<?= e($groupSingleMb) ?>"></label><label><span>等级</span><input name="group_level" value="<?= (int) $group['level'] ?>"></label><label class="checkbox"><input type="checkbox" name="group_is_admin" <?= (int) $group['is_admin'] === 1 ? 'checked' : '' ?>>管理员组</label>
-                    <button class="save-action" name="action" value="save_group">保存</button><?php if ((int) $group['is_builtin'] !== 1): ?><button class="delete-action" name="action" value="delete_group" data-confirm="确认删除该权限组？">删除</button><?php endif; ?>
-                </form>
-                <?php $groupMembers = array_values(array_filter($users, static fn (array $member): bool => (int) $member['group_id'] === (int) $group['id'])); ?>
-                <details class="group-members">
-                    <summary><span class="text-action">查看该组用户（<?= count($groupMembers) ?>）</span></summary>
-                    <?php if (!$groupMembers): ?>
-                    <p class="log-meta">该权限组下暂无用户。</p>
-                    <?php else: ?>
-                    <ul class="group-member-list">
-                        <?php foreach ($groupMembers as $member): ?>
-                        <li><a href="admin.php?tab=files&user_id=<?= (int) $member['id'] ?>#user-files"><?= avatarHtml($member) ?><strong><?= e((string) $member['username']) ?></strong></a><small><?= (int) $member['file_count'] ?> 个文件 · <?= e($premiumLabel($member)) ?></small></li>
-                        <?php endforeach; ?>
-                    </ul>
-                    <?php endif; ?>
-                </details>
-                <?php endforeach; ?>
-            </div>
-        </section>
         <?php endif; ?>
 
         <?php if ($activeTab === 'content'): ?>
         <section class="admin-panel">
-            <div class="panel-title"><div><h2>官方账户池</h2><p>全体付费用户共享这里的账户；优先级数值越大越靠前，用户按「已分配的主备账户 → 池内剩余账户」的顺序取用，因此未分配的用户也能直接上传。Token 加密保存，不会回显。套餐决定官方账户的单文件上限：免费版固定 5 MB，付费版按「系统设置 · 上传与容量」里配置的上限生效。</p></div><span><?= count($officialAccounts) ?> 个账户</span></div>
-            <form method="post" class="create-user-row slim">
-                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_plan">
-                <label><span>官方账户套餐</span><select name="plan"><option value="free" <?= $plan === 'free' ? 'selected' : '' ?>>免费版 · 5 MB</option><option value="paid" <?= $plan === 'paid' ? 'selected' : '' ?>>付费版 · 5 GB</option></select></label>
-                <button class="primary-button compact">保存套餐</button>
-            </form>
+            <div class="panel-title"><div><h2>官方账户池</h2><p>全体用户共享这里的账户；优先级数值越大越靠前，用户按「已分配的主备账户 → 池内剩余账户」的顺序取用，因此未分配的用户也能直接上传。Token 加密保存，不会回显。单文件上限按「系统设置 · 上传与容量」里配置的值生效。</p></div><span><?= count($officialAccounts) ?> 个账户</span></div>
             <form method="post" class="create-user-row create-group-row">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_official_account"><input type="hidden" name="account_id" value="0">
                 <label><span>账户名称</span><input name="label" maxlength="64" required placeholder="例如：官方账户 A"></label><label><span>集成 Token</span><input type="password" name="token" autocomplete="off" maxlength="200" required placeholder="ntn_••••••••"></label><label><span>根页面</span><input name="root_page" maxlength="500" required placeholder="https://www.notion.so/..."></label><label><span>优先级</span><input name="priority" inputmode="numeric" value="0"></label><label class="checkbox"><input type="checkbox" name="is_enabled" checked>启用</label><button class="primary-button compact">添加账户</button>
             </form>
             <?php if (!$officialAccounts): ?>
-            <div class="empty-state compact-empty">还没有官方账户；添加后购买高级套餐的用户才能使用官方空间。</div>
+            <div class="empty-state compact-empty">还没有官方账户；添加后用户即可使用官方空间。</div>
             <?php else: ?>
             <div class="admin-user-list">
                 <?php foreach ($officialAccounts as $account): ?>
@@ -1468,7 +971,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
 
         <?php if ($selectedUser): ?>
         <section class="admin-panel">
-            <div class="panel-title"><div><h2><?= e($selectedUser['username']) ?> 的官方账户</h2><p>官方账户池为全体付费用户共享，这里的分配只决定优先顺序：先主账户、再备用账户，之后按池内优先级顺延；未分配的用户也能直接使用池内账户。自有账户由用户注册时绑定，Token 加密保存、不在此显示。</p></div><span class="status-badge"><?= userNotionSource($selectedUser) === 'official' ? '当前来源：官方账户' : '当前来源：自有账户' ?></span></div>
+            <div class="panel-title"><div><h2><?= e($selectedUser['username']) ?> 的官方账户</h2><p>官方账户池为全体用户共享，这里的分配只决定优先顺序：先主账户、再备用账户，之后按池内优先级顺延；未分配的用户也能直接使用池内账户。自有账户由用户注册时绑定，Token 加密保存、不在此显示。</p></div><span class="status-badge"><?= userNotionSource($selectedUser) === 'official' ? '当前来源：官方账户' : '当前来源：自有账户' ?></span></div>
             <form method="post" class="admin-user-row assign-row">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="user_id" value="<?= (int) $selectedUser['id'] ?>">
                 <label><span>主账户</span><select name="primary_account_id"><?= $accountOptions((int) $selectedAccountIds['primary']) ?></select></label>
@@ -1501,115 +1004,6 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
             <p class="compact-empty" id="user-search-empty" hidden>没有匹配的用户。</p>
         </section>
         <?php endif; ?>
-        <?php endif; ?>
-
-        <?php if ($activeTab === 'risk'): ?>
-        <section class="admin-panel connection-panel">
-            <div class="panel-title"><div><h2>内容风控</h2><p>关键词在上传开始前直接拦截；AI 识别在上传完成后执行，判定违规即隔离文件并生成申诉号。未配置接口地址或 API Key 时只跑关键词。</p></div><span class="status-badge <?= $moderationSettings['enabled'] ? 'granted' : 'closed' ?>"><?= $moderationSettings['enabled'] ? '已启用' : '未启用' ?></span></div>
-            <form method="post" class="connection-form stack-form">
-                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_moderation">
-                <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="enabled" value="1" <?= $moderationSettings['enabled'] ? 'checked' : '' ?>>启用内容风控</label></div>
-                <label><span>违禁关键词</span><textarea name="keywords" rows="4" placeholder="每行一个，也可用逗号分隔"><?= e($moderationSettings['keywords']) ?></textarea><small>命中关键词的文件会在上传前被拒绝，并分配唯一申诉号。</small></label>
-                <div class="checkbox-row"><span>AI 识别范围</span><label class="checkbox"><input type="checkbox" name="scope[]" value="filename" <?= in_array('filename', $moderationSettings['scope'], true) ? 'checked' : '' ?>>文件名</label><label class="checkbox"><input type="checkbox" name="scope[]" value="text" <?= in_array('text', $moderationSettings['scope'], true) ? 'checked' : '' ?>>文本内容</label><label class="checkbox"><input type="checkbox" name="scope[]" value="image" <?= in_array('image', $moderationSettings['scope'], true) ? 'checked' : '' ?>>图片内容</label></div>
-                <label><span>AI 接口地址</span><input name="endpoint" value="<?= e($moderationSettings['endpoint']) ?>" placeholder="https://api.openai.com/v1"><small>OpenAI 兼容的 /chat/completions 接口；必须为 https，且不能指向内网或本机。</small></label>
-                <label><span>模型名称</span><input name="model" value="<?= e($moderationSettings['model']) ?>" maxlength="128" placeholder="gpt-4o-mini"></label>
-                <label><span>API Key</span><input type="password" name="api_key" autocomplete="off" placeholder="<?= $moderationSettings['api_key_set'] ? '留空保持不变' : '未设置' ?>"><small>加密保存，不会回显。</small></label>
-                <label><span>审核超时（秒）</span><input name="timeout" inputmode="numeric" value="<?= (int) $moderationSettings['timeout'] ?>" placeholder="8"><small>2 - 60 秒。接口超时或异常时文件照常放行并转人工复核，不会阻断上传。</small></label>
-                <div class="form-actions"><button class="primary-button compact">保存设置</button></div>
-            </form>
-        </section>
-
-        <?php $exemptUsers = array_values(array_filter($moderationUsers, static fn (array $u): bool => (int) $u['moderation_exempt'] === 1)); ?>
-        <section class="admin-panel connection-panel">
-            <div class="panel-title"><div><h2>免审核上传</h2><p>被豁免的用户上传时跳过关键词与 AI 识别，直接放行；已豁免用户可在此取消。</p></div><span class="status-badge <?= $exemptUsers ? 'granted' : 'closed' ?>"><?= count($exemptUsers) ?> 位已豁免</span></div>
-            <form method="post" class="connection-form">
-                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_moderation_exempt">
-                <label><span>选择用户</span>
-                    <select name="exempt_user_id" required>
-                        <option value="">请选择用户</option>
-                        <?php foreach ($moderationUsers as $moderationUser): ?>
-                        <option value="<?= (int) $moderationUser['id'] ?>"><?= e((string) $moderationUser['username']) ?><?= (string) ($moderationUser['email'] ?? '') === '' ? '' : ' · ' . e((string) $moderationUser['email']) ?><?= (int) $moderationUser['moderation_exempt'] === 1 ? '（已豁免）' : '' ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </label>
-                <div class="form-actions"><button class="primary-button compact" name="exempt_mode" value="on">豁免该用户</button><button class="secondary-button" name="exempt_mode" value="off">取消豁免</button></div>
-            </form>
-            <?php if ($exemptUsers): ?>
-            <ul class="group-member-list">
-                <?php foreach ($exemptUsers as $exemptUser): ?>
-                <li>
-                    <span><?= avatarHtml($exemptUser) ?><strong><?= e((string) $exemptUser['username']) ?></strong></span>
-                    <form method="post"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_moderation_exempt"><input type="hidden" name="exempt_user_id" value="<?= (int) $exemptUser['id'] ?>"><input type="hidden" name="exempt_mode" value="off"><button class="text-action" type="submit">取消豁免</button></form>
-                </li>
-                <?php endforeach; ?>
-            </ul>
-            <?php endif; ?>
-        </section>
-
-        <section class="admin-panel">
-            <div class="panel-title"><div><h2>审核记录</h2><p>关键词拦截与 AI 识别的全部结论。AI 降级（待人工复核）的记录文件仍可正常使用，人工判定违规才隔离；放行时若原文件仍在会直接恢复可用，并登记内容白名单，上传前拦截（无文件）的记录则由用户重传，重传同一文件按 SHA-256 自动放行。</p></div><span><?= count($moderationRecords) ?> 条</span></div>
-            <?php if (!$moderationRecords): ?>
-            <div class="empty-state compact-empty">还没有审核记录。</div>
-            <?php else: ?>
-            <div class="file-table-wrap">
-                <table class="file-table">
-                    <thead><tr><th>用户 · 文件</th><th>申诉号</th><th>判定</th><th>状态</th><th>时间</th><th>复核</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($moderationRecords as $record): ?>
-                        <?php
-                        $recordStatus = (string) $record['status'];
-                        $recordDecision = (string) $record['decision'];
-                        $providerLabel = match ((string) $record['provider']) {
-                            'keyword' => '关键词',
-                            'ai' => 'AI',
-                            default => (string) $record['provider'] !== '' ? (string) $record['provider'] : '—',
-                        };
-                        $statusInfo = match ($recordStatus) {
-                            ModerationService::STATUS_EXEMPTED => ['label' => '已豁免', 'class' => 'granted'],
-                            ModerationService::STATUS_REJECTED => ['label' => '已打回', 'class' => 'void'],
-                            ModerationService::STATUS_RESUBMIT => ['label' => '已放行重传', 'class' => 'closed'],
-                            ModerationService::STATUS_CLEARED => ['label' => '已清除违规', 'class' => 'closed'],
-                            ModerationService::STATUS_CONSUMED => ['label' => '已重传', 'class' => 'closed'],
-                            default => ['label' => $recordDecision === 'pending' ? '待人工复核' : '待复核', 'class' => 'pending'],
-                        };
-                        $username = (string) ($record['username'] ?? '');
-                        ?>
-                        <tr>
-                            <td><div class="file-name"><span class="file-kind"><?= e(strtoupper(pathinfo((string) $record['filename'], PATHINFO_EXTENSION) ?: 'FILE')) ?></span><div><strong><?= e($record['filename']) ?></strong><small><?= $username !== '' ? e($username) : '已注销用户' ?> · <?= $record['stage'] === ModerationService::STAGE_START ? '上传前拦截' : '上传后识别' ?></small></div></div></td>
-                            <td data-label="申诉号"><strong><?= e($record['appeal_no']) ?></strong></td>
-                            <td data-label="判定"><div><strong><?= e($providerLabel) ?></strong><small><?= e((string) $record['reason']) ?><?= (string) $record['matched'] === '' ? '' : ' · ' . e((string) $record['matched']) ?><?= (string) $record['model'] === '' ? '' : ' · ' . e((string) $record['model']) ?></small></div></td>
-                            <td data-label="状态"><span class="status-badge <?= $statusInfo['class'] ?>"><?= e($statusInfo['label']) ?></span></td>
-                            <td data-label="时间"><?= e(date('Y-m-d H:i', strtotime((string) $record['created_at']))) ?></td>
-                            <td>
-                                <?php if ($recordStatus === ModerationService::STATUS_OPEN): ?>
-                                <?php $reviewPending = $recordDecision === 'pending'; ?>
-                                <form method="post" class="moderation-review">
-                                    <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="record_id" value="<?= (int) $record['id'] ?>">
-                                    <input name="review_note" maxlength="200" placeholder="复核备注（可选）">
-                                    <?php if ($reviewPending): ?>
-                                    <div class="row-actions"><button class="delete-action" name="action" value="moderation_reject" data-confirm="确认判定违规？文件将被隔离。">不可用</button></div>
-                                    <?php else: ?>
-                                    <div class="row-actions"><button class="text-action" name="action" value="moderation_resubmit">放行</button><button class="delete-action" name="action" value="moderation_reject" data-confirm="确认打回该申诉？文件将保持不可用。">不可用</button></div>
-                                    <?php endif; ?>
-                                </form>
-                                <?php else: ?>
-                                <div class="log-meta"><?= $record['reviewed_at'] === null ? '—' : e(date('Y-m-d H:i', strtotime((string) $record['reviewed_at']))) ?><?= (string) ($record['review_note'] ?? '') === '' ? '' : ' · ' . e((string) $record['review_note']) ?></div>
-                                    <?php if ($recordStatus === ModerationService::STATUS_REJECTED): ?>
-                                    <form method="post" class="moderation-review">
-                                        <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="record_id" value="<?= (int) $record['id'] ?>">
-                                        <input name="review_note" maxlength="200" placeholder="清除备注（可选）">
-                                        <div class="row-actions"><button class="text-action" name="action" value="moderation_clear" data-confirm="确认清除该违规记录？清除后不再计入该用户的违规次数（文件仍保持隔离）。">清除记录</button></div>
-                                    </form>
-                                    <?php endif; ?>
-                                <?php endif; ?>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-            <?php endif; ?>
-        </section>
         <?php endif; ?>
 
         <?php if ($activeTab === 'system'): ?>
@@ -1651,7 +1045,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         </section>
 
         <section class="admin-panel connection-panel">
-            <div class="panel-title"><div><h2>上传与容量</h2><p>分块大小决定浏览器每次提交的数据量，实际生效值受服务器 PHP 上传限制约束：upload_max_filesize = <?= e((string) ini_get('upload_max_filesize')) ?>，post_max_size = <?= e((string) ini_get('post_max_size')) ?>。官方账户单文件上限仅在「套餐」为付费版时生效，免费版仍为 5 MB。</p></div><span class="status-badge">实际单块 <?= e(formatBytes($effectiveChunkBytes)) ?></span></div>
+            <div class="panel-title"><div><h2>上传与容量</h2><p>分块大小决定浏览器每次提交的数据量，实际生效值受服务器 PHP 上传限制约束：upload_max_filesize = <?= e((string) ini_get('upload_max_filesize')) ?>，post_max_size = <?= e((string) ini_get('post_max_size')) ?>。官方账户单文件上限对使用官方账户池的所有用户生效；自有账户固定 5 MB。</p></div><span class="status-badge">实际单块 <?= e(formatBytes($effectiveChunkBytes)) ?></span></div>
             <form method="post" class="connection-form stack-form">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_limits">
                 <label><span>官方账户单文件上限（MB）</span><input name="official_single_file_limit_mb" inputmode="numeric" value="<?= $officialLimitMb ?>" required></label>
@@ -1661,43 +1055,6 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
                 <label><span>全服防爆盘上限（MB）</span><input name="server_disk_limit_mb" inputmode="numeric" value="<?= $serverDiskLimitMb ?>" required><small>整个服务器（所有用户）的「待写入暂存 + 在途分块」合计上限，默认 10240 MB（10 GB）；0 表示不限。超限时普通上传会被拒绝，并提示用户改为「在线上传 Notion」（不占用服务器暂存）。</small></label>
                 <div class="form-actions"><button class="primary-button compact">保存设置</button></div>
             </form>
-        </section>
-
-        <section class="admin-panel connection-panel">
-            <div class="panel-title"><div><h2>直链分享</h2><p>直链是免登录的公开下载 / 预览地址，靠有效期与随时撤销控制风险；关闭总开关后所有已生成的直链立即失效。直链包价格留空表示该档位暂不出售。直链仅高级用户与管理员可用，管理员额度不限、无需购买。</p></div><span class="status-badge <?= $shareEnabled ? '' : 'closed' ?>"><?= $shareEnabled ? '已开启' : '已关闭' ?></span></div>
-            <form method="post" class="connection-form stack-form">
-                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_share">
-                <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="share_enabled" value="1" <?= $shareEnabled ? 'checked' : '' ?>>开启直链分享</label></div>
-                <label><span>默认有效期</span><select name="share_default_days"><?php foreach ([1 => '1 天', 7 => '7 天', 30 => '30 天', 0 => '永久'] as $days => $daysLabel): ?><option value="<?= (int) $days ?>" <?= $shareDefaultDays === $days ? 'selected' : '' ?>><?= e($daysLabel) ?></option><?php endforeach; ?></select></label>
-                <?php foreach ($sharePacks as $pack): $packCount = (int) $pack['count']; ?>
-                <label><span><?= $packCount ?> 条直链包价格（元）</span><input name="share_pack_price[<?= $packCount ?>]" inputmode="decimal" value="<?= e((string) $pack['price']) ?>" placeholder="留空表示暂不出售"></label>
-                <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="share_pack_enabled[<?= $packCount ?>]" value="1" <?= $pack['enabled'] ? 'checked' : '' ?>>上架「<?= $packCount ?> 条」档位</label></div>
-                <?php endforeach; ?>
-                <div class="form-actions"><button class="primary-button compact">保存设置</button></div>
-            </form>
-        </section>
-
-        <section class="admin-panel connection-panel">
-            <div class="panel-title"><div><h2>支付设置</h2><p>对接易支付（页面跳转收款）。商户密钥加密保存、不会回显；接口地址留空即暂停在线支付。套餐价格修改后立即对新订单生效，不影响已支付的订单。</p></div><span class="status-badge"><?= $epayConfigured ? '已配置' : '未配置' ?></span></div>
-            <form method="post" class="connection-form stack-form">
-                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_payment">
-                <label><span>易支付接口地址</span><input name="epay_gateway" value="<?= e($payment['gateway']) ?>" maxlength="255" placeholder="https://spay.example.com/plugin/EpayApi/GatewayV1/"></label>
-                <label><span>商户 ID</span><input name="epay_pid" value="<?= e($payment['pid']) ?>" maxlength="64" autocomplete="off"></label>
-                <label><span>商户密钥</span><input type="password" name="epay_key" autocomplete="new-password" placeholder="<?= $payment['has_key'] ? '留空保持不变' : '未设置' ?>"></label>
-                <label><span>站点地址</span><input name="site_url" value="<?= e($payment['site_url']) ?>" maxlength="255" placeholder="留空自动识别"></label>
-                <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="epay_pay_types[]" value="alipay" <?= isset($enabledPayTypes['alipay']) ? 'checked' : '' ?>>支付宝</label>
-                <label class="checkbox"><input type="checkbox" name="epay_pay_types[]" value="wxpay" <?= isset($enabledPayTypes['wxpay']) ? 'checked' : '' ?>>微信支付</label></div>
-                <?php foreach ($plans as $months => $price): ?>
-                <label><span><?= (int) $months ?> 个月价格（元）</span><input name="premium_price_<?= (int) $months ?>" inputmode="decimal" value="<?= e(number_format((float) $price, 2, '.', '')) ?>" required></label>
-                <?php endforeach; ?>
-                <label><span>异步通知地址（回调）</span><input value="<?= e(epayNotifyUrl()) ?>" readonly></label>
-                <label><span>同步回跳地址</span><input value="<?= e(epayReturnUrl()) ?>" readonly></label>
-                <div class="form-actions"><button class="primary-button compact">保存设置</button></div>
-            </form>
-            <p class="log-meta">请把上面的两个地址填写到易支付商户后台；支付渠道需与易支付账号实际开通的方式一致，未开通的渠道用户点击后会提示下单失败。历史订单可在「订单管理」中查看与人工处理。</p>
-            <?php if ($payment['site_url'] === ''): ?>
-            <p class="log-meta">建议把「站点地址」填写为对外可访问的固定地址（如 https://drive.example.com）：留空时系统按本次访问的域名自动识别，域名变化或经反向代理时回调地址可能不准。</p>
-            <?php endif; ?>
         </section>
 
         <section class="admin-panel connection-panel">
@@ -1756,107 +1113,6 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         </section>
         <?php endif; ?>
 
-        <?php if ($activeTab === 'tickets'): ?>
-        <?php
-        $ticketBanService = TicketBanService::create();
-        $ticketBans = $ticketBanService->bannedUsers();
-        $ticketBanDurations = TicketBanService::durations();
-        $ticketExpireDays = TicketService::expireDays();
-        ?>
-        <section class="admin-panel connection-panel">
-            <div class="panel-title"><div><h2>工单过期设置</h2><p>全局一个档位。计时规则：只在「客服已回复、等用户回复」时计时——客服回复后用户超过该天数未回应，工单自动置为「已过期」。过期后对话仍可查看，但不可再回复、不可重开，工单内附件会立即从 Notion 删除且不可恢复。</p></div><span class="status-badge <?= $ticketExpireDays > 0 ? '' : 'closed' ?>"><?= $ticketExpireDays > 0 ? $ticketExpireDays . ' 天' : '不过期' ?></span></div>
-            <form method="post" class="connection-form stack-form">
-                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_ticket_settings">
-                <label><span>过期天数</span>
-                    <input name="ticket_expire_days" inputmode="numeric" list="ticketExpirePresets" value="<?= (int) $ticketExpireDays ?>" placeholder="0 表示不过期" required>
-                    <datalist id="ticketExpirePresets">
-                        <?php foreach (TicketService::expirePresets() as $presetValue => $presetLabel): ?>
-                        <option value="<?= (int) $presetValue ?>"><?= e($presetLabel) ?></option>
-                        <?php endforeach; ?>
-                    </datalist>
-                    <small>可从 0 / 1 / 7 / 15 / 30 中选，也可手动输入其他天数；0 表示不过期，正整数表示客服回复后等待用户回复的天数（1 ~ 3650）。</small>
-                </label>
-                <div class="form-actions"><button class="primary-button compact" data-confirm="确认保存工单过期档位？保存后对所有工单立即生效，已过期的工单不受影响。">保存设置</button></div>
-            </form>
-        </section>
-
-        <section class="admin-panel connection-panel">
-            <div class="panel-title"><div><h2>站内评价开关</h2><p>关闭后，已结束的工单详情页<b>不再展示评价区块</b>，外部调研入口也一并隐藏；用户即使构造请求提交评价也会被服务端拒绝。历史已提交的评价不受影响，仍可在「评价统计」页签查看与统计。</p></div><span class="status-badge <?= TicketService::reviewEnabled() ? '' : 'closed' ?>"><?= TicketService::reviewEnabled() ? '已开启' : '已关闭' ?></span></div>
-            <form method="post" class="connection-form">
-                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_review_enabled">
-                <div class="checkbox-row"><label class="checkbox"><input type="checkbox" name="ticket_review_enabled" value="1" <?= TicketService::reviewEnabled() ? 'checked' : '' ?>>开启工单评价（用户可在已结束工单上打分与留言）</label></div>
-                <div class="form-actions"><button class="primary-button compact" data-confirm="确认保存工单评价开关？">保存设置</button></div>
-            </form>
-        </section>
-
-        <section class="admin-panel connection-panel">
-            <div class="panel-title"><div><h2>外部调研链接</h2><p>工单评价只在站内统计，不会共享到外部渠道。若需要在第三方渠道（如问卷平台）收集用户反馈，可在此配置调研链接：配置后会在「已结束工单」的详情页展示「为了提升我们的服务，邀请您参加调研 → 点我参加」，点击新窗口打开。留空表示不展示该入口。注意：站内评价开关关闭时，该入口同样不展示。</p></div><span class="status-badge <?= TicketService::surveyUrl() !== '' ? '' : 'closed' ?>"><?= TicketService::surveyUrl() !== '' ? '已启用' : '未配置' ?></span></div>
-            <form method="post" class="connection-form stack-form">
-                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="save_survey_url">
-                <label><span>调研链接</span>
-                    <input type="url" name="ticket_survey_url" maxlength="500" value="<?= e(TicketService::surveyUrl()) ?>" placeholder="https://…（留空表示不展示调研入口）">
-                    <small>需以 http:// 或 https:// 开头；仅本站配置并跳转，评价数据不上传到本站以外的位置。</small>
-                </label>
-                <div class="form-actions"><button class="primary-button compact">保存链接</button></div>
-            </form>
-        </section>
-
-        <section class="admin-panel connection-panel">
-            <div class="panel-title"><div><h2>禁止提交工单</h2><p>被禁止的用户无法新建工单（含文件被拦截后的快捷申诉），但可继续查看与回复已有工单；上传、下载、重命名与新建文件夹均不受影响。与「封禁管理」的账户封禁相互独立。</p></div><span class="status-badge <?= $ticketBans ? 'void' : 'closed' ?>"><?= count($ticketBans) ?> 位已禁止</span></div>
-            <form method="post" class="connection-form stack-form">
-                <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="ban_ticket_user">
-                <label><span>选择用户</span>
-                    <select name="ticket_ban_user_id" required>
-                        <option value="">请选择用户</option>
-                        <?php foreach ($users as $ticketUser): ?>
-                        <option value="<?= (int) $ticketUser['id'] ?>"><?= e((string) $ticketUser['username']) ?><?= (string) ($ticketUser['email'] ?? '') === '' ? '' : ' · ' . e((string) $ticketUser['email']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </label>
-                <label><span>禁止期限</span>
-                    <select name="ticket_ban_days">
-                        <?php foreach ($ticketBanDurations as $value => $label): ?>
-                        <option value="<?= e((string) $value) ?>" <?= (string) $value === '7' ? 'selected' : '' ?>><?= e($label) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                    <small>到期后自动解除；选「永久」需管理员手动解除。</small>
-                </label>
-                <label><span>原因</span><input name="ticket_ban_reason" maxlength="500" placeholder="禁止原因（可留空）"></label>
-                <div class="form-actions"><button class="primary-button compact" data-confirm="确认禁止该用户提交新工单？其已有工单仍可查看与回复，上传下载不受影响。">禁止提交工单</button></div>
-            </form>
-        </section>
-
-        <section class="admin-panel">
-            <div class="panel-title"><div><h2>已禁止用户</h2><p>共 <?= count($ticketBans) ?> 位 · 到期会自动解除，也可在此手动解除。</p></div></div>
-            <?php if (!$ticketBans): ?>
-            <div class="empty-state compact-empty">当前没有被禁止提交工单的用户。</div>
-            <?php else: ?>
-            <div class="file-table-wrap">
-                <table class="file-table">
-                    <thead><tr><th>用户</th><th>原因</th><th>期限</th><th>禁止时间</th><th>操作</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($ticketBans as $ban): ?>
-                    <tr>
-                        <td>
-                            <div class="file-name"><div><strong class="display-name"><?= e((string) $ban['username']) ?></strong><small>ID <?= (int) $ban['user_id'] ?><?= (string) ($ban['email'] ?? '') === '' ? '' : ' · ' . e((string) $ban['email']) ?></small></div></div>
-                        </td>
-                        <td data-label="原因"><?= e((string) ($ban['reason'] ?? '') !== '' ? (string) $ban['reason'] : '—') ?></td>
-                        <td data-label="期限"><?= $ban['until'] === null ? '<span class="status-badge void">永久</span>' : '至 ' . e(date('Y-m-d H:i', (int) strtotime((string) $ban['until']))) ?></td>
-                        <td data-label="禁止时间"><span><?= ($ban['created_at'] ?? null) !== null ? e(date('Y-m-d H:i', (int) strtotime((string) $ban['created_at']))) : '—' ?></span></td>
-                        <td>
-                            <div class="file-actions">
-                                <form method="post" class="inline-form"><input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="unban_ticket_user"><input type="hidden" name="user_id" value="<?= (int) $ban['user_id'] ?>"><button data-confirm="确认解除该用户禁止提交工单的限制？解除后其可重新新建工单。">解除</button></form>
-                            </div>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-            <?php endif; ?>
-        </section>
-        <?php endif; ?>
-
         <?php if ($activeTab === 'preview'): ?>
         <?php $previewWarnMb = (int) max(1, round(previewWarnBytes() / 1024 / 1024)); ?>
         <section class="admin-panel connection-panel">
@@ -1872,73 +1128,9 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         </section>
         <?php endif; ?>
 
-        <?php if ($activeTab === 'reviews'): ?>
-        <?php
-        $reviewService = TicketService::create();
-        $reviewStats = $reviewService->reviewStats();
-        $reviewList = $reviewService->recentReviews(50);
-        $reviewMaxCount = $reviewStats['distribution'] === [] ? 0 : max($reviewStats['distribution']);
-        ?>
-        <section class="admin-panel">
-            <div class="panel-title">
-                <div><h2>评价概览</h2><p>数据来自用户对已结束工单的评分（0.5 ~ 5.0）。同一工单重复提交会覆盖上一次，因此每张工单至多计入 1 条。匿名评价不展示用户名。</p></div>
-                <span class="status-badge <?= $reviewStats['count'] > 0 ? '' : 'closed' ?>">共 <?= (int) $reviewStats['count'] ?> 条评价</span>
-            </div>
-            <?php if ($reviewStats['count'] === 0): ?>
-            <div class="empty-state compact-empty">还没有任何工单评价。用户在工单结束后可在详情页打分。</div>
-            <?php else: ?>
-            <div class="review-summary">
-                <div class="review-average">
-                    <strong><?= e(number_format((float) $reviewStats['average'], 2)) ?></strong>
-                    <div class="star-rating static" aria-hidden="true">
-                        <div class="star-rating-stars"><span class="star-rating-fg" data-style-width="<?= e(number_format((float) $reviewStats['average'] / TicketService::MAX_SCORE * 100, 2)) ?>%">★★★★★</span>★★★★★</div>
-                    </div>
-                    <small>平均分（满分 <?= e(number_format(TicketService::MAX_SCORE, 1)) ?>）</small>
-                </div>
-                <div class="review-distribution">
-                    <?php foreach (array_reverse($reviewStats['distribution'], true) as $scoreLabel => $scoreCount): ?>
-                    <div class="review-bar-row">
-                        <span class="review-bar-label"><?= e($scoreLabel) ?> 分</span>
-                        <span class="review-bar"><i data-style-width="<?= $reviewMaxCount > 0 ? e(number_format($scoreCount / $reviewMaxCount * 100, 2)) : '0' ?>%"></i></span>
-                        <span class="review-bar-count"><?= (int) $scoreCount ?></span>
-                    </div>
-                    <?php endforeach; ?>
-                </div>
-            </div>
-            <?php endif; ?>
-        </section>
-
-        <section class="admin-panel">
-            <div class="panel-title"><div><h2>最近评价</h2><p>按最近提交/修改时间倒序，最多展示 50 条。</p></div></div>
-            <?php if (!$reviewList): ?>
-            <div class="empty-state compact-empty">还没有评价明细。</div>
-            <?php else: ?>
-            <div class="file-table-wrap">
-                <table class="file-table">
-                    <thead><tr><th>工单</th><th>评价人</th><th>评分</th><th>留言</th><th>时间</th></tr></thead>
-                    <tbody>
-                    <?php foreach ($reviewList as $reviewRow): ?>
-                    <?php $anonymousRow = (int) $reviewRow['is_anonymous'] === 1; ?>
-                    <tr>
-                        <td data-label="工单">
-                            <div class="file-name"><div><strong class="display-name"><?= e((string) ($reviewRow['ticket_no'] ?? '—')) ?></strong><small><?= e(mb_strimwidth((string) ($reviewRow['subject'] ?? ''), 0, 40, '…')) ?></small></div></div>
-                        </td>
-                        <td data-label="评价人"><?= $anonymousRow ? '<span class="status-badge closed">匿名</span>' : e((string) ($reviewRow['username'] ?? '已删除用户')) ?></td>
-                        <td data-label="评分"><span class="review-score-line"><?= e(number_format((float) $reviewRow['score'], 1)) ?></span></td>
-                        <td data-label="留言"><?= (string) $reviewRow['comment'] === '' ? '—' : nl2br(e((string) $reviewRow['comment'])) ?></td>
-                        <td data-label="时间"><span><?= e(date('Y-m-d H:i', (int) strtotime((string) $reviewRow['updated_at']))) ?></span></td>
-                    </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-            <?php endif; ?>
-        </section>
-        <?php endif; ?>
-
         <?php if ($activeTab === 'restore'): ?>
         <section class="admin-panel">
-            <div class="panel-title"><div><h2>还原个性化设置</h2><p>把站点名称、站点 logo、favicon 恢复为内置默认（站点名回「Notion Drive」，logo / favicon 回内置标识）。不涉及任何用户、文件、工单与密钥。</p></div></div>
+            <div class="panel-title"><div><h2>还原个性化设置</h2><p>把站点名称、站点 logo、favicon 恢复为内置默认（站点名回「Notion Drive」，logo / favicon 回内置标识）。不涉及任何用户、文件与密钥。</p></div></div>
             <form method="post" class="connection-form stack-form">
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="restore_personalization">
                 <label><span>管理员密码</span><input type="password" name="admin_password" autocomplete="current-password" placeholder="请输入当前管理员登录密码"></label>
@@ -1950,7 +1142,7 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
         <section class="admin-panel danger-panel">
             <div class="panel-title"><div><h2>恢复出厂设置</h2><p>清空整个数据库并跳转到初始化安装向导，等同于重新安装本系统。此操作<strong class="danger-text">不可恢复</strong>，执行前请务必备份需要保留的数据。</p></div></div>
             <ul class="restore-impact">
-                <li>数据库全部数据表被删除：所有用户账号（含管理员）、权限组、文件记录、工单与评价、公告、订单与支付记录、封禁与违规记录、系统与站点设置全部清空。</li>
+                <li>数据库全部数据表被删除：所有用户账号（含管理员）、文件记录、官方账户、公告、告警、运行日志与系统设置全部清空。</li>
                 <li>已上传的文件会在 Notion 侧尽力归档，本地头像、站点 logo / favicon、公告图片一并删除。</li>
                 <li>执行后站点回到未安装状态并跳转安装向导，需要重新填写数据库、Notion Token 与管理员账号。</li>
             </ul>
@@ -1958,11 +1150,11 @@ $premiumDuration = function (array $managedUser) use ($premiumGroupId): string {
                 <input type="hidden" name="csrf_token" value="<?= e(Security::csrfToken()) ?>"><input type="hidden" name="action" value="factory_reset">
                 <label><span>管理员密码</span><input type="password" name="admin_password" autocomplete="current-password" placeholder="请输入当前管理员登录密码"></label>
                 <label><span>确认短语</span><input name="confirm_phrase" autocomplete="off" placeholder="请输入：<?= e(RestoreService::PHRASE_FACTORY_RESET) ?>"></label>
-                <div class="form-actions"><button class="danger-button compact" data-confirm="恢复出厂设置将清空整个数据库（含全部用户、工单、订单与设置）并跳转安装向导，数据无法恢复。确认继续？">恢复出厂设置</button></div>
+                <div class="form-actions"><button class="danger-button compact" data-confirm="恢复出厂设置将清空整个数据库（含全部用户与文件记录、系统设置）并跳转安装向导，数据无法恢复。确认继续？">恢复出厂设置</button></div>
             </form>
         </section>
         <?php endif; ?>
     </main>
     <?= siteCreditHtml() ?>
-    <div id="toast" class="toast"></div><script src="assets/app.js?v=40" defer></script><script src="assets/admin.js?v=9" defer></script>
+    <div id="toast" class="toast"></div><script src="assets/app.js?v=41" defer></script><script src="assets/admin.js?v=10" defer></script>
 </body></html>

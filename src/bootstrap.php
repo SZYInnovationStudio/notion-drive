@@ -57,7 +57,7 @@ if (is_file(dirname(__DIR__) . '/storage/installed.lock')) {
     // 刻意避开 api/* 与二进制资源接口，避免给上传/下载等关键路径增加额外 Notion 往返延迟。
     if (PHP_SAPI !== 'cli' && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET') {
         $entryScript = basename((string) ($_SERVER['SCRIPT_NAME'] ?? ''));
-        $patrolPages = ['dashboard.php', 'admin.php', 'admin_orders.php', 'account.php', 'tickets.php', 'bans.php', 'logs.php', 'pay.php'];
+        $patrolPages = ['dashboard.php', 'admin.php', 'account.php', 'logs.php'];
         if (in_array($entryScript, $patrolPages, true)) {
             try {
                 if (NotionDrive\Auth::user() !== null) {
